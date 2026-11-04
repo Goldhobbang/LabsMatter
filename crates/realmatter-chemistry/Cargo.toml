@@ -9,3 +9,4 @@ description = "Reactions, bonds, thermodynamics. Owned by A4."
 [dependencies]
 realmatter-core = { path = "../realmatter-core" }
 realmatter-physics = { path = "../realmatter-physics" }
+serde.workspace = true
