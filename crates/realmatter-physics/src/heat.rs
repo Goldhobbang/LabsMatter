@@ -1,14 +1,11 @@
-//! Heat conduction, temperature fields, specific/latent heat, phase transitions.
-//!
-//! Realistic heat diffusion between neighboring cells with stability guards.
+//! Heat-driven phase transitions and enhanced diffusion.
 
 use crate::core;
 use crate::core::cell::Cell;
 use crate::core::cell::cell_flags;
 use crate::core::material::MaterialProps;
 
-/// Fourier heat conduction on 2D grid using explicit finite differences.
-/// Returns total energy exchanged (for conservation tracking).
+/// Enhanced heat conduction with conservation tracking.
 pub fn conduct(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32) -> f32 {
     let w = width as usize;
     let h = height as usize;
@@ -32,32 +29,17 @@ pub fn conduct(cells: &mut [Cell], width: u32, height: u32, materials: &[Materia
             let c = m.specific_heat.max(1e-6);
             let k = m.thermal_conductivity;
             let dx2 = 0.01f32 * 0.01f32;
-            // Diffusion coefficient D = k/(rho*c), clamped for stability (CFL-like)
-            let d = (k / (rho * c)).min(1e-3);
+            let d = (k / (rho * c)).min(2e-3);
             let coeff = (d * dt / dx2).min(0.25);
             if coeff <= 0.0 {
                 continue;
             }
-            // Laplacian over 4-neighbors
             let mut lap = 0.0f32;
-            let mut neighbors = 0u32;
-            if x > 0 && !cells[i - 1].is_empty() {
-                lap += temps[i - 1] - temps[i];
-                neighbors += 1;
-            }
-            if x + 1 < w && !cells[i + 1].is_empty() {
-                lap += temps[i + 1] - temps[i];
-                neighbors += 1;
-            }
-            if y > 0 && !cells[i - w].is_empty() {
-                lap += temps[i - w] - temps[i];
-                neighbors += 1;
-            }
-            if y + 1 < h && !cells[i + w].is_empty() {
-                lap += temps[i + w] - temps[i];
-                neighbors += 1;
-            }
-            if neighbors > 0 {
+            if x > 0 && !cells[i - 1].is_empty() { lap += temps[i - 1] - temps[i]; }
+            if x + 1 < w && !cells[i + 1].is_empty() { lap += temps[i + 1] - temps[i]; }
+            if y > 0 && !cells[i - w].is_empty() { lap += temps[i - w] - temps[i]; }
+            if y + 1 < h && !cells[i + w].is_empty() { lap += temps[i + w] - temps[i]; }
+            if lap != 0.0 {
                 let delta = coeff * lap;
                 new_temps[i] = temps[i] + delta;
                 energy += delta.abs() * rho * c * (0.01 * 0.01 * 0.01);
@@ -72,14 +54,14 @@ pub fn conduct(cells: &mut [Cell], width: u32, height: u32, materials: &[Materia
     energy
 }
 
-/// Temperature-dependent phase transitions with heat effects.
+/// Melting, solidification, evaporation, condensation, boiling.
 pub fn phase_transitions(cells: &mut [Cell], materials: &[MaterialProps]) {
     for cell in cells.iter_mut() {
         if cell.is_empty() {
             continue;
         }
         let m = material_or_default(materials, cell.material);
-        // Melting
+        // Melting: solid -> liquid
         if m.state == core::material::MaterialState::Solid
             && m.melting_point.is_finite()
             && cell.temperature >= m.melting_point
@@ -87,7 +69,7 @@ pub fn phase_transitions(cells: &mut [Cell], materials: &[MaterialProps]) {
             cell.temperature = m.melting_point;
             cell.set_flag(cell_flags::WET, true);
         }
-        // Freezing
+        // Solidification: liquid -> solid
         if m.state == core::material::MaterialState::Liquid
             && m.melting_point.is_finite()
             && cell.temperature <= m.melting_point
@@ -95,14 +77,15 @@ pub fn phase_transitions(cells: &mut [Cell], materials: &[MaterialProps]) {
             cell.temperature = m.melting_point;
             cell.set_flag(cell_flags::WET, false);
         }
-        // Boiling
+        // Boiling/Evaporation: liquid -> gas
         if m.state == core::material::MaterialState::Liquid
             && m.boiling_point.is_finite()
             && cell.temperature >= m.boiling_point
         {
             cell.temperature = m.boiling_point;
+            // Mark for potential vaporization
         }
-        // Condensation
+        // Condensation: gas -> liquid
         if m.state == core::material::MaterialState::Gas
             && m.boiling_point.is_finite()
             && cell.temperature <= m.boiling_point
