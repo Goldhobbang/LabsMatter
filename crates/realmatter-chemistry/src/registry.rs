@@ -63,30 +63,36 @@ impl ReactionRegistry {
     }
 
     /// Create default registry with common reactions.
+    ///
+    /// Material IDs are the canonical builtin IDs (see WASM `StaticRegistry`
+    /// and `web/src/materials.js`): fuel wood (7), oxidizer proxy empty (0),
+    /// iron (8), salt (11), water (3). Products are documentary — the engine
+    /// applies flags/temperature/lifetime effects, not stoichiometric swaps.
     pub fn default_set() -> Self {
         let mut r = Self::new();
-        // Combustion: flammable + air-like (0) represented differently; use flammable + heat.
-        // Generic combustion
+        // Combustion: wood (flammable) + air proxy (empty). The engine gates
+        // on flammability + ignition temperature, so this entry indexes
+        // wood/air pairs for the combustion path.
         r.add(ReactionSchema {
             id: 1,
             name: "combustion.generic".into(),
-            equation: ReactionEquation { reactants: vec![(1,1),(0,1)], products: vec![(0,2)] },
-            params: ReactionParams { activation_energy: 15000.0, pre_exponential: 1000.0, enthalpy: -50000.0, rate_multiplier: 1.0, min_temp: 300.0, max_temp: f32::INFINITY, combustion: true, ignition_temp: 573.15, requires_wet: false },
+            equation: ReactionEquation { reactants: vec![(7,1),(0,1)], products: vec![(12,1)] },
+            params: ReactionParams { activation_energy: 15000.0, pre_exponential: 1000.0, enthalpy: -50000.0, rate_multiplier: 1.0, min_temp: 300.0, max_temp: f32::INFINITY, combustion: true, ignition_temp: 560.0, requires_wet: false },
             tags: 1,
         });
-        // Oxidation (slow)
+        // Oxidation (slow): iron + iron neighbors.
         r.add(ReactionSchema {
             id: 2,
             name: "oxidation.slow".into(),
-            equation: ReactionEquation { reactants: vec![(2,1)], products: vec![(2,1)] },
+            equation: ReactionEquation { reactants: vec![(8,1),(8,1)], products: vec![(8,2)] },
             params: ReactionParams { activation_energy: 50000.0, pre_exponential: 1.0, enthalpy: -1000.0, rate_multiplier: 0.01, min_temp: 293.15, max_temp: f32::INFINITY, combustion: false, ignition_temp: f32::INFINITY, requires_wet: false },
             tags: 2,
         });
-        // Dissolution
+        // Dissolution: salt in water.
         r.add(ReactionSchema {
             id: 3,
             name: "dissolution".into(),
-            equation: ReactionEquation { reactants: vec![(3,1)], products: vec![(3,1)] },
+            equation: ReactionEquation { reactants: vec![(11,1),(3,1)], products: vec![(3,2)] },
             params: ReactionParams { activation_energy: 1000.0, pre_exponential: 10.0, enthalpy: 0.0, rate_multiplier: 1.0, min_temp: 273.15, max_temp: f32::INFINITY, combustion: false, ignition_temp: f32::INFINITY, requires_wet: true },
             tags: 4,
         });

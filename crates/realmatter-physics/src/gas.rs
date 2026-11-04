@@ -65,7 +65,20 @@ pub fn diffuse_temperature(cells: &mut [Cell], width: u32, height: u32, material
 }
 
 /// Gas expansion and density-driven movement.
-pub fn diffuse(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32) {
+///
+/// `active` optionally restricts source-cell processing to active chunks.
+/// Reads of neighbor cells are unaffected (always permitted); writes into
+/// inactive chunks are allowed (a gas cell may diffuse into an empty chunk —
+/// the next mask rebuild picks it up). Skipping an empty source cell in an
+/// inactive chunk is a no-op, so results are bit-identical to unmasked.
+pub fn diffuse(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    materials: &[MaterialProps],
+    dt: f32,
+    active: Option<&crate::core::chunk_mask::ActiveMask>,
+) {
     diffuse_temperature(cells, width, height, materials, dt);
     let w = width as usize;
     let h = height as usize;
@@ -76,6 +89,11 @@ pub fn diffuse(cells: &mut [Cell], width: u32, height: u32, materials: &[Materia
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
             if cells[i].is_empty() || cells[i].has_flag(cell_flags::FIXED) {
                 continue;
             }
@@ -115,7 +133,18 @@ pub fn diffuse(cells: &mut [Cell], width: u32, height: u32, materials: &[Materia
 }
 
 /// Gas buoyancy and density-driven movement.
-pub fn apply_buoyancy(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32, gravity: f32) {
+///
+/// `active` optionally restricts source cells to active chunks (same safety
+/// contract as [`diffuse`]).
+pub fn apply_buoyancy(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    materials: &[MaterialProps],
+    dt: f32,
+    gravity: f32,
+    active: Option<&crate::core::chunk_mask::ActiveMask>,
+) {
     let w = width as usize;
     let h = height as usize;
     if cells.len() != w * h {
@@ -124,6 +153,11 @@ pub fn apply_buoyancy(cells: &mut [Cell], width: u32, height: u32, materials: &[
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
             if cells[i].is_empty() || cells[i].has_flag(cell_flags::FIXED) {
                 continue;
             }

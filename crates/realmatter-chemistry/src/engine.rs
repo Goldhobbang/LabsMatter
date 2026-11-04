@@ -109,7 +109,30 @@ impl SimulationModule for ChemistryEngine {
 }
 
 impl ChemistryModule for ChemistryEngine {
-    fn react(&mut self, cells: &mut [Cell], dt: Time) -> Result<()> {
+    fn react(
+        &mut self,
+        cells: &mut [Cell],
+        dt: Time,
+    ) -> Result<()> {
+        self.react_masked(cells, dt, None)
+    }
+
+    fn can_react(&self, a: core::material::MaterialId, b: core::material::MaterialId) -> bool {
+        !self.registry.find_for_pair(a, b).is_empty()
+    }
+}
+
+impl ChemistryEngine {
+    /// Reaction pass with optional active-chunk skipping. Only empty source
+    /// cells in inactive chunks are skipped (no-op); neighbor reads and
+    /// writes into inactive chunks are unrestricted, so cross-boundary
+    /// reactions and wake-up behave exactly as unmasked.
+    pub fn react_masked(
+        &mut self,
+        cells: &mut [Cell],
+        dt: Time,
+        active: Option<&core::chunk_mask::ActiveMask>,
+    ) -> Result<()> {
         let w = self.width;
         let h = self.height;
         let dtf = dt as f32;
@@ -119,6 +142,11 @@ impl ChemistryModule for ChemistryEngine {
         for y in 0..h {
             for x in 0..w {
                 let i = self.idx(x, y);
+                if let Some(m) = active {
+                    if !m.cell_active(x as usize, y as usize) {
+                        continue;
+                    }
+                }
                 if cells[i].is_empty() {
                     continue;
                 }
@@ -196,9 +224,5 @@ impl ChemistryModule for ChemistryEngine {
             }
         }
         Ok(())
-    }
-
-    fn can_react(&self, a: core::material::MaterialId, b: core::material::MaterialId) -> bool {
-        !self.registry.find_for_pair(a, b).is_empty()
     }
 }

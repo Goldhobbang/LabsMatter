@@ -425,6 +425,7 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
 /// `WorldConfig::fixed_dt` (1/60 s).
 #[wasm_bindgen]
 pub fn step(_dt: f64) {
+    use realmatter_core::chunk_mask::ActiveMask;
     use realmatter_core::traits::ChemistryModule;
     use realmatter_physics::{fluid, gas, heat, reaction, stability, transfer};
     with_state(
@@ -434,6 +435,17 @@ pub fn step(_dt: f64) {
             let h = state.world.height();
             let config = state.world.config().clone();
             let materials: &Vec<MaterialProps> = material_table();
+            // Active-chunk mask: non-empty chunks + 8-neighbors. Rebuilt every
+            // tick so regions wake up as soon as a cell is written into them.
+            // Masked phases skip only empty source cells (proven no-ops), so
+            // results are bit-identical to the unmasked pipeline.
+            let mask = ActiveMask::build_from_cells(
+                state.world.cells(),
+                w,
+                h,
+                config.chunk_size,
+            );
+            let active = Some(&mask);
             let cells = state.world.cells_mut();
 
             // 0. Numerical guards first (NaN/Inf sanitize).
@@ -443,12 +455,12 @@ pub fn step(_dt: f64) {
             {
                 let mut chem = realmatter_chemistry::ChemistryEngine::from_config(&config);
                 chem.set_materials(materials.clone());
-                let _ = chem.react(cells, dt as f64);
+                let _ = chem.react_masked(cells, dt as f64, active);
             }
 
             // 2. Physics forces.
             gas::update_pressure(cells, materials);
-            gas::diffuse(cells, w, h, materials, dt);
+            gas::diffuse(cells, w, h, materials, dt, active);
             gas::apply_buoyancy(
                 cells,
                 w,
@@ -456,9 +468,10 @@ pub fn step(_dt: f64) {
                 materials,
                 dt,
                 realmatter_core::units::constants::GRAVITY,
+                active,
             );
             fluid::apply_viscosity(cells, materials, dt);
-            fluid::apply_pressure_gradient(cells, w, h, dt);
+            fluid::apply_pressure_gradient(cells, w, h, dt, active);
             fluid::apply_buoyancy(
                 cells,
                 w,
@@ -466,12 +479,13 @@ pub fn step(_dt: f64) {
                 materials,
                 dt,
                 realmatter_core::units::constants::GRAVITY,
+                active,
             );
-            heat::conduct(cells, w, h, materials, dt);
+            heat::conduct(cells, w, h, materials, dt, active);
             heat::phase_transitions(cells, materials);
-            reaction::react_all(cells, w, h, materials, dt);
-            transfer::transfer_energy(cells, w, h, materials, dt);
-            transfer::transfer_mass(cells, w, h, dt);
+            reaction::react_all(cells, w, h, materials, dt, active);
+            transfer::transfer_energy(cells, w, h, materials, dt, active);
+            transfer::transfer_mass(cells, w, h, dt, active);
             stability::clamp_velocities(cells, stability::budgets::MAX_VELOCITY);
             stability::sanitize(cells, materials);
 
@@ -504,8 +518,8 @@ pub fn step(_dt: f64) {
                     _ => 0.0,
                 }
             };
-            realmatter_world::move_powder_step(cells, w, h, &state_of, &density_of);
-            realmatter_world::move_liquid_step(cells, w, h, &state_of, &density_of);
+            realmatter_world::move_powder_step(cells, w, h, &state_of, &density_of, active);
+            realmatter_world::move_liquid_step(cells, w, h, &state_of, &density_of, active);
 
             // 4. Finalize + render refresh.
             state.world.finalize_tick();

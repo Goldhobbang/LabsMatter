@@ -80,12 +80,18 @@ fn try_sink_swap(
 
 /// One powder step over a row-major `cells` slice (`width x height`).
 /// Bottom-up row order; within a row, x ascending.
+///
+/// `active` optionally restricts source cells to active chunks. A powder
+/// cell may fall into an inactive (empty) chunk — the write is always
+/// allowed and the next mask rebuild wakes that chunk. Skipping empty
+/// sources is result-identical.
 pub fn move_powder_step(
     cells: &mut [Cell],
     width: u32,
     height: u32,
     state_of: &StateOf,
     density_of: &dyn Fn(MaterialId) -> f32,
+    active: Option<&realmatter_core::chunk_mask::ActiveMask>,
 ) -> MovementStats {
     let mut stats = MovementStats::default();
     let (w, h) = (width as usize, height as usize);
@@ -95,6 +101,11 @@ pub fn move_powder_step(
     for y in (0..h).rev() {
         for x in 0..w {
             let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
             if !is_mobile(&cells[i]) {
                 continue;
             }
@@ -138,12 +149,15 @@ pub fn move_powder_step(
 
 /// One liquid step over a row-major `cells` slice. Falls like powder, then
 /// spreads sideways (left before right, deterministic).
+///
+/// `active` has the same contract as [`move_powder_step`].
 pub fn move_liquid_step(
     cells: &mut [Cell],
     width: u32,
     height: u32,
     state_of: &StateOf,
     density_of: &dyn Fn(MaterialId) -> f32,
+    active: Option<&realmatter_core::chunk_mask::ActiveMask>,
 ) -> MovementStats {
     let mut stats = MovementStats::default();
     let (w, h) = (width as usize, height as usize);
@@ -153,6 +167,11 @@ pub fn move_liquid_step(
     for y in (0..h).rev() {
         for x in 0..w {
             let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
             if !is_mobile(&cells[i]) {
                 continue;
             }

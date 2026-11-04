@@ -22,7 +22,13 @@ pub fn apply_viscosity(cells: &mut [Cell], materials: &[MaterialProps], dt: f32)
     }
 }
 
-pub fn apply_pressure_gradient(cells: &mut [Cell], width: u32, height: u32, dt: f32) {
+pub fn apply_pressure_gradient(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    dt: f32,
+    active: Option<&crate::core::chunk_mask::ActiveMask>,
+) {
     let w = width as usize;
     let h = height as usize;
     if cells.len() != w * h {
@@ -32,6 +38,11 @@ pub fn apply_pressure_gradient(cells: &mut [Cell], width: u32, height: u32, dt: 
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
             if cells[i].is_empty() || cells[i].has_flag(cell_flags::FIXED) {
                 continue;
             }
@@ -47,7 +58,15 @@ pub fn apply_pressure_gradient(cells: &mut [Cell], width: u32, height: u32, dt: 
     }
 }
 
-pub fn apply_buoyancy(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32, gravity: f32) {
+pub fn apply_buoyancy(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    materials: &[MaterialProps],
+    dt: f32,
+    gravity: f32,
+    active: Option<&crate::core::chunk_mask::ActiveMask>,
+) {
     let w = width as usize;
     let h = height as usize;
     if cells.len() != w * h {
@@ -57,6 +76,11 @@ pub fn apply_buoyancy(cells: &mut [Cell], width: u32, height: u32, materials: &[
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
             if cells[i].is_empty() || cells[i].has_flag(cell_flags::FIXED) {
                 continue;
             }

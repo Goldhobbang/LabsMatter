@@ -155,7 +155,7 @@ impl PhysicsModule for PhysicsEngine {
                 cells[i].vy -= gy * inv_mass * dtf * 0.3;
             }
         }
-        heat::conduct(cells, w, h, &self.materials, dtf);
+        heat::conduct(cells, w, h, &self.materials, dtf, None);
         heat::phase_transitions(cells, &self.materials);
         Ok(())
     }
@@ -192,14 +192,14 @@ impl ChemistryModule for PhysicsEngine {
         let dtf = dt as f32;
         stability::sanitize(cells, &self.materials);
         gas::update_pressure(cells, &self.materials);
-        reaction::react_all(cells, self.width, self.height, &self.materials, dtf);
-        gas::diffuse(cells, self.width, self.height, &self.materials, dtf);
-        gas::apply_buoyancy(cells, self.width, self.height, &self.materials, dtf, self.gravity);
+        reaction::react_all(cells, self.width, self.height, &self.materials, dtf, None);
+        gas::diffuse(cells, self.width, self.height, &self.materials, dtf, None);
+        gas::apply_buoyancy(cells, self.width, self.height, &self.materials, dtf, self.gravity, None);
         fluid::apply_viscosity(cells, &self.materials, dtf);
-        fluid::apply_pressure_gradient(cells, self.width, self.height, dtf);
-        fluid::apply_buoyancy(cells, self.width, self.height, &self.materials, dtf, self.gravity);
-        transfer::transfer_energy(cells, self.width, self.height, &self.materials, dtf);
-        transfer::transfer_mass(cells, self.width, self.height, dtf);
+        fluid::apply_pressure_gradient(cells, self.width, self.height, dtf, None);
+        fluid::apply_buoyancy(cells, self.width, self.height, &self.materials, dtf, self.gravity, None);
+        transfer::transfer_energy(cells, self.width, self.height, &self.materials, dtf, None);
+        transfer::transfer_mass(cells, self.width, self.height, dtf, None);
         stability::clamp_velocities(cells, stability::budgets::MAX_VELOCITY);
         stability::sanitize(cells, &self.materials);
         Ok(())

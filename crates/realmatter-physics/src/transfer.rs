@@ -6,7 +6,19 @@ use crate::core::cell::cell_flags;
 use crate::core::material::MaterialProps;
 
 /// Transfer energy (heat) between neighbors with conservation tracking.
-pub fn transfer_energy(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32) -> f32 {
+///
+/// `active` optionally restricts source cells to active chunks. The exchange
+/// is applied symmetrically to both cells of each pair; pairs are visited
+/// in row-major order from the lower-index cell, so each pair is processed
+/// exactly once regardless of masking — results are bit-identical.
+pub fn transfer_energy(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    materials: &[MaterialProps],
+    dt: f32,
+    active: Option<&crate::core::chunk_mask::ActiveMask>,
+) -> f32 {
     let w = width as usize;
     let h = height as usize;
     if cells.len() != w * h {
@@ -17,6 +29,11 @@ pub fn transfer_energy(cells: &mut [Cell], width: u32, height: u32, materials: &
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
             if cells[i].is_empty() {
                 continue;
             }
@@ -56,7 +73,18 @@ pub fn transfer_energy(cells: &mut [Cell], width: u32, height: u32, materials: &
 }
 
 /// Transfer mass for dissolved materials.
-pub fn transfer_mass(cells: &mut [Cell], width: u32, height: u32, dt: f32) -> u32 {
+///
+/// `active` optionally restricts source cells to active chunks. Dissolved
+/// cells always live in active chunks (they are non-empty), and the move
+/// target may be an inactive chunk — the write is allowed and the next mask
+/// rebuild wakes it.
+pub fn transfer_mass(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    dt: f32,
+    active: Option<&crate::core::chunk_mask::ActiveMask>,
+) -> u32 {
     let w = width as usize;
     let h = height as usize;
     if cells.len() != w * h {
@@ -66,6 +94,11 @@ pub fn transfer_mass(cells: &mut [Cell], width: u32, height: u32, dt: f32) -> u3
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
             if cells[i].is_empty() {
                 continue;
             }

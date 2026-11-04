@@ -66,7 +66,14 @@ pub fn can_react(a: core::material::MaterialId, b: core::material::MaterialId) -
     a != b
 }
 
-pub fn react_all(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32) {
+pub fn react_all(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    materials: &[MaterialProps],
+    dt: f32,
+    active: Option<&crate::core::chunk_mask::ActiveMask>,
+) {
     let w = width as usize;
     let h = height as usize;
     if cells.len() != w * h {
@@ -76,6 +83,11 @@ pub fn react_all(cells: &mut [Cell], width: u32, height: u32, materials: &[Mater
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
             if cells[i].is_empty() || processed[i] {
                 continue;
             }
@@ -209,7 +221,7 @@ pub fn combustion(cells: &mut [Cell], materials: &[MaterialProps], dt: f32) {
     let side = ((cells.len() as f32).sqrt()) as u32;
     if side > 0 {
         let h = (cells.len() as u32) / side;
-        react_all(cells, side, h, materials, dt);
+        react_all(cells, side, h, materials, dt, None);
     }
 }
 
@@ -233,7 +245,7 @@ pub fn oxidation(cells: &mut [Cell], materials: &[MaterialProps], dt: f32) {
 }
 
 pub fn dissolution(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32) {
-    react_all(cells, width, height, materials, dt);
+    react_all(cells, width, height, materials, dt, None);
 }
 
 fn material_or_default(materials: &[MaterialProps], id: core::material::MaterialId) -> MaterialProps {
