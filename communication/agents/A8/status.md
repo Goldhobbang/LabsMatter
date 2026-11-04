@@ -3,4 +3,4 @@
 - Current task: T-008 — Verification & review
 - State: WAITING_FOR_CHANGES
 - Last updated: 2026-11-04
-- Notes: Verification readiness documented. Waiting for A2 persistence recovery (D-007) or other triggers.
+- Notes: Conditional review done. A3/A5 progress verified. Persist still blocked (D-007). No new actionable findings requiring immediate action.
