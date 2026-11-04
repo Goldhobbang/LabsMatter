@@ -1,11 +1,10 @@
-//! Fluid behavior: viscosity, pressure, flow equilibrium, buoyancy.
+//! Pressure-driven liquid flow with stability.
 
 use crate::core;
 use crate::core::cell::Cell;
 use crate::core::cell::cell_flags;
 use crate::core::material::MaterialProps;
 
-/// Apply viscous damping based on material viscosity.
 pub fn apply_viscosity(cells: &mut [Cell], materials: &[MaterialProps], dt: f32) {
     for cell in cells.iter_mut() {
         if cell.is_empty() {
@@ -15,20 +14,21 @@ pub fn apply_viscosity(cells: &mut [Cell], materials: &[MaterialProps], dt: f32)
         if m.state != core::material::MaterialState::Liquid && m.viscosity <= 0.0 {
             continue;
         }
-        let damp = (1.0 - (m.viscosity * dt).min(0.95)).max(0.0);
+        let damp = (1.0 - (m.viscosity * dt).min(0.99)).max(0.0);
         cell.vx *= damp;
         cell.vy *= damp;
+        if !cell.vx.is_finite() { cell.vx = 0.0; }
+        if !cell.vy.is_finite() { cell.vy = 0.0; }
     }
 }
 
-/// Liquid pressure and flow equilibrium using pressure gradient.
 pub fn apply_pressure_gradient(cells: &mut [Cell], width: u32, height: u32, dt: f32) {
     let w = width as usize;
     let h = height as usize;
     if cells.len() != w * h {
         return;
     }
-    let pressures: Vec<f32> = cells.iter().map(|c| c.pressure).collect();
+    let pressures: Vec<f32> = cells.iter().map(|c| if c.pressure.is_finite() { c.pressure } else { 101325.0 }).collect();
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
@@ -41,21 +41,19 @@ pub fn apply_pressure_gradient(cells: &mut [Cell], width: u32, height: u32, dt: 
             if x > 0 { gx -= pressures[i] - pressures[i - 1]; }
             if y + 1 < h { gy += pressures[i + w] - pressures[i]; }
             if y > 0 { gy -= pressures[i] - pressures[i - w]; }
-            // Hydrostatic approximation scaled by dt
-            cells[i].vx -= gx * dt * 0.25;
-            cells[i].vy -= gy * dt * 0.25;
+            cells[i].vx -= gx * dt * 0.5;
+            cells[i].vy -= gy * dt * 0.5;
         }
     }
 }
 
-/// Buoyancy based on relative density.
 pub fn apply_buoyancy(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32, gravity: f32) {
     let w = width as usize;
     let h = height as usize;
     if cells.len() != w * h {
         return;
     }
-    let rho_ref = 1000.0f32; // water reference for liquids; gases use different
+    let rho_ref = 1000.0f32;
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
@@ -67,20 +65,19 @@ pub fn apply_buoyancy(cells: &mut [Cell], width: u32, height: u32, materials: &[
                 continue;
             }
             let buoy = (rho_ref - m.density) / rho_ref.max(1e-6);
-            cells[i].vy += buoy * gravity * dt * 0.2;
+            cells[i].vy += buoy * gravity * dt * 0.3;
         }
     }
 }
 
-/// Surface tension approximation at material interfaces.
 pub fn apply_surface_tension(cells: &mut [Cell], width: u32, height: u32, dt: f32) {
     let w = width as usize;
     let h = height as usize;
     if cells.len() != w * h || w < 3 || h < 3 {
         return;
     }
-    let vxs: Vec<f32> = cells.iter().map(|c| c.vx).collect();
-    let vys: Vec<f32> = cells.iter().map(|c| c.vy).collect();
+    let vxs: Vec<f32> = cells.iter().map(|c| if c.vx.is_finite() { c.vx } else { 0.0 }).collect();
+    let vys: Vec<f32> = cells.iter().map(|c| if c.vy.is_finite() { c.vy } else { 0.0 }).collect();
     for y in 1..h - 1 {
         for x in 1..w - 1 {
             let i = y * w + x;
