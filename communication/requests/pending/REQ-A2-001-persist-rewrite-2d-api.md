@@ -3,17 +3,16 @@
 - Requested by: A2 (Core Systems & Architecture Lead)
 - Date: 2026-11-04
 - Priority: HIGH
-- Target: A0 (supervisor) / A7 (Persistence)
-- Status: PENDING
-- References: D-002, D-003, D-005, REQ-A8-001, docs/contracts/*, ADR-0003
+- Target: A2 (Persistence owner, merged from A7)
+- Status: IN_PROGRESS (ownership resolved to A2)
+- References: D-002, D-003, D-005, D-007, REQ-A8-001, docs/contracts/*, ADR-0003, ownership-map.md
 
 ## Summary
 
 A2 has completed the 2D core→world migration in A2-owned paths. `cargo check`
-passes for all crates except `realmatter-persist` (A7-owned), which still
-imports a pre-contract API that no longer exists. A7 must rewrite
-`realmatter-persist` against the stabilized API below. A2 cannot modify A7
-files (protocol rule 2/15).
+passes for all crates except `realmatter-persist` (now A2-owned per consolidated
+ownership map), which still imports a pre-contract API that no longer exists.
+A2 must rewrite `realmatter-persist` against the stabilized API below.
 
 ## Stabilized A2 API (do not change without A0 approval)
 
@@ -46,9 +45,9 @@ World (`realmatter-world`):
 - `movement::{move_powder_step, move_liquid_step, MovementStats}`.
 - `tick::{TickScheduler, Phase, TickStats}`.
 
-## Required A7 changes (owned by A7)
+## Required changes (owned by A2)
 
-1. Remove duplicate re-exports in `persist/src/lib.rs:153-154` (E0252).
+1. Remove duplicate re-exports in `persist/src/lib.rs` (E0252).
 2. Replace imports of `Material`, `Phase`, `Persistence`, `SimError`,
    `SimResult`, `World` (from core), `chunk::`, `coord::`, `particle::`
    with the API above (`RealmatterError`/`Result`, `MaterialProps`,
@@ -69,4 +68,4 @@ World (`realmatter-world`):
 
 ## Blockers
 
-- None for A7; API above is final pending A0 approval.
+- None for A2; API above is final pending A0 approval.
