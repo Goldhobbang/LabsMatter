@@ -1,4 +1,4 @@
-//! Material reaction definitions and reaction kinetics.
+//! Combustion, fire spread, oxidation, dissolution, mixing - visible behavior.
 
 use crate::core;
 use crate::core::cell::Cell;
@@ -20,11 +20,12 @@ pub struct Reaction {
 
 impl Reaction {
     pub fn rate_constant(&self, temperature: f32) -> f32 {
-        if temperature <= 0.0 {
+        if temperature <= 0.0 || !temperature.is_finite() {
             return 0.0;
         }
         let r = core::units::constants::GAS_CONSTANT;
-        self.pre_exponential * (-(self.activation_energy / (r * temperature))).exp()
+        let k = self.pre_exponential * (-(self.activation_energy / (r * temperature))).exp();
+        if k.is_finite() && k >= 0.0 { k.min(1e6) } else { 0.0 }
     }
     pub fn can_proceed(&self, a: core::material::MaterialId, b: core::material::MaterialId, temp: f32) -> bool {
         let matches = (a == self.reactant_a && b == self.reactant_b)
@@ -32,10 +33,10 @@ impl Reaction {
         if !matches {
             return false;
         }
-        if self.combustion && temp < self.ignition_temp {
+        if self.combustion && (!temp.is_finite() || temp < self.ignition_temp) {
             return false;
         }
-        temp >= self.activation_energy / 100.0
+        temp.is_finite() && temp >= self.activation_energy / 200.0
     }
 }
 
@@ -71,65 +72,101 @@ pub fn react_all(cells: &mut [Cell], width: u32, height: u32, materials: &[Mater
     if cells.len() != w * h {
         return;
     }
+    let mut processed = vec![false; cells.len()];
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
-            if cells[i].is_empty() {
+            if cells[i].is_empty() || processed[i] {
                 continue;
             }
-            for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
-                let nx = x as i32 + dx;
-                let ny = y as i32 + dy;
-                if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
-                    continue;
+            let a = cells[i].material;
+            let ma = material_or_default(materials, a);
+            // Combustion and fire propagation
+            if ma.flammable && cells[i].temperature.is_finite() && cells[i].temperature >= ma.ignition_temp {
+                cells[i].set_flag(cell_flags::BURNING, true);
+                let mass = ma.density * (0.01 * 0.01 * 0.01);
+                if mass > 0.0 {
+                    cells[i].temperature += (70000.0 / (mass * ma.specific_heat.max(1.0))) * dt.min(0.016);
                 }
-                let ni = ny as usize * w + nx as usize;
-                if cells[ni].is_empty() {
-                    continue;
+                if cells[i].lifetime == 0.0 {
+                    cells[i].lifetime = 5.0;
                 }
-                let a = cells[i].material;
-                let b = cells[ni].material;
-                if a == b {
-                    continue;
-                }
-                let ma = material_or_default(materials, a);
-                if ma.flammable && cells[i].temperature >= ma.ignition_temp {
-                    cells[i].set_flag(cell_flags::BURNING, true);
-                    cells[i].temperature += 50.0 * dt;
-                    if cells[i].lifetime > 0.0 {
-                        cells[i].lifetime = (cells[i].lifetime - dt).max(0.0);
+                if cells[i].lifetime > 0.0 {
+                    cells[i].lifetime = (cells[i].lifetime - dt).max(0.0);
+                    if cells[i].lifetime == 0.0 {
+                        cells[i].material = 0;
+                        cells[i].vx = 0.0;
+                        cells[i].vy = 0.0;
+                        cells[i].flags = 0;
+                        cells[i].pressure = 101325.0;
+                        processed[i] = true;
+                        continue;
                     }
                 }
-                if !ma.flammable && cells[i].material != 0 {
-                    cells[i].temperature += 0.1 * dt;
+                // Spread fire
+                for (dx, dy) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
+                        continue;
+                    }
+                    let ni = ny as usize * w + nx as usize;
+                    if cells[ni].is_empty() {
+                        continue;
+                    }
+                    let mb = material_or_default(materials, cells[ni].material);
+                    if mb.flammable && cells[ni].temperature.is_finite() && cells[ni].temperature < mb.ignition_temp {
+                        cells[ni].temperature = cells[ni].temperature.max(mb.ignition_temp * 0.95);
+                    }
                 }
-                if cells[i].has_flag(cell_flags::WET) && cells[ni].is_empty() {
-                    cells[i].set_flag(cell_flags::DISSOLVED, true);
-                }
+                processed[i] = true;
+                continue;
             }
+            // Oxidation
+            if !ma.flammable && ma.state == core::material::MaterialState::Solid && cells[i].temperature.is_finite() && cells[i].temperature > 450.0 {
+                cells[i].temperature += 0.05 * dt;
+                processed[i] = true;
+                continue;
+            }
+            // Dissolution and mixing
+            if cells[i].has_flag(cell_flags::WET) {
+                cells[i].set_flag(cell_flags::DISSOLVED, true);
+                for (dx, dy) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
+                        continue;
+                    }
+                    let ni = ny as usize * w + nx as usize;
+                    if cells[ni].is_empty() {
+                        cells[ni] = cells[i];
+                        cells[i] = Cell::default();
+                        break;
+                    }
+                    if cells[ni].material != cells[i].material && cells[ni].material != 0 {
+                        let t_avg = (cells[i].temperature + cells[ni].temperature) * 0.5;
+                        if t_avg.is_finite() {
+                            cells[i].temperature = t_avg;
+                            cells[ni].temperature = t_avg;
+                        }
+                    }
+                }
+                processed[i] = true;
+                continue;
+            }
+            processed[i] = true;
         }
     }
 }
 
 pub fn combustion(cells: &mut [Cell], materials: &[MaterialProps], dt: f32) {
-    for cell in cells.iter_mut() {
-        if cell.is_empty() {
-            continue;
-        }
-        let m = material_or_default(materials, cell.material);
-        if !m.flammable {
-            continue;
-        }
-        if cell.temperature >= m.ignition_temp {
-            cell.set_flag(cell_flags::BURNING, true);
-            cell.temperature += 100.0 * dt;
-            if cell.lifetime > 0.0 {
-                cell.lifetime = (cell.lifetime - dt * 2.0).max(0.0);
-            }
-        }
-        if cell.has_flag(cell_flags::BURNING) {
-            cell.temperature += 20.0 * dt;
-        }
+    if cells.is_empty() {
+        return;
+    }
+    let side = ((cells.len() as f32).sqrt()) as u32;
+    if side > 0 {
+        let h = (cells.len() as u32) / side;
+        react_all(cells, side, h, materials, dt);
     }
 }
 
@@ -138,49 +175,22 @@ pub fn oxidation(cells: &mut [Cell], materials: &[MaterialProps], dt: f32) {
         if cell.is_empty() {
             continue;
         }
+        if !cell.temperature.is_finite() {
+            cell.temperature = 293.15;
+            continue;
+        }
         let m = material_or_default(materials, cell.material);
         if m.flammable {
             continue;
         }
-        if m.state == core::material::MaterialState::Solid {
-            cell.temperature += 0.05 * dt;
+        if m.state == core::material::MaterialState::Solid && cell.temperature > 400.0 {
+            cell.temperature += 0.12 * dt;
         }
     }
 }
 
-pub fn dissolution(cells: &mut [Cell], width: u32, height: u32, dt: f32) {
-    let w = width as usize;
-    let h = height as usize;
-    if cells.len() != w * h {
-        return;
-    }
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            if cells[i].is_empty() {
-                continue;
-            }
-            if !cells[i].has_flag(cell_flags::WET) {
-                continue;
-            }
-            if !cells[i].has_flag(cell_flags::DISSOLVED) {
-                continue;
-            }
-            for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
-                let nx = x as i32 + dx;
-                let ny = y as i32 + dy;
-                if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
-                    let ni = ny as usize * w + nx as usize;
-                    if cells[ni].is_empty() {
-                        cells[ni] = cells[i];
-                        cells[i] = Cell::default();
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    let _ = dt;
+pub fn dissolution(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32) {
+    react_all(cells, width, height, materials, dt);
 }
 
 fn material_or_default(materials: &[MaterialProps], id: core::material::MaterialId) -> MaterialProps {

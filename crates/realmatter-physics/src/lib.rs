@@ -51,7 +51,7 @@ impl PhysicsEngine {
             height,
             materials: Vec::new(),
             gravity: core::units::constants::GRAVITY,
-            damping: 0.998,
+            damping: 0.996,
         }
     }
 
@@ -94,26 +94,6 @@ impl PhysicsEngine {
     pub fn in_bounds(&self, x: i32, y: i32) -> bool {
         x >= 0 && y >= 0 && (x as u32) < self.width && (y as u32) < self.height
     }
-
-    pub fn thermal_step(&mut self, cells: &mut [Cell], dt: Time) -> Result<()> {
-        heat::conduct(cells, self.width, self.height, &self.materials, dt as f32);
-        heat::phase_transitions(cells, &self.materials);
-        Ok(())
-    }
-
-    pub fn gas_step(&mut self, cells: &mut [Cell], dt: Time) -> Result<()> {
-        gas::update_pressure(cells, &self.materials);
-        gas::diffuse(cells, self.width, self.height, &self.materials, dt as f32);
-        gas::apply_buoyancy(cells, self.width, self.height, &self.materials, dt as f32, self.gravity);
-        Ok(())
-    }
-
-    pub fn fluid_step(&mut self, cells: &mut [Cell], dt: Time) -> Result<()> {
-        fluid::apply_viscosity(cells, &self.materials, dt as f32);
-        fluid::apply_pressure_gradient(cells, self.width, self.height, dt as f32);
-        fluid::apply_buoyancy(cells, self.width, self.height, &self.materials, dt as f32, self.gravity);
-        Ok(())
-    }
 }
 
 impl SimulationModule for PhysicsEngine {
@@ -125,10 +105,7 @@ impl SimulationModule for PhysicsEngine {
         self.height = config.height;
         Ok(())
     }
-    fn step(&mut self, dt: Time) -> Result<()> {
-        // Integration hook: scheduler will pass cells via module methods
-        // or we can be called with world; for now no-op per interface
-        let _ = dt;
+    fn step(&mut self, _dt: Time) -> Result<()> {
         Ok(())
     }
 }
@@ -138,7 +115,8 @@ impl PhysicsModule for PhysicsEngine {
         let w = self.width;
         let h = self.height;
         let dtf = dt as f32;
-        // Gravity and damping
+        stability::sanitize(cells, &self.materials);
+        // Gravity for non-gas
         for y in 0..h {
             for x in 0..w {
                 let i = self.idx(x, y);
@@ -146,18 +124,17 @@ impl PhysicsModule for PhysicsEngine {
                     continue;
                 }
                 let m = self.material(cells[i].material);
-                // Apply gravity with density consideration
-                if m.state == core::material::MaterialState::Gas {
-                    // Buoyancy handled in gas_step
-                } else {
+                if m.state != core::material::MaterialState::Gas {
                     cells[i].vy += -self.gravity * dtf * 0.8;
                 }
                 cells[i].vx *= self.damping;
                 cells[i].vy *= self.damping;
+                if !cells[i].vx.is_finite() { cells[i].vx = 0.0; }
+                if !cells[i].vy.is_finite() { cells[i].vy = 0.0; }
             }
         }
-        // Pressure gradient forces
-        let pressures: Vec<f32> = cells.iter().map(|c| c.pressure).collect();
+        // Pressure gradient
+        let pressures: Vec<f32> = cells.iter().map(|c| if c.pressure.is_finite() { c.pressure } else { 101325.0 }).collect();
         for y in 0..h {
             for x in 0..w {
                 let i = self.idx(x, y);
@@ -176,7 +153,6 @@ impl PhysicsModule for PhysicsEngine {
                 cells[i].vy -= gy * inv_mass * dtf * 0.3;
             }
         }
-        // Thermal diffusion each tick
         heat::conduct(cells, w, h, &self.materials, dtf);
         heat::phase_transitions(cells, &self.materials);
         Ok(())
@@ -185,7 +161,6 @@ impl PhysicsModule for PhysicsEngine {
     fn resolve_collisions(&mut self, cells: &mut [Cell], _dt: Time) -> Result<()> {
         let w = self.width;
         let h = self.height;
-        // Boundaries
         for x in 0..w {
             let top = self.idx(x, 0);
             let bot = self.idx(x, h - 1);
@@ -198,30 +173,33 @@ impl PhysicsModule for PhysicsEngine {
             cells[left].vx = 0.0; cells[left].vy = 0.0;
             cells[right].vx = 0.0; cells[right].vy = 0.0;
         }
-        // Walls
         for cell in cells.iter_mut() {
             if cell.material == core::material::MATERIAL_WALL {
                 cell.vx = 0.0; cell.vy = 0.0;
                 cell.set_flag(cell_flags::FIXED, true);
             }
         }
-        // Stability
         stability::clamp_velocities(cells, stability::budgets::MAX_VELOCITY);
+        stability::sanitize(cells, &self.materials);
         Ok(())
     }
 }
 
 impl ChemistryModule for PhysicsEngine {
     fn react(&mut self, cells: &mut [Cell], dt: Time) -> Result<()> {
+        let dtf = dt as f32;
+        stability::sanitize(cells, &self.materials);
         gas::update_pressure(cells, &self.materials);
-        reaction::react_all(cells, self.width, self.height, &self.materials, dt as f32);
-        gas::diffuse(cells, self.width, self.height, &self.materials, dt as f32);
-        gas::apply_buoyancy(cells, self.width, self.height, &self.materials, dt as f32, self.gravity);
-        fluid::apply_viscosity(cells, &self.materials, dt as f32);
-        fluid::apply_pressure_gradient(cells, self.width, self.height, dt as f32);
-        fluid::apply_buoyancy(cells, self.width, self.height, &self.materials, dt as f32, self.gravity);
-        transfer::transfer_energy(cells, self.width, self.height, &self.materials, dt as f32);
-        transfer::transfer_mass(cells, self.width, self.height, dt as f32);
+        reaction::react_all(cells, self.width, self.height, &self.materials, dtf);
+        gas::diffuse(cells, self.width, self.height, &self.materials, dtf);
+        gas::apply_buoyancy(cells, self.width, self.height, &self.materials, dtf, self.gravity);
+        fluid::apply_viscosity(cells, &self.materials, dtf);
+        fluid::apply_pressure_gradient(cells, self.width, self.height, dtf);
+        fluid::apply_buoyancy(cells, self.width, self.height, &self.materials, dtf, self.gravity);
+        transfer::transfer_energy(cells, self.width, self.height, &self.materials, dtf);
+        transfer::transfer_mass(cells, self.width, self.height, dtf);
+        stability::clamp_velocities(cells, stability::budgets::MAX_VELOCITY);
+        stability::sanitize(cells, &self.materials);
         Ok(())
     }
     fn can_react(&self, a: core::material::MaterialId, b: core::material::MaterialId) -> bool {
