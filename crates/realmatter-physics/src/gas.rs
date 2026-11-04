@@ -95,8 +95,8 @@ pub fn diffuse(cells: &mut [Cell], width: u32, height: u32, materials: &[Materia
                 }
                 let ni = ny as usize * w + nx as usize;
                 if cells[ni].is_empty() {
-                    // Empty cells act as low pressure sink
-                    cells[best] = cells[i];
+                    // Empty cells act as low pressure sink: move there.
+                    cells[ni] = cells[i];
                     cells[i] = Cell::default();
                     break;
                 }

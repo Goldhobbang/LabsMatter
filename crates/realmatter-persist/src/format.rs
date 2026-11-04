@@ -374,7 +374,9 @@ pub fn to_world(save: &SaveData) -> Result<World, String> {
             }
         }
     }
-    // tick_count/time_accumulator not directly mutable via public API; skip
+    // tick_count/time_accumulator restored via public setters (v1 header).
+    world.set_tick_count(save.header.tick_count);
+    world.set_time_accumulator(save.header.time_accumulator);
     Ok(world)
 }
 

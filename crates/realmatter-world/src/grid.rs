@@ -221,4 +221,15 @@ impl World {
     pub fn material_props(&self, id: MaterialId) -> Option<&realmatter_core::material::MaterialProps> {
         self.materials.get(id)
     }
+
+    /// Restore the tick counter (used by persistence load; format v1 header
+    /// already stores `tick_count`, this applies it without touching cells).
+    pub fn set_tick_count(&mut self, tick: u64) {
+        self.tick_count = tick;
+    }
+
+    /// Restore the time accumulator (used by persistence load).
+    pub fn set_time_accumulator(&mut self, t: f64) {
+        self.time_accumulator = if t.is_finite() && t >= 0.0 { t } else { 0.0 };
+    }
 }

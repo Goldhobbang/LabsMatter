@@ -12,6 +12,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 realmatter-core = { path = "../realmatter-core" }
 realmatter-world = { path = "../realmatter-world" }
+realmatter-physics = { path = "../realmatter-physics" }
+realmatter-chemistry = { path = "../realmatter-chemistry" }
 realmatter-persist = { path = "../realmatter-persist" }
 wasm-bindgen.workspace = true
 js-sys.workspace = true

@@ -1,8 +1,15 @@
-//! REALMATTER WASM entrypoint (A2).
+//! REALMATTER WASM entrypoint (A2 + lead integration).
 //!
 //! Implements the approved WASM/JS API (`docs/contracts/wasm-api.md`) plus the
 //! minimal viable exports requested in REQ-A5-001. Owns a single global 2D
 //! [`World`](realmatter_world::World) behind a mutex; JS owns no memory.
+//!
+//! The per-tick pipeline (`step`) follows the approved phase order from
+//! `docs/contracts/simulation-tick.md` (see `realmatter-world/src/tick.rs`):
+//! Chemistry → PhysicsForces → PhysicsCollisions → Movement → Thermal →
+//! Finalize → Export(render). Physics/chemistry phases reuse the existing
+//! `realmatter-physics` / `realmatter-chemistry` engines operating directly
+//! on the world's cell slice (no duplicate simulation state).
 //!
 //! Exported functions (wasm-bindgen):
 //! - `init(width, height) -> Result<(), JsValue>`
@@ -279,6 +286,44 @@ impl MaterialRegistry for StaticRegistry {
     }
 }
 
+/// Material table indexed by material id, for the physics/chemistry slice
+/// APIs (`materials.get(id as usize)`). Gaps are filled with air-like
+/// defaults so unknown ids never panic. Cached in a `OnceLock`: the builtin
+/// set is immutable, so sharing it across ticks is safe and avoids a
+/// per-tick allocation + 16 clones.
+fn material_table() -> &'static Vec<MaterialProps> {
+    use std::sync::OnceLock;
+    static TABLE: OnceLock<Vec<MaterialProps>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let builtin = StaticRegistry::builtin();
+        let max_id = builtin.props.iter().map(|p| p.id as usize).max().unwrap_or(0);
+        let mut table = vec![
+            MaterialProps {
+                id: 0,
+                name: "air".to_string(),
+                state: MaterialState::Gas,
+                density: 1.225,
+                specific_heat: 1005.0,
+                thermal_conductivity: 0.026,
+                melting_point: f32::INFINITY,
+                boiling_point: f32::INFINITY,
+                viscosity: 0.0,
+                color: [0.8, 0.9, 1.0, 0.3],
+                flammable: false,
+                ignition_temp: f32::INFINITY,
+            };
+            max_id + 1
+        ];
+        for p in builtin.props {
+            let i = p.id as usize;
+            if i < table.len() {
+                table[i] = p;
+            }
+        }
+        table
+    })
+}
+
 struct SimState {
     world: World,
     render: Vec<u8>,
@@ -366,14 +411,71 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
     }
 }
 
-/// Advance simulation by one fixed step (deterministic movement + finalize).
+/// Advance simulation by one fixed step.
+///
+/// Deterministic pipeline (approved tick phase order):
+/// 1. Chemistry (registry reactions: combustion / oxidation / dissolution)
+/// 2. Physics forces (gas pressure + diffusion + buoyancy, fluid viscosity +
+///    pressure + buoyancy, heat conduction, phase transitions, transfers)
+/// 3. Movement (powder + liquid cellular automaton)
+/// 4. Finalize (UPDATED flags, lifetimes, tick count) + render refresh.
+///
+/// Operates directly on the world's cell slice; no duplicate state.
+/// `_dt` is accepted for API compatibility; the fixed step comes from
+/// `WorldConfig::fixed_dt` (1/60 s).
 #[wasm_bindgen]
 pub fn step(_dt: f64) {
+    use realmatter_core::traits::ChemistryModule;
+    use realmatter_physics::{fluid, gas, heat, reaction, stability, transfer};
     with_state(
         |state| {
+            let dt = state.world.config().fixed_dt as f32;
             let w = state.world.width();
             let h = state.world.height();
+            let config = state.world.config().clone();
+            let materials: &Vec<MaterialProps> = material_table();
             let cells = state.world.cells_mut();
+
+            // 0. Numerical guards first (NaN/Inf sanitize).
+            stability::sanitize(cells, materials);
+
+            // 1. Chemistry: registry-driven reactions.
+            {
+                let mut chem = realmatter_chemistry::ChemistryEngine::from_config(&config);
+                chem.set_materials(materials.clone());
+                let _ = chem.react(cells, dt as f64);
+            }
+
+            // 2. Physics forces.
+            gas::update_pressure(cells, materials);
+            gas::diffuse(cells, w, h, materials, dt);
+            gas::apply_buoyancy(
+                cells,
+                w,
+                h,
+                materials,
+                dt,
+                realmatter_core::units::constants::GRAVITY,
+            );
+            fluid::apply_viscosity(cells, materials, dt);
+            fluid::apply_pressure_gradient(cells, w, h, dt);
+            fluid::apply_buoyancy(
+                cells,
+                w,
+                h,
+                materials,
+                dt,
+                realmatter_core::units::constants::GRAVITY,
+            );
+            heat::conduct(cells, w, h, materials, dt);
+            heat::phase_transitions(cells, materials);
+            reaction::react_all(cells, w, h, materials, dt);
+            transfer::transfer_energy(cells, w, h, materials, dt);
+            transfer::transfer_mass(cells, w, h, dt);
+            stability::clamp_velocities(cells, stability::budgets::MAX_VELOCITY);
+            stability::sanitize(cells, materials);
+
+            // 3. Movement (powder + liquid cellular automaton).
             let state_of = |id: MaterialId| -> Option<MaterialState> {
                 match id {
                     0 | 5 | 12 => Some(MaterialState::Gas),
@@ -404,6 +506,8 @@ pub fn step(_dt: f64) {
             };
             realmatter_world::move_powder_step(cells, w, h, &state_of, &density_of);
             realmatter_world::move_liquid_step(cells, w, h, &state_of, &density_of);
+
+            // 4. Finalize + render refresh.
             state.world.finalize_tick();
             rebuild_render(state);
         },
@@ -412,18 +516,41 @@ pub fn step(_dt: f64) {
 }
 
 /// Set a cell's material. Returns true on success.
+///
+/// New cells start at the material's characteristic temperature so thermal
+/// interactions are observable: lava/fire/steam/smoke paint hot, ice paints
+/// cold, everything else paints at ambient (293.15 K). Temperatures come
+/// from the builtin material properties (boiling/melting points), not from
+/// hardcoded magic numbers.
 #[wasm_bindgen]
 pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
     with_state(
         |state| {
             let mut cell = Cell::default();
             cell.material = material;
+            cell.temperature = initial_temperature(material);
             if material == 1 {
                 cell.set_flag(realmatter_core::cell::cell_flags::FIXED, true);
             }
             match state.world.set(CellCoord::new(x, y), cell) {
                 Ok(()) => {
-                    rebuild_render(state);
+                    // Incremental render update: repaint only this pixel.
+                    // Full rebuilds happen on init/step/reset/load, so per-cell
+                    // painting (brush strokes) stays O(1) instead of O(W*H).
+                    let w = state.world.width() as usize;
+                    let h = state.world.height() as usize;
+                    if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h
+                        && state.render.len() == w * h * 4
+                    {
+                        let (r, g, b, a) = rgba_for(&cell);
+                        let i = (y as usize * w + x as usize) * 4;
+                        state.render[i] = r;
+                        state.render[i + 1] = g;
+                        state.render[i + 2] = b;
+                        state.render[i + 3] = a;
+                    } else {
+                        rebuild_render(state);
+                    }
                     true
                 }
                 Err(_) => false,
@@ -431,6 +558,22 @@ pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
         },
         false,
     )
+}
+
+/// Characteristic paint temperature for a builtin material id.
+fn initial_temperature(material: u16) -> f32 {
+    match material {
+        // lava: above iron's melting point so it visibly heats neighbors.
+        9 => 1500.0,
+        // fire: above all ignition temps so it ignites adjacent fuel.
+        6 => 1200.0,
+        // steam / smoke: hot vapor.
+        5 => 373.15,
+        12 => 400.0,
+        // ice: below water's melting point.
+        13 => 263.15,
+        _ => 293.15,
+    }
 }
 
 /// Get a cell's material id (0 if out of bounds / uninitialized).
@@ -463,7 +606,13 @@ pub fn world_height() -> u32 {
     with_state(|state| state.world.height(), 0)
 }
 
-/// Clear all cells. Returns false if uninitialized.
+/// Simulation tick counter (0 if uninitialized). Restored on load.
+#[wasm_bindgen]
+pub fn tick_count() -> u64 {
+    with_state(|state| state.world.tick_count(), 0)
+}
+
+/// Clear all cells and reset the tick counter. Returns false if uninitialized.
 #[wasm_bindgen]
 pub fn reset() -> bool {
     with_state(
@@ -475,6 +624,8 @@ pub fn reset() -> bool {
                     let _ = state.world.set(CellCoord::new(x, y), Cell::default());
                 }
             }
+            state.world.set_tick_count(0);
+            state.world.set_time_accumulator(0.0);
             rebuild_render(state);
             true
         },

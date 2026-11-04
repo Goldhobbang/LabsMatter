@@ -81,6 +81,45 @@ pub fn react_all(cells: &mut [Cell], width: u32, height: u32, materials: &[Mater
             }
             let a = cells[i].material;
             let ma = material_or_default(materials, a);
+            // Fire cells (plasma) ignite adjacent fuel and burn out over time.
+            // Fire itself is not "flammable fuel", so it needs its own branch:
+            // without this, painted fire can never spread (the combustion
+            // branch below only runs for flammable materials above ignition).
+            if a == 6 {
+                for (dx, dy) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
+                        continue;
+                    }
+                    let ni = ny as usize * w + nx as usize;
+                    if cells[ni].is_empty() {
+                        continue;
+                    }
+                    let mb = material_or_default(materials, cells[ni].material);
+                    if mb.flammable && mb.ignition_temp.is_finite()
+                        && cells[ni].temperature.is_finite()
+                        && cells[ni].temperature < mb.ignition_temp
+                    {
+                        cells[ni].temperature = mb.ignition_temp;
+                    }
+                }
+                // Fire consumes itself: burn for a while, then become smoke.
+                if cells[i].lifetime == 0.0 {
+                    cells[i].lifetime = 8.0;
+                }
+                cells[i].lifetime = (cells[i].lifetime - dt).max(0.0);
+                if cells[i].lifetime == 0.0 {
+                    cells[i].material = 12; // smoke
+                    cells[i].temperature = 400.0;
+                    cells[i].vx = 0.0;
+                    cells[i].vy = 0.0;
+                    cells[i].flags = 0;
+                    cells[i].pressure = 101325.0;
+                }
+                processed[i] = true;
+                continue;
+            }
             // Combustion and fire propagation
             if ma.flammable && cells[i].temperature.is_finite() && cells[i].temperature >= ma.ignition_temp {
                 cells[i].set_flag(cell_flags::BURNING, true);
@@ -103,7 +142,8 @@ pub fn react_all(cells: &mut [Cell], width: u32, height: u32, materials: &[Mater
                         continue;
                     }
                 }
-                // Spread fire
+                // Spread fire: heat adjacent fuel to its ignition point so it
+                // catches fire on a subsequent tick (observable propagation).
                 for (dx, dy) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
                     let nx = x as i32 + dx;
                     let ny = y as i32 + dy;
@@ -115,8 +155,11 @@ pub fn react_all(cells: &mut [Cell], width: u32, height: u32, materials: &[Mater
                         continue;
                     }
                     let mb = material_or_default(materials, cells[ni].material);
-                    if mb.flammable && cells[ni].temperature.is_finite() && cells[ni].temperature < mb.ignition_temp {
-                        cells[ni].temperature = cells[ni].temperature.max(mb.ignition_temp * 0.95);
+                    if mb.flammable && mb.ignition_temp.is_finite()
+                        && cells[ni].temperature.is_finite()
+                        && cells[ni].temperature < mb.ignition_temp
+                    {
+                        cells[ni].temperature = mb.ignition_temp;
                     }
                 }
                 processed[i] = true;

@@ -63,7 +63,7 @@ export function render_buffer_ptr() {
 }
 
 /**
- * Clear all cells. Returns false if uninitialized.
+ * Clear all cells and reset the tick counter. Returns false if uninitialized.
  * @returns {boolean}
  */
 export function reset() {
@@ -84,6 +84,12 @@ export function save_blob() {
 
 /**
  * Set a cell's material. Returns true on success.
+ *
+ * New cells start at the material's characteristic temperature so thermal
+ * interactions are observable: lava/fire/steam/smoke paint hot, ice paints
+ * cold, everything else paints at ambient (293.15 K). Temperatures come
+ * from the builtin material properties (boiling/melting points), not from
+ * hardcoded magic numbers.
  * @param {number} x
  * @param {number} y
  * @param {number} material
@@ -95,11 +101,31 @@ export function set_cell(x, y, material) {
 }
 
 /**
- * Advance simulation by one fixed step (deterministic movement + finalize).
+ * Advance simulation by one fixed step.
+ *
+ * Deterministic pipeline (approved tick phase order):
+ * 1. Chemistry (registry reactions: combustion / oxidation / dissolution)
+ * 2. Physics forces (gas pressure + diffusion + buoyancy, fluid viscosity +
+ *    pressure + buoyancy, heat conduction, phase transitions, transfers)
+ * 3. Movement (powder + liquid cellular automaton)
+ * 4. Finalize (UPDATED flags, lifetimes, tick count) + render refresh.
+ *
+ * Operates directly on the world's cell slice; no duplicate state.
+ * `_dt` is accepted for API compatibility; the fixed step comes from
+ * `WorldConfig::fixed_dt` (1/60 s).
  * @param {number} _dt
  */
 export function step(_dt) {
     wasm.step(_dt);
+}
+
+/**
+ * Simulation tick counter (0 if uninitialized). Restored on load.
+ * @returns {bigint}
+ */
+export function tick_count() {
+    const ret = wasm.tick_count();
+    return BigInt.asUintN(64, ret);
 }
 
 /**
