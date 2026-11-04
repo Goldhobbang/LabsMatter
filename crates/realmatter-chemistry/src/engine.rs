@@ -67,25 +67,14 @@ impl ChemistryEngine {
     }
 
     pub fn material(&self, id: core::material::MaterialId) -> MaterialProps {
-        self.materials
-            .get(id as usize)
-            .cloned()
-            .unwrap_or_else(|| {
-                MaterialProps {
-                    id,
-                    name: "unknown".to_string(),
-                    state: core::material::MaterialState::Gas,
-                    density: 1.225,
-                    specific_heat: 1005.0,
-                    thermal_conductivity: 0.026,
-                    melting_point: f32::INFINITY,
-                    boiling_point: f32::INFINITY,
-                    viscosity: 0.0,
-                    color: [0.8, 0.9, 1.0, 0.3],
-                    flammable: false,
-                    ignition_temp: f32::INFINITY,
-                }
-            })
+        self.material_ref(id).clone()
+    }
+
+    /// Borrow props without cloning (hot path). Unknown ids yield a shared
+    /// air-like fallback; no heap allocation on lookup.
+    #[inline]
+    pub fn material_ref(&self, id: core::material::MaterialId) -> &MaterialProps {
+        core::material::material_ref(&self.materials, id)
     }
 
     #[inline]
@@ -151,7 +140,7 @@ impl ChemistryEngine {
                     continue;
                 }
                 let a_mat = cells[i].material;
-                let ma = self.material(a_mat);
+                let ma = self.material_ref(a_mat);
                 // Check neighbors for reactions.
                 for (dx, dy) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
                     let nx = x as i32 + dx;
@@ -193,7 +182,7 @@ impl ChemistryEngine {
                                 if params.combustion {
                                     cells[i].set_flag(cell_flags::BURNING, true);
                                     cells[i].lifetime = cells[i].lifetime.max(1.0);
-                                    apply_heat_release(&mut cells[i], params.enthalpy, cell_mass(&ma), &ma);
+                                    apply_heat_release(&mut cells[i], params.enthalpy, cell_mass(ma), ma);
                                     // Consume fuel slowly.
                                     if cells[i].lifetime > 0.0 {
                                         cells[i].lifetime = (cells[i].lifetime - dtf * 0.5).max(0.0);
@@ -213,8 +202,8 @@ impl ChemistryEngine {
                                     }
                                 } else {
                                     // Oxidation/slow reaction.
-                                    apply_heat_release(&mut cells[i], params.enthalpy, cell_mass(&ma), &ma);
-                                    cells[i].temperature += (params.enthalpy.abs() / (ma.specific_heat * cell_mass(&ma))).min(5.0) * dtf * 0.01;
+                                    apply_heat_release(&mut cells[i], params.enthalpy, cell_mass(ma), ma);
+                                    cells[i].temperature += (params.enthalpy.abs() / (ma.specific_heat * cell_mass(ma))).min(5.0) * dtf * 0.01;
                                 }
                                 break;
                             }

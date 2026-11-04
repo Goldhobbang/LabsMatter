@@ -248,9 +248,10 @@ pub fn dissolution(cells: &mut [Cell], width: u32, height: u32, materials: &[Mat
     react_all(cells, width, height, materials, dt, None);
 }
 
-fn material_or_default(materials: &[MaterialProps], id: core::material::MaterialId) -> MaterialProps {
-    materials
-        .get(id as usize)
-        .cloned()
-        .unwrap_or_else(|| crate::default_material_props(id))
+#[inline]
+fn material_or_default(
+    materials: &[MaterialProps],
+    id: core::material::MaterialId,
+) -> &MaterialProps {
+    core::material::material_ref(materials, id)
 }

@@ -169,9 +169,10 @@ pub fn cell_mass(props: &MaterialProps) -> f32 {
     props.density * (0.01f32 * 0.01f32 * 0.01f32)
 }
 
-fn material_or_default(materials: &[MaterialProps], id: core::material::MaterialId) -> MaterialProps {
-    materials
-        .get(id as usize)
-        .cloned()
-        .unwrap_or_else(|| crate::default_material_props(id))
+#[inline]
+fn material_or_default(
+    materials: &[MaterialProps],
+    id: core::material::MaterialId,
+) -> &MaterialProps {
+    core::material::material_ref(materials, id)
 }

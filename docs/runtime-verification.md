@@ -75,13 +75,26 @@ them from conservation checks.
 3. Sparse scene (a few painted cells): expect < 5 ms/step.
 4. Measure painting separately: 10k `set_cell` calls should be ~2 ms.
 
-Reference numbers (headless Chromium, this machine):
+Reference numbers (release build, 256×256, Node.js V8, WASM step only):
+
+| Workload | avg | p95 | TPS |
+|----------|-----|-----|-----|
+| empty | 3.99 ms | 5.37 ms | 251 |
+| sparse | 4.10 ms | 5.18 ms | 244 |
+| dense mixed | 7.59 ms | 10.43 ms | 132 |
+| full flood (all cells filled) | 17.41 ms | 20.16 ms | 57 |
+
+Profile comparison (dense mixed, before the clone-elimination work):
 
 | Workload | opt-level 3 | opt-level "z" |
 |----------|-------------|---------------|
-| dense 256² | ~21–22 ms (45–47 TPS) | ~41 ms (24 TPS) |
-| empty 256² | ~4.8 ms | ~6.4 ms |
+| dense 256² | 21.6 ms (46 TPS) | 41.1 ms (24 TPS) |
+| empty 256² | 4.8 ms | 6.4 ms |
 | artifact | 212.8 KB | 200.7 KB |
+
+Note: `hud-state`, FPS, and TPS are repainted from the animation frame loop. In
+a headless or throttled environment, read `btn-play[aria-pressed]` (updated
+synchronously) rather than the HUD text when checking play/pause.
 
 ## 8. Long-running stability
 

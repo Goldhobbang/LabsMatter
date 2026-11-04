@@ -60,10 +60,7 @@ pub fn thermal_energy_sum(cells: &[Cell], materials: &[MaterialProps]) -> f32 {
         if cell.is_empty() {
             continue;
         }
-        let m = materials
-            .get(cell.material as usize)
-            .cloned()
-            .unwrap_or_else(|| crate::default_material_props(cell.material));
+        let m = core::material::material_ref(materials, cell.material);
         let mass = m.density * (0.01 * 0.01 * 0.01);
         if mass <= 0.0 || !cell.temperature.is_finite() {
             continue;
@@ -132,10 +129,7 @@ pub fn sanitize(cells: &mut [Cell], materials: &[MaterialProps]) {
         if cell.lifetime < 0.0 {
             cell.lifetime = 0.0;
         }
-        let m = materials
-            .get(cell.material as usize)
-            .cloned()
-            .unwrap_or_else(|| crate::default_material_props(cell.material));
+        let m = core::material::material_ref(materials, cell.material);
         if m.density <= 0.0 {
             cell.material = 0;
             cell.vx = 0.0;

@@ -327,6 +327,17 @@ fn material_table() -> &'static Vec<MaterialProps> {
 struct SimState {
     world: World,
     render: Vec<u8>,
+    /// Reused chemistry engine (registry + material table built once per
+    /// world, not per tick). Dimensions follow the world; callers must
+    /// refresh it after `init`/`load_blob` replace the world.
+    chemistry: realmatter_chemistry::ChemistryEngine,
+}
+
+fn make_chemistry(world: &World) -> realmatter_chemistry::ChemistryEngine {
+    let mut chem =
+        realmatter_chemistry::ChemistryEngine::from_config(world.config());
+    chem.set_materials(material_table().clone());
+    chem
 }
 
 fn global() -> &'static Mutex<Option<SimState>> {
@@ -400,7 +411,8 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
         .map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
     let registry: Arc<dyn MaterialRegistry> = Arc::new(StaticRegistry::builtin());
     let world = World::new(config, registry).map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
-    let mut state = SimState { world, render: Vec::new() };
+    let chemistry = make_chemistry(&world);
+    let mut state = SimState { world, render: Vec::new(), chemistry };
     rebuild_render(&mut state);
     match global().lock() {
         Ok(mut g) => {
@@ -451,11 +463,10 @@ pub fn step(_dt: f64) {
             // 0. Numerical guards first (NaN/Inf sanitize).
             stability::sanitize(cells, materials);
 
-            // 1. Chemistry: registry-driven reactions.
+            // 1. Chemistry: registry-driven reactions (engine reused across
+            // ticks; no per-tick allocation).
             {
-                let mut chem = realmatter_chemistry::ChemistryEngine::from_config(&config);
-                chem.set_materials(materials.clone());
-                let _ = chem.react_masked(cells, dt as f64, active);
+                let _ = state.chemistry.react_masked(cells, dt as f64, active);
             }
 
             // 2. Physics forces.
@@ -685,6 +696,13 @@ pub fn load_blob(bytes: &[u8]) -> bool {
             match engine.load_blob(bytes) {
                 Ok(world) => {
                     state.world = world;
+                    // World dimensions may have changed; refresh the reused
+                    // chemistry engine so its width/height stay in sync.
+                    state.chemistry =
+                        realmatter_chemistry::ChemistryEngine::from_config(
+                            state.world.config(),
+                        );
+                    state.chemistry.set_materials(material_table().clone());
                     rebuild_render(state);
                     true
                 }

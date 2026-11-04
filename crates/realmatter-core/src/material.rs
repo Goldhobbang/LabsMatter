@@ -47,3 +47,35 @@ pub trait MaterialRegistry: Send + Sync {
         })
     }
 }
+
+/// Shared fallback props for unknown material ids. Returned by reference so
+/// hot paths never clone (and never heap-allocate a `String`) on lookup.
+fn fallback_props() -> &'static MaterialProps {
+    use std::sync::OnceLock;
+    static FALLBACK: OnceLock<MaterialProps> = OnceLock::new();
+    FALLBACK.get_or_init(|| MaterialProps {
+        id: u16::MAX,
+        name: String::new(),
+        state: MaterialState::Gas,
+        density: 1.225,
+        specific_heat: 1005.0,
+        thermal_conductivity: 0.026,
+        melting_point: f32::INFINITY,
+        boiling_point: f32::INFINITY,
+        viscosity: 0.0,
+        color: [0.8, 0.9, 1.0, 0.3],
+        flammable: false,
+        ignition_temp: f32::INFINITY,
+    })
+}
+
+/// Look up material props by id without cloning. Unknown ids yield a shared
+/// air-like fallback. Hot simulation loops must use this instead of cloning
+/// `MaterialProps` (which heap-allocates the `name` String per cell).
+#[inline]
+pub fn material_ref(materials: &[MaterialProps], id: MaterialId) -> &MaterialProps {
+    match materials.get(id as usize) {
+        Some(p) => p,
+        None => fallback_props(),
+    }
+}

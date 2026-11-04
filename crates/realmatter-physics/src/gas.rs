@@ -176,9 +176,10 @@ pub fn apply_buoyancy(
     }
 }
 
-fn material_or_default(materials: &[MaterialProps], id: core::material::MaterialId) -> MaterialProps {
-    materials
-        .get(id as usize)
-        .cloned()
-        .unwrap_or_else(|| crate::default_material_props(id))
+#[inline]
+fn material_or_default(
+    materials: &[MaterialProps],
+    id: core::material::MaterialId,
+) -> &MaterialProps {
+    core::material::material_ref(materials, id)
 }

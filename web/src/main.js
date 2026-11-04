@@ -16,6 +16,10 @@ let running = false;
 let stroke = null; // current drag stroke
 let hoveredCell = null;
 let spaceDown = false;
+// Measured simulation throughput (ticks actually executed per second).
+let tickSamples = 0;
+let tickWindowStart = performance.now();
+let measuredTps = 0;
 
 // ---- Boot ----
 async function boot() {
@@ -116,9 +120,19 @@ function startLoop() {
         steps++;
       }
       if (steps >= MAX_STEPS && simAccum >= FIXED) simAccum = 0;
+      tickSamples += steps;
+      const elapsed = (now - tickWindowStart) / 1000;
+      if (elapsed >= 1.0) {
+        measuredTps = tickSamples / elapsed;
+        tickSamples = 0;
+        tickWindowStart = now;
+      }
     } else {
       sim.pause?.();
       simAccum = 0;
+      measuredTps = 0;
+      tickWindowStart = now;
+      tickSamples = 0;
     }
     if (sim.setSpeed) sim.setSpeed(s.speed);
     if (typeof renderer.setOverlay === "function") {
@@ -154,7 +168,7 @@ function updateHud() {
   const d = sim.getDiagnostics ? sim.getDiagnostics() : {};
   const fps = typeof renderer.getFps === "function" ? renderer.getFps() : 0;
   const ws = typeof sim.getWorldSize === "function" ? sim.getWorldSize() : null;
-  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}${renderer.backend ? " ["+renderer.backend+"]" : ""} | TPS ${s.playing ? "60" : "0"}`;
+  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}${renderer.backend ? " ["+renderer.backend+"]" : ""} | TPS ${s.playing ? measuredTps.toFixed(0) : "0"}`;
   $("hud-particles").textContent = `Particles ${(d.particles||0).toLocaleString()}${ws ? ` | ${ws.w}x${ws.h}` : ""}`;
   $("hud-coords").textContent = hoveredCell ? `(${hoveredCell.x}, ${hoveredCell.y})` : "—";
   $("hud-state").textContent = s.playing ? "RUNNING" : "PAUSED";
@@ -241,7 +255,15 @@ function wireToolbar() {
     e.target.value = "";
   });
   $("btn-grid").addEventListener("click", () => setState({ grid: !getState().grid }));
-  $("btn-heat").addEventListener("click", () => setState({ heat: !getState().heat }));
+  $("btn-heat").addEventListener("click", () => {
+    const on = !getState().heat;
+    setState({ heat: on });
+    // The live WASM path streams a color buffer without per-cell
+    // temperatures, so the heat overlay only applies in snapshot mode.
+    if (on && sim && typeof sim.getSnapshot === "function" && !sim.getSnapshot()) {
+      log("info", "Heat overlay: color view only (temperature tint unavailable in live WASM mode).");
+    }
+  });
   $("btn-settings").addEventListener("click", () => $("settings-dialog").showModal());
   $("btn-help").addEventListener("click", () => $("help-dialog").showModal());
 }
