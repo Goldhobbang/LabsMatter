@@ -7,7 +7,8 @@
 
 | Crate | Role | Agent |
 |-------|------|-------|
-| realmatter-core | World, grid, chunks, particles, materials, tick, traits | A2 |
+| realmatter-core | Shared types, math, units, traits, errors | A1 |
+| realmatter-world | Grid, chunks, particles, tick scheduler | A2 |
 | realmatter-physics | Forces, collisions, fluids, gases | A3 |
 | realmatter-chemistry | Reactions, bonds, thermodynamics | A4 |
 | realmatter-renderer | WebGPU rendering, camera | A5 |
@@ -20,15 +21,17 @@
 ```
 realmatter-wasm
   ├─ realmatter-core
-  ├─ realmatter-physics      -> realmatter-core
-  ├─ realmatter-chemistry    -> realmatter-core, realmatter-physics
+  ├─ realmatter-world        -> realmatter-core
+  ├─ realmatter-physics      -> realmatter-core, realmatter-world
+  ├─ realmatter-chemistry    -> realmatter-core, realmatter-world, realmatter-physics
   ├─ realmatter-renderer     -> realmatter-core
   ├─ realmatter-ui           -> realmatter-core, realmatter-renderer
   └─ realmatter-persist      -> realmatter-core
 
 realmatter-core               -> (no realmatter deps; only external crates)
-realmatter-physics            -> realmatter-core
-realmatter-chemistry          -> realmatter-core, realmatter-physics
+realmatter-world              -> realmatter-core
+realmatter-physics            -> realmatter-core, realmatter-world
+realmatter-chemistry          -> realmatter-core, realmatter-world, realmatter-physics
 realmatter-renderer          -> realmatter-core
 realmatter-ui                -> realmatter-core, realmatter-renderer
 realmatter-persist           -> realmatter-core
@@ -39,18 +42,18 @@ realmatter-persist           -> realmatter-core
 1. `realmatter-core` MUST NOT depend on any other realmatter crate. It defines the shared traits and types.
 2. No crate may depend on `realmatter-wasm` (it is the leaf integration crate).
 3. No circular dependencies.
-4. Cross-module communication occurs only through core's public traits (`World`, `MaterialRegistry`, `CommandQueue`, etc.).
-5. Physics and chemistry may read particle data via `World`; they must not mutate particles except through documented mutation APIs.
-6. Renderer and UI are read-only consumers of the render snapshot; they never mutate simulation state.
-7. Persistence reads/writes world state only through the `Persistence` trait and serialization format.
+4. Cross-module communication occurs only through core's public traits.
+5. Physics and chemistry may read cell data via world; they must not mutate except through documented mutation APIs.
+6. Renderer and UI are read-only consumers of render data; they never mutate simulation state.
+7. Persistence reads/writes world state only through the serialization format.
 
 ## External dependencies (approved)
 
 - `wasm-bindgen`, `js-sys`, `web-sys`
 - `wgpu` (WebGPU)
-- `glam` (math) — or `nalgebra`; decision pending A1 ADR
-- `serde` (for material manifests / config only, not hot path)
-- `bincode` or custom binary (serialization) — decision pending
+- `glam` (math)
+- `serde` (manifests/config only, not hot path)
+- `bincode` (serialization)
 - `rayon` (WASM threads) — optional, feature-gated
 - `egui` + `egui-wgpu` + `egui-winit` (UI) — pending A6
 
@@ -58,4 +61,4 @@ realmatter-persist           -> realmatter-core
 
 - `std::collections::HashMap` in simulation hot paths (use BTreeMap or sorted Vec).
 - `println!` / `dbg!` in release hot path.
-- `unsafe` outside audited modules (core memory, SIMD). All `unsafe` requires A1 review.
+- `unsafe` outside audited modules. All `unsafe` requires A1 review.

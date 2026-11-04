@@ -1,7 +1,6 @@
 # A1 Status
 
-- Current task: none
-- State: IDLE
+- Current task: T-001 Initial Architecture Contracts
+- State: WORKING (corrections requested per D-002/R-001)
 - Last updated: 2026-11-04
-- Notes: awaiting assignment
-
+- Notes: Draft delivered. Build broken; dimensionality decision pending.

@@ -1,6 +1,8 @@
 # Assignment — A5
 
-- Task ID: none (pending)
-- State: IDLE — awaiting A1 contracts (T-001)
-- Dependencies: T-001
-- Note: Do not implement until contracts approved.
+- Task ID: T-005 (design)
+- Title: Renderer architecture and GPU/WebGL fallback strategy
+- State: PARTIALLY_BLOCKED (design READY; implementation blocked on contracts)
+- Dependencies: T-002
+- Owned paths: crates/realmatter-renderer/**
+- Directives: D-002, D-004

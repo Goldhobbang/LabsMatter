@@ -1,6 +1,8 @@
 # Assignment — A4
 
-- Task ID: none (pending)
-- State: IDLE — awaiting A1 contracts (T-001)
-- Dependencies: T-001
-- Note: Do not implement until contracts approved.
+- Task ID: T-004 (design)
+- Title: Chemical reaction schema and conservation requirements
+- State: PARTIALLY_BLOCKED (design READY; implementation blocked on contracts)
+- Dependencies: T-002, T-003
+- Owned paths: crates/realmatter-chemistry/**
+- Directives: D-002, D-004

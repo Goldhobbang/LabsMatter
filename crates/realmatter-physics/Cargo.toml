@@ -1,0 +1,10 @@
+[package]
+name = "realmatter-physics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Forces, collisions, fluids, gases. Owned by A3."
+
+[dependencies]
+realmatter-core = { path = "../realmatter-core" }

@@ -1,0 +1,13 @@
+[package]
+name = "realmatter-renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+realmatter-core = { path = "../realmatter-core" }
+wgpu = { workspace = true }
+thiserror = { workspace = true }
+
+[lib]
+crate-type = ["rlib"]

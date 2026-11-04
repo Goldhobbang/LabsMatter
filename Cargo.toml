@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/realmatter-core",
+    "crates/realmatter-physics",
+    "crates/realmatter-chemistry",
+    "crates/realmatter-renderer",
+    "crates/realmatter-ui",
+    "crates/realmatter-persist",
+    "crates/realmatter-wasm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["REALMATTER Contributors"]
+repository = "https://example.invalid/realmatter"
+
+[workspace.dependencies]
+glam = "0.29"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = "0.3"
+wgpu = "22"
+bincode = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

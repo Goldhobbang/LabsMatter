@@ -1,0 +1,17 @@
+# REALMATTER cargo configuration
+# Owned by A1 (Systems Architect)
+
+[net]
+# Allow network for dependency fetching during development.
+# Runtime operation remains fully offline.
+offline = false
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1

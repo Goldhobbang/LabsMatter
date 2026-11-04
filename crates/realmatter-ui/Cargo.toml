@@ -1,0 +1,13 @@
+[package]
+name = "realmatter-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+realmatter-core = { path = "../realmatter-core" }
+realmatter-renderer = { path = "../realmatter-renderer" }
+thiserror = { workspace = true }
+
+[lib]
+crate-type = ["rlib"]

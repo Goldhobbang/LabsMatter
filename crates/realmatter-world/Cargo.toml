@@ -1,0 +1,11 @@
+[package]
+name = "realmatter-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "World grid, chunks, particles, tick scheduler. Owned by A2."
+
+[dependencies]
+realmatter-core = { path = "../realmatter-core" }
+serde.workspace = true

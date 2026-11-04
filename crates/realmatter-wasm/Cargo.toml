@@ -1,0 +1,17 @@
+[package]
+name = "realmatter-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "WASM integration entrypoint (scaffold owned by A1; internal logic by respective agents)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+realmatter-core = { path = "../realmatter-core" }
+realmatter-world = { path = "../realmatter-world" }
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+web-sys.workspace = true

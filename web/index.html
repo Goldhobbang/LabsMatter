@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0d12" />
+  <title>REALMATTER — Sandbox</title>
+  <link rel="stylesheet" href="./styles/main.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='%234fc3f7'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <a class="skip-link" href="#viewport">Skip to simulation viewport</a>
+
+  <div id="app" class="app" data-state="loading">
+    <!-- Top toolbar -->
+    <header class="toolbar" role="toolbar" aria-label="Simulation controls">
+      <div class="toolbar-group">
+        <button id="btn-play" class="btn btn-primary" type="button" aria-pressed="false" aria-label="Play / Pause (Space)">
+          <span class="icon" aria-hidden="true">▶</span><span class="label">Play</span>
+        </button>
+        <button id="btn-step" class="btn" type="button" aria-label="Step one tick (.)">
+          <span class="icon" aria-hidden="true">⏭</span><span class="label">Step</span>
+        </button>
+        <button id="btn-reset" class="btn btn-danger" type="button" aria-label="Reset world (R)">
+          <span class="icon" aria-hidden="true">↺</span><span class="label">Reset</span>
+        </button>
+      </div>
+
+      <div class="toolbar-group toolbar-group--grow">
+        <label class="slider-label" for="speed">Speed
+          <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1" aria-valuemin="0.25" aria-valuemax="4" aria-valuenow="1" />
+          <span id="speed-value" class="slider-value">1.00×</span>
+        </label>
+      </div>
+
+      <div class="toolbar-group">
+        <button id="btn-grid" class="btn btn-toggle" type="button" aria-pressed="true" aria-label="Toggle grid overlay (G)">Grid</button>
+        <button id="btn-heat" class="btn btn-toggle" type="button" aria-pressed="false" aria-label="Toggle heat overlay (H)">Heat</button>
+        <button id="btn-settings" class="btn" type="button" aria-label="Open settings (,)" aria-haspopup="dialog">⚙</button>
+        <button id="btn-help" class="btn" type="button" aria-label="Keyboard shortcuts (?)" aria-haspopup="dialog">?</button>
+      </div>
+    </header>
+
+    <!-- Main layout -->
+    <main class="layout">
+      <!-- Left: materials + tools -->
+      <aside class="panel panel--left" aria-label="Materials and tools">
+        <section class="panel-section" aria-labelledby="tools-heading">
+          <h2 id="tools-heading" class="panel-title">Tools</h2>
+          <div class="tool-grid" role="radiogroup" aria-label="Active tool">
+            <button class="tool-btn is-active" data-tool="brush" type="button" role="radio" aria-checked="true" aria-label="Brush (B)">🖌<span>Brush</span></button>
+            <button class="tool-btn" data-tool="eraser" type="button" role="radio" aria-checked="false" aria-label="Eraser (E)">🧹<span>Eraser</span></button>
+            <button class="tool-btn" data-tool="line" type="button" role="radio" aria-checked="false" aria-label="Line (L)">╱<span>Line</span></button>
+            <button class="tool-btn" data-tool="rect" type="button" role="radio" aria-checked="false" aria-label="Rectangle (R)">▭<span>Rect</span></button>
+            <button class="tool-btn" data-tool="fill" type="button" role="radio" aria-checked="false" aria-label="Fill (F)">🪣<span>Fill</span></button>
+          </div>
+          <label class="slider-label" for="brush-size">Brush size
+            <input id="brush-size" type="range" min="1" max="12" step="1" value="3" />
+            <span id="brush-size-value" class="slider-value">3</span>
+          </label>
+        </section>
+
+        <section class="panel-section panel-section--grow" aria-labelledby="materials-heading">
+          <h2 id="materials-heading" class="panel-title">Materials</h2>
+          <div class="search-box">
+            <input id="material-search" type="search" placeholder="Search materials…" aria-label="Search materials" autocomplete="off" />
+          </div>
+          <div id="material-categories" class="chip-row" role="tablist" aria-label="Material categories"></div>
+          <div id="material-list" class="material-list" role="listbox" aria-label="Material palette" tabindex="0"></div>
+        </section>
+      </aside>
+
+      <!-- Center: viewport -->
+      <section class="viewport-wrap" aria-label="Simulation viewport">
+        <canvas id="viewport" tabindex="0" aria-label="Simulation canvas. Use arrow keys to pan, +/- to zoom."></canvas>
+        <div class="viewport-hud" aria-hidden="true">
+          <span id="hud-fps">FPS —</span>
+          <span id="hud-particles">Particles —</span>
+          <span id="hud-coords">—</span>
+          <span id="hud-state">PAUSED</span>
+        </div>
+        <div id="viewport-overlay" class="viewport-overlay" hidden>
+          <div class="overlay-card">
+            <h3 id="overlay-title">Loading…</h3>
+            <p id="overlay-message">Initializing simulation.</p>
+            <div class="overlay-actions">
+              <button id="overlay-retry" class="btn btn-primary" type="button" hidden>Retry</button>
+              <button id="overlay-dismiss" class="btn" type="button" hidden>Dismiss</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: inspector + diagnostics -->
+      <aside class="panel panel--right" aria-label="Inspector and diagnostics">
+        <section class="panel-section" aria-labelledby="inspector-heading">
+          <h2 id="inspector-heading" class="panel-title">Material Inspector</h2>
+          <div id="inspector" class="inspector">
+            <p class="muted">Hover or select a material to inspect.</p>
+          </div>
+        </section>
+
+        <section class="panel-section" aria-labelledby="diagnostics-heading">
+          <h2 id="diagnostics-heading" class="panel-title">Diagnostics</h2>
+          <dl id="diagnostics" class="diag-list">
+            <div><dt>FPS</dt><dd id="d-fps">—</dd></div>
+            <div><dt>Tick</dt><dd id="d-tick">— ms</dd></div>
+            <div><dt>Render</dt><dd id="d-render">— ms</dd></div>
+            <div><dt>Particles</dt><dd id="d-particles">—</dd></div>
+            <div><dt>Chunks</dt><dd id="d-chunks">—</dd></div>
+            <div><dt>Memory</dt><dd id="d-memory">— MB</dd></div>
+            <div><dt>State</dt><dd id="d-state">—</dd></div>
+          </dl>
+          <div id="diag-log" class="diag-log" role="log" aria-live="polite" aria-label="Diagnostic log"></div>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="statusbar" role="status" aria-live="polite">
+      <span id="status-text">Ready.</span>
+      <span class="statusbar-spacer"></span>
+      <span id="status-coords">—</span>
+    </footer>
+  </div>
+
+  <!-- Settings dialog -->
+  <dialog id="settings-dialog" class="dialog" aria-labelledby="settings-title">
+    <form method="dialog" class="dialog-body">
+      <h2 id="settings-title">Settings</h2>
+      <label>Grid overlay <input id="set-grid" type="checkbox" checked /></label>
+      <label>Heat overlay <input id="set-heat" type="checkbox" /></label>
+      <label>Show FPS <input id="set-fps" type="checkbox" checked /></label>
+      <label>Reduced motion <input id="set-reduced" type="checkbox" /></label>
+      <label>High contrast <input id="set-contrast" type="checkbox" /></label>
+      <div class="dialog-actions">
+        <button class="btn" value="cancel">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Help dialog -->
+  <dialog id="help-dialog" class="dialog" aria-labelledby="help-title">
+    <form method="dialog" class="dialog-body">
+      <h2 id="help-title">Keyboard Shortcuts</h2>
+      <table class="shortcuts">
+        <tr><td>Space</td><td>Play / Pause</td></tr>
+        <tr><td>.</td><td>Step one tick</td></tr>
+        <tr><td>R</td><td>Reset world</td></tr>
+        <tr><td>B / E / L / Q / F</td><td>Brush / Eraser / Line / Rect / Fill</td></tr>
+        <tr><td>Ctrl+R</td><td>Reset world</td></tr>
+        <tr><td>G / H</td><td>Grid / Heat overlay</td></tr>
+        <tr><td>Arrows</td><td>Pan viewport</td></tr>
+        <tr><td>+ / -</td><td>Zoom in / out</td></tr>
+        <tr><td>0</td><td>Reset view</td></tr>
+        <tr><td>Esc</td><td>Cancel current stroke</td></tr>
+        <tr><td>?</td><td>This help</td></tr>
+      </table>
+      <div class="dialog-actions"><button class="btn" value="cancel">Close</button></div>
+    </form>
+  </dialog>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

@@ -16,14 +16,19 @@ REALMATTER is a high-performance, browser-based, offline physics and chemistry s
 | ID | Role | Owns |
 |----|------|------|
 | A0 | Chief Supervisor | `/communication/**` (coordination only; no feature code) |
-| A1 | Architecture & Contracts | `/src/core/**`, `/src/contracts/**`, shared types, build config |
-| A2 | Physics Engine | `/src/physics/**` |
-| A3 | Chemistry & Reactions | `/src/chemistry/**` |
-| A4 | Rendering & Graphics | `/src/render/**` |
-| A5 | UI & Interaction | `/src/ui/**` |
-| A6 | Data, Persistence & Offline | `/src/data/**`, `/src/offline/**` |
-| A7 | Performance & Optimization | `/src/perf/**`, benchmarks, profiling harness |
+| A1 | Architecture & Contracts | `docs/**`, `Cargo.toml` (workspace), `.cargo/**`, `rust-toolchain.toml`, `crates/realmatter-wasm/**` (scaffold) |
+| A2 | Core + World (shared types, traits, grid, chunks, particles, tick) | `crates/realmatter-core/**`, `crates/realmatter-world/**` |
+| A3 | Physics Engine | `crates/realmatter-physics/**` |
+| A4 | Chemistry & Reactions | `crates/realmatter-chemistry/**` |
+| A5 | Rendering & Graphics + Web Shell | `crates/realmatter-renderer/**`, `web/**` |
+| A6 | UI & Interaction (Rust crate) | `crates/realmatter-ui/**` |
+| A7 | Persistence & Serialization | `crates/realmatter-persist/**` |
 | A8 | Verification & Review | `/tests/**`, `/benchmarks/**` (read-only elsewhere) |
+
+Notes:
+- Performance is a cross-cutting concern: budgets defined by A1 (docs/performance-budgets.md), verified by A8.
+- A1 may scaffold stubs in other crates only with owner consent; owners take over implementation.
+- Ownership resolution (A0, 2026-11-04): core crate owned by A2 per module-dependency-graph; A1 owns contracts/docs/wasm scaffold. lib.rs "Owned by A1" comment is a draft error to be corrected by A2.
 
 ## 3. Mandatory Rules
 
