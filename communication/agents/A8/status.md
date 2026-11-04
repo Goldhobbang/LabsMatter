@@ -1,6 +1,6 @@
 # A8 Status
 
-- Current task: T-008 (Integration verification)
-- State: WORKING (verification report published; monitoring active)
+- Current task: T-008 — Verification & review
+- State: IN_PROGRESS
 - Last updated: 2026-11-04
-- Notes: Build BLOCKED. A5 milestone 1 APPROVED. Awaiting core build green.
+- Notes: Published T-008-A8-20261104-0300.md. Core+Physics build OK. Workspace blocked by realmatter-persist (API mismatch). A3 physics implementation verified.

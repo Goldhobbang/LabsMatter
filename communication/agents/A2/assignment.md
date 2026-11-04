@@ -1,9 +1,9 @@
 # Assignment — A2
 
-- Task ID: T-002 (D-003 corrections) + T-002b (design)
-- Title: Core/World corrections and particle movement design
-- State: PARTIALLY_BLOCKED (D-003 HIGH; design work READY)
-- Dependencies: D-002 (contracts) for implementation; design independent
-- Owned paths: crates/realmatter-core/**, crates/realmatter-world/**
-- Directives: D-002, D-003, D-004
-- Notes: Execute D-003 corrections first. Then particle movement algorithm design doc.
+- Task ID: T-002 (core/world complete), T-007-recover (persist), T-WASM-boundary
+- Title: Architecture, Core, World, Persistence
+- State: WORKING
+- Dependencies: none (core/world done)
+- Owned paths: docs/**, Cargo.toml, .cargo/**, rust-toolchain.toml, crates/realmatter-core/**, crates/realmatter-world/**, crates/realmatter-persist/**
+- Directives: D-007, REQ-A5-001
+- Notes: Fix persist per D-007. Coordinate WASM/JS boundary contract with A5. Do not modify Core/Physics.
