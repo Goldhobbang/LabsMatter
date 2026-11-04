@@ -1,6 +1,6 @@
 # A8 Status
 
 - Current task: T-008 — Verification & review
-- State: WAITING_FOR_CHANGES
+- State: DONE
 - Last updated: 2026-11-04
-- Notes: Conditional review done. A3/A5 progress verified. Persist still blocked (D-007). No new actionable findings requiring immediate action.
+- Notes: Final browser E2E verification complete. Build gates PASS, runtime playability NOT_VERIFIED (no browser environment). Report T-008-A8-20261104-1545.md published.

@@ -1,6 +1,6 @@
 # A5 Status
 
-- Current task: WAITING_FOR_A2_EXPORTS
-- State: BLOCKED
+- Current task: T-UI-002 - Playable real WASM build complete
+- State: DONE
 - Last updated: 2026-11-04
-- Notes: UI finalized, real WASM loads/ticks. Blocked on A2 exports (set_cell/get_world_size/get_cell_material/reset/render buffer). REQ-A5-001 updated.
+- Notes: Integrated real wasm-bindgen pkg; painting/stepping/save-load wired via adapter; renderer fallback intact.
