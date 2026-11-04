@@ -62,15 +62,16 @@ impl PhysicsEngine {
     }
 
     pub fn from_config(config: &WorldConfig) -> Self {
-        Self::new([config.width as i32, config.height as i32, 1])
+        Self::new(config.width, config.height)
     }
 
     pub fn set_materials(&mut self, materials: Vec<MaterialProps>) {
         let max_id = materials.iter().map(|m| m.id as usize).max().unwrap_or(0);
         let mut table = vec![default_material_props(0); max_id + 1];
         for m in materials {
-            if (m.id as usize) < table.len() {
-                table[m.id as usize] = m;
+            let id = m.id as usize;
+            if id < table.len() {
+                table[id] = m;
             }
         }
         self.materials = table;

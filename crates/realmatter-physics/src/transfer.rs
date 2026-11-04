@@ -2,8 +2,8 @@
 
 use crate::core;
 use crate::core::cell::Cell;
+use crate::core::cell::cell_flags;
 use crate::core::material::MaterialProps;
-use crate::reaction;
 
 pub fn transfer_energy(cells: &mut [Cell], width: u32, height: u32, materials: &[MaterialProps], dt: f32) -> f32 {
     let w = width as usize;
