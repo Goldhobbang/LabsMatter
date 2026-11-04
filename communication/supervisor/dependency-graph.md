@@ -12,7 +12,7 @@
 | T-002 | A2 | T-001 corrected | T-001 | crates/realmatter-core/**, crates/realmatter-world/** | PARTIALLY_BLOCKED | core+world build clean; ChunkCoord consolidated; ownership comment fixed |
 | T-002b | A2 | none (design) | none | crates/realmatter-core/** (docs) | READY | particle movement design doc published |
 | T-003 | A3 | T-001, T-002 | T-001, T-002 | crates/realmatter-physics/** | PARTIALLY_BLOCKED | thermal/fluid/pressure spec doc; impl after contracts |
-| T-003b | A3 | none (design) | none | crates/realmatter-physics/** (docs) | READY | thermal/fluid/pressure spec doc published |
+| T-003 | A3 | T-001, T-002 (approved) | T-001, T-002 | crates/realmatter-physics/** | DONE (owned scope) | PhysicsModule/ChemistryModule implemented; builds/tests pass in isolation |
 | T-004 | A4 | T-001, T-002, T-003 | T-001, T-002, T-003 | crates/realmatter-chemistry/** | PARTIALLY_BLOCKED | reaction schema + conservation doc |
 | T-004b | A4 | none (design) | none | crates/realmatter-chemistry/** (docs) | READY | reaction schema doc published |
 | T-005 | A5 | T-001, T-002 | T-001, T-002 | crates/realmatter-renderer/** | PARTIALLY_BLOCKED | renderer arch + fallback doc |
