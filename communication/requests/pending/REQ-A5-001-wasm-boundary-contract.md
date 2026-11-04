@@ -13,17 +13,29 @@ simulation/renderer only through adapter interfaces (`SimulationAdapter`,
 `RendererAdapter`). The shell currently uses in-browser mock implementations so it
 is functional and demoable without the WASM core.
 
-To replace the mocks with the real core, A5 needs a published, versioned contract
-for the WASM/JS boundary covering:
+Real WASM module loads and executes ticks (`init`, `step`, `render_buffer_ptr/len`)
+but lacks interaction/read APIs. A5 needs the following exports (minimal viable):
 
-1. Command queue schema (UI → core): paint, line, rect, fill, spawn, remove,
-   set material, pause/resume, speed, reset, with coordinate systems and units.
-2. Render snapshot schema (core → renderer/UI): grid dimensions, material ids,
-   temperature/velocity fields, dirty regions, tick counter.
-3. Camera/viewport contract: world-to-screen transform, zoom limits, pan.
-4. Lifecycle: init(config), ready, tick(dt), shutdown, error reporting.
-5. Diagnostics payload: fps, tick ms, render ms, particle count, chunk count,
-   memory.
+### Required exports (wasm-bindgen, camelCase or snake_case acceptable)
+1. `init(width: u32, height: u32) -> Result<(), JsValue>` (exists)
+2. `step(dt: f64)` (exists)
+3. `set_cell(x: i32, y: i32, material: u16) -> bool` — place/erase (material 0 = empty)
+4. `get_cell_material(x: i32, y: i32) -> u16`
+5. `get_world_size() -> [u32;2]` or `world_width()/world_height()`
+6. `reset()` or `clear() -> bool`
+7. `render_buffer_ptr() -> *const u8`, `render_buffer_len() -> usize` (exists)
+
+### Memory/contract notes
+- Coordinates are world cell coordinates (integer). Y-up per architecture.
+- `material` uses core MaterialId (u16). 0 = empty/void.
+- Return `bool` for mutators indicating success.
+- Buffer format: if exposed, document layout or provide getters. Prefer getters
+  first to avoid unsafe memory layout assumptions.
+- Ownership: WASM owns memory; JS reads via views.
+
+### Also needed (for UX)
+- Diagnostics: particle count/chunk count accessible or derivable.
+- Error reporting via `JsValue` on init failures.
 
 ## Why
 

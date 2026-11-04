@@ -1,6 +1,6 @@
 # A5 Status
 
-- Current task: T-005 (Renderer architecture) — design in progress; UI shell APPROVED
-- State: WORKING (independent work per D-004)
+- Current task: WAITING_FOR_A2_EXPORTS
+- State: BLOCKED
 - Last updated: 2026-11-04
-- Notes: Published renderer architecture spec (crates/realmatter-renderer/docs/renderer-architecture.md). Web UI remains functional on mock adapters; implementation blocked on A1 WASM boundary + core contracts.
+- Notes: UI finalized, real WASM loads/ticks. Blocked on A2 exports (set_cell/get_world_size/get_cell_material/reset/render buffer). REQ-A5-001 updated.
