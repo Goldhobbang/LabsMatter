@@ -8,8 +8,8 @@ use crate::kinetics::rate;
 use crate::registry::ReactionRegistry;
 use crate::thermo::{apply_heat_release, cell_mass};
 use crate::core::traits::{ChemistryModule, SimulationModule};
+use crate::core::world_config::WorldConfig;
 use crate::core::units::Time;
-use crate::core::world::WorldConfig;
 use crate::core::error::Result;
 
 /// Chemistry engine implementing ChemistryModule.
@@ -43,7 +43,7 @@ impl ChemistryEngine {
         let mut table = vec![
             MaterialProps {
                 id: 0,
-                name: "air",
+                name: "air".to_string(),
                 state: core::material::MaterialState::Gas,
                 density: 1.225,
                 specific_heat: 1005.0,
@@ -73,7 +73,7 @@ impl ChemistryEngine {
             .unwrap_or_else(|| {
                 MaterialProps {
                     id,
-                    name: "unknown",
+                    name: "unknown".to_string(),
                     state: core::material::MaterialState::Gas,
                     density: 1.225,
                     specific_heat: 1005.0,

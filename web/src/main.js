@@ -1,7 +1,8 @@
 import { MATERIALS, CATEGORIES, searchMaterials, findMaterial } from "./materials.js";
 import { getState, setState, subscribe, resetState } from "./state/store.js";
 import { MockSimulation, GRID_W, GRID_H } from "./adapters/simulation.js";
-import { Canvas2DRenderer } from "./adapters/renderer.js";
+import { WasmDirectAdapter } from "./adapters/wasm-direct.js";
+import { createRenderer, getPreferredBackend } from "./renderers/renderer-factory.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -10,6 +11,7 @@ let renderer = null;
 let canvas = null;
 let rafId = null;
 let lastFrame = performance.now();
+let simAccum = 0;
 let running = false;
 let stroke = null; // current drag stroke
 let hoveredCell = null;
@@ -19,23 +21,43 @@ let spaceDown = false;
 async function boot() {
   setAppState("loading", "Initializing simulation…");
   canvas = $("viewport");
-  renderer = new Canvas2DRenderer();
-  renderer.attach(canvas);
-
-  sim = new MockSimulation();
   try {
-    await sim.init();
+    renderer = await createRenderer(canvas);
+    log("info", `Renderer: ${renderer.backend || getPreferredBackend()}`);
   } catch (e) {
-    setAppState("error", "Failed to initialize simulation: " + (e?.message || e));
-    log("error", "init failed: " + (e?.message || e));
-    return;
+    const { Canvas2DRenderer } = await import("./adapters/renderer.js");
+    renderer = new Canvas2DRenderer();
+    renderer.attach(canvas);
+    log("warn", "Using Canvas2D fallback");
   }
 
-  // wire resize
+  // Use real WASM
+  try {
+    const wd = new WasmDirectAdapter();
+    await wd.init();
+    sim = wd;
+    log("info", "Using WASM simulation (real module)");
+  } catch (e) {
+    log("warn", "WASM init failed, using mock fallback: " + (e?.message||e));
+    sim = new MockSimulation();
+    try {
+      await sim.init();
+    } catch (e2) {
+      setAppState("error", "Failed to initialize simulation: " + (e2?.message || e2));
+      log("error", "init failed: " + (e2?.message || e2));
+      return;
+    }
+  }
+
+  // wire resize + visibility
   const ro = new ResizeObserver(() => {
-    renderer.resize(canvas.clientWidth, canvas.clientHeight);
+    try {
+      if (typeof renderer.resize === "function") renderer.resize(canvas.clientWidth, canvas.clientHeight);
+      else if (typeof renderer.attach === "function") renderer.attach(canvas);
+    } catch(e) { log("warn", "resize error: " + e.message); }
   });
   ro.observe(canvas.parentElement);
+  document.addEventListener('visibilitychange', () => {});
 
   // build material UI
   buildCategories();
@@ -51,7 +73,7 @@ async function boot() {
   onStateChange(getState());
 
   setAppState("ready", "");
-  log("info", "REALMATTER UI ready (mock simulation).");
+  log("info", "REALMATTER UI ready.");
   startLoop();
 }
 
@@ -77,16 +99,50 @@ function setAppState(state, msg) {
 // ---- Render loop ----
 function startLoop() {
   lastFrame = performance.now();
+  const FIXED = 1/60;
+  const MAX_STEPS = 8;
   const loop = (now) => {
-    const dt = Math.min(0.1, (now - lastFrame) / 1000);
+    const frameDt = Math.min(0.25, (now - lastFrame) / 1000);
     lastFrame = now;
     const s = getState();
-    if (s.playing) sim.resume(); else sim.pause();
-    sim.setSpeed(s.speed);
-    sim.tick(dt);
-    renderer.setOverlay("grid", s.grid);
-    renderer.setOverlay("heat", s.heat);
-    renderer.render(sim.getSnapshot(), s.camera, {});
+    if (s.playing) {
+      sim.resume?.();
+      simAccum += frameDt * (s.speed || 1);
+      let steps = 0;
+      while (simAccum >= FIXED && steps < MAX_STEPS) {
+        if (typeof sim.tick === "function") sim.tick(FIXED);
+        else if (typeof sim.step === "function") sim.step(FIXED);
+        simAccum -= FIXED;
+        steps++;
+      }
+      if (steps >= MAX_STEPS && simAccum >= FIXED) simAccum = 0;
+    } else {
+      sim.pause?.();
+      simAccum = 0;
+    }
+    if (sim.setSpeed) sim.setSpeed(s.speed);
+    if (typeof renderer.setOverlay === "function") {
+      renderer.setOverlay("grid", s.grid);
+      renderer.setOverlay("heat", s.heat);
+    }
+    try {
+      const snap = typeof sim.getSnapshot === "function" ? sim.getSnapshot() : null;
+      if (snap) {
+        renderer.render(snap, s.camera, {});
+      } else if (typeof sim.readRenderBuffer === "function") {
+        const buf = sim.readRenderBuffer();
+        const size = typeof sim.getWorldSize === "function" ? sim.getWorldSize() : null;
+        if (buf && size && size.w > 0 && size.h > 0) {
+          renderer.renderRGBA(buf, size.w, size.h, s.camera, { heat: s.heat });
+        } else {
+          renderer.render(null, s.camera, {});
+        }
+      } else {
+        renderer.render(null, s.camera, {});
+      }
+    } catch(e) {
+      log("warn", "render error: " + (e?.message||e));
+    }
     updateHud();
     rafId = requestAnimationFrame(loop);
   };
@@ -95,19 +151,20 @@ function startLoop() {
 
 function updateHud() {
   const s = getState();
-  const d = sim.getDiagnostics();
-  const fps = renderer.getFps();
-  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}`;
-  $("hud-particles").textContent = `Particles ${d.particles.toLocaleString()}`;
+  const d = sim.getDiagnostics ? sim.getDiagnostics() : {};
+  const fps = typeof renderer.getFps === "function" ? renderer.getFps() : 0;
+  const ws = typeof sim.getWorldSize === "function" ? sim.getWorldSize() : null;
+  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}${renderer.backend ? " ["+renderer.backend+"]" : ""} | TPS ${s.playing ? "60" : "0"}`;
+  $("hud-particles").textContent = `Particles ${(d.particles||0).toLocaleString()}${ws ? ` | ${ws.w}x${ws.h}` : ""}`;
   $("hud-coords").textContent = hoveredCell ? `(${hoveredCell.x}, ${hoveredCell.y})` : "—";
   $("hud-state").textContent = s.playing ? "RUNNING" : "PAUSED";
   $("d-fps").textContent = fps.toFixed(1);
-  $("d-tick").textContent = d.tickMs.toFixed(2) + " ms";
-  $("d-render").textContent = renderer.getRenderMs().toFixed(2) + " ms";
-  $("d-particles").textContent = d.particles.toLocaleString();
-  $("d-chunks").textContent = d.chunks.toLocaleString();
-  $("d-memory").textContent = d.memoryMB.toFixed(2) + " MB";
-  $("d-state").textContent = d.state;
+  $("d-tick").textContent = (d.tickMs||0).toFixed(2) + " ms";
+  $("d-render").textContent = (typeof renderer.getRenderMs==="function"?renderer.getRenderMs():0).toFixed(2) + " ms";
+  $("d-particles").textContent = (d.particles||0).toLocaleString();
+  $("d-chunks").textContent = (d.chunks||0).toLocaleString();
+  $("d-memory").textContent = (d.memoryMB||0).toFixed(2) + " MB";
+  $("d-state").textContent = d.state || (s.playing?"RUNNING":"PAUSED");
   $("status-coords").textContent = hoveredCell ? `cell ${hoveredCell.x}, ${hoveredCell.y}` : "";
 }
 
@@ -142,17 +199,46 @@ function wireToolbar() {
     log("info", s.playing ? "Paused." : "Resumed.");
   });
   $("btn-step").addEventListener("click", () => {
-    sim.step();
+    if (typeof sim.step === "function") sim.step();
+    else if (typeof sim.tick === "function") sim.tick();
     log("info", "Stepped one tick.");
   });
   $("btn-reset").addEventListener("click", () => {
     if (!confirm("Reset the world?")) return;
-    sim.reset();
+    if (sim && sim.canReset && !sim.canReset()) log("warn", "Reset unavailable");
+    try { if (sim && sim.reset) { sim.reset(); log("info", "World reset"); } } catch(e) { log("error", "reset failed: " + e.message); }
     resetState();
-    log("warn", "World reset.");
   });
   $("speed").addEventListener("input", (e) => {
     setState({ speed: parseFloat(e.target.value) });
+  });
+  $("btn-save").addEventListener("click", () => {
+    try {
+      if (!sim.saveBlob || !sim.canSave || !sim.canSave()) { log("warn", "Save unavailable: WASM save_blob missing"); return; }
+      const blob = sim.saveBlob();
+      if (!blob || blob.length === 0) { log("warn", "Save produced empty blob"); return; }
+      const url = URL.createObjectURL(new Blob([blob], { type: "application/octet-stream" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "realmatter-world.rmt";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      log("info", `World saved (${blob.length} bytes)`);
+    } catch (e) { log("error", "save failed: " + (e?.message || e)); }
+  });
+  $("btn-load").addEventListener("click", () => { $("file-load").click(); });
+  $("file-load").addEventListener("change", async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    try {
+      if (!sim.loadBlob || !sim.canSave || !sim.canSave()) { log("warn", "Load unavailable: WASM load_blob missing"); return; }
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const ok = sim.loadBlob(bytes);
+      log(ok ? "info" : "error", ok ? `World loaded (${bytes.length} bytes)` : "Load failed: invalid save blob");
+    } catch (err) { log("error", "load failed: " + (err?.message || err)); }
+    e.target.value = "";
   });
   $("btn-grid").addEventListener("click", () => setState({ grid: !getState().grid }));
   $("btn-heat").addEventListener("click", () => setState({ heat: !getState().heat }));
@@ -250,9 +336,12 @@ function updateInspector(materialId) {
 function cellFromEvent(e) {
   const rect = canvas.getBoundingClientRect();
   const s = getState();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const cell = 4 * s.camera.zoom;
-  const x = Math.floor((e.clientX - rect.left - s.camera.x) / cell);
-  const y = Math.floor((e.clientY - rect.top - s.camera.y) / cell);
+  const cx = (e.clientX - rect.left) * (canvas.width / (rect.width * dpr));
+  const cy = (e.clientY - rect.top) * (canvas.height / (rect.height * dpr));
+  const x = Math.floor((cx / dpr - s.camera.x) / cell);
+  const y = Math.floor((cy / dpr - s.camera.y) / cell);
   return { x, y };
 }
 
@@ -268,11 +357,14 @@ function wireViewport() {
     const c = cellFromEvent(e);
     const s = getState();
     if (s.tool === "brush" || s.tool === "eraser") {
+      if (sim.canPaint && !sim.canPaint()) { log("warn", "Painting unavailable: missing WASM export (set_cell)"); return; }
       stroke = { type: "paint", points: [c], material: s.tool === "eraser" ? 0 : s.materialId, size: s.brushSize };
       sim.applyCommand({ type: "paint", x: c.x, y: c.y, material: stroke.material, size: stroke.size });
     } else if (s.tool === "line" || s.tool === "rect") {
+      if (sim.canPaint && !sim.canPaint()) { log("warn", "Shape tools unavailable: missing WASM export"); return; }
       stroke = { type: s.tool, start: c, current: c, material: s.materialId, size: s.brushSize };
     } else if (s.tool === "fill") {
+      if (sim.canPaint && !sim.canPaint()) { log("warn", "Fill unavailable: missing WASM export"); return; }
       sim.applyCommand({ type: "fill", x: c.x, y: c.y, material: s.materialId });
     }
   });
@@ -361,7 +453,7 @@ function wireShortcuts() {
         setState({ playing: !s.playing });
         break;
       case ".":
-        sim.step(); log("info", "Stepped one tick."); break;
+        if (typeof sim.step === "function") sim.step(); else if (typeof sim.tick === "function") sim.tick(); log("info", "Stepped one tick."); break;
       case "r": case "R":
         if (e.shiftKey) { /* rect tool handled below? no */ }
         if (!e.ctrlKey && !e.metaKey) { /* reset requires confirm; use Shift+R? */ }

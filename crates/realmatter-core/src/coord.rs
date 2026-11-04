@@ -1,48 +1,59 @@
-//! Coordinate types.
+//! 2D coordinate types (approved 2D grid model, ADR-0003).
+//!
+//! Canonical definitions of [`CellCoord`] and [`ChunkCoord`]. There is exactly
+//! one definition of each (D-002 item 4 / D-003 item 3).
 
 use serde::{Deserialize, Serialize};
 
-/// Cell coordinate (world-absolute, in cells).
+/// Default chunk edge length in cells (see `WorldConfig::chunk_size`).
+pub const CHUNK_SIZE: i32 = 32;
+
+/// Cell coordinate (world-absolute, in cells). 2D: x right, y up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CellCoord {
     pub x: i32,
     pub y: i32,
-    pub z: i32,
 }
-
-/// Chunk coordinate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct ChunkCoord {
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-}
-
-pub const CHUNK_SIZE: i32 = 16;
 
 impl CellCoord {
-    pub fn to_chunk(self) -> ChunkCoord {
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+
+    /// Chunk containing this cell for the given chunk size.
+    pub fn to_chunk(self, chunk_size: i32) -> ChunkCoord {
         ChunkCoord {
-            x: self.x.div_euclid(CHUNK_SIZE),
-            y: self.y.div_euclid(CHUNK_SIZE),
-            z: self.z.div_euclid(CHUNK_SIZE),
+            x: self.x.div_euclid(chunk_size),
+            y: self.y.div_euclid(chunk_size),
         }
     }
-    pub fn to_local(self) -> (u8, u8, u8) {
+
+    /// Local position within its chunk, each in `[0, chunk_size)`.
+    pub fn to_local(self, chunk_size: i32) -> (i32, i32) {
         (
-            self.x.rem_euclid(CHUNK_SIZE) as u8,
-            self.y.rem_euclid(CHUNK_SIZE) as u8,
-            self.z.rem_euclid(CHUNK_SIZE) as u8,
+            self.x.rem_euclid(chunk_size),
+            self.y.rem_euclid(chunk_size),
         )
     }
 }
 
+/// Chunk coordinate (in chunks). 2D.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ChunkCoord {
+    pub x: i32,
+    pub y: i32,
+}
+
 impl ChunkCoord {
-    pub fn origin_cell(self) -> CellCoord {
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+
+    /// World-absolute cell coordinate of this chunk's origin (min corner).
+    pub fn origin_cell(self, chunk_size: i32) -> CellCoord {
         CellCoord {
-            x: self.x * CHUNK_SIZE,
-            y: self.y * CHUNK_SIZE,
-            z: self.z * CHUNK_SIZE,
+            x: self.x * chunk_size,
+            y: self.y * chunk_size,
         }
     }
 }

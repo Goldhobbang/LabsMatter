@@ -1,0 +1,17 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
+
+# Local scratch
+*.log

@@ -15,14 +15,16 @@ use core::cell::cell_flags;
 use core::error::Result;
 use core::material::MaterialProps;
 use core::material::MaterialState;
-use core::traits::{ChemistryModule, PhysicsModule, SimulationModule};
+use core::world_config::WorldConfig;
 use core::units::Time;
-use core::world::WorldConfig;
+use core::traits::SimulationModule;
+use core::traits::PhysicsModule;
+use core::traits::ChemistryModule;
 
 pub fn default_material_props(id: core::material::MaterialId) -> MaterialProps {
     MaterialProps {
         id,
-        name: "unknown",
+        name: "unknown".to_string(),
         state: MaterialState::Gas,
         density: 1.225,
         specific_heat: 1005.0,

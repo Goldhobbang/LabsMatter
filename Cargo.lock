@@ -672,6 +672,7 @@ version = "0.1.0"
 dependencies = [
  "realmatter-core",
  "realmatter-physics",
+ "serde",
 ]
 
 [[package]]
@@ -690,6 +691,7 @@ dependencies = [
  "bincode",
  "flate2",
  "realmatter-core",
+ "realmatter-world",
  "serde",
  "serde_json",
  "thiserror",
@@ -726,6 +728,7 @@ version = "0.1.0"
 dependencies = [
  "js-sys",
  "realmatter-core",
+ "realmatter-persist",
  "realmatter-world",
  "wasm-bindgen",
  "web-sys",

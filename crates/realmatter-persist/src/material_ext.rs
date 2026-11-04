@@ -1,6 +1,8 @@
 //! Material definition loading, validation, and restricted declarative extension format.
+//!
+//! Maps to `realmatter_core::material::{MaterialProps, MaterialState}` (2D).
 
-use realmatter_core::material::{Material, Phase};
+use realmatter_core::material::{MaterialProps, MaterialState};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -19,30 +21,36 @@ pub struct MaterialDef {
     #[serde(default = "default_boiling")]
     pub boiling_point: f32,
     #[serde(default)]
-    pub phase: PhaseDef,
+    pub state: StateDef,
     #[serde(default = "default_color")]
-    pub color: [u8; 4],
+    pub color: [f32; 4],
     #[serde(default)]
-    pub reactivity_tags: u32,
+    pub flammable: bool,
+    #[serde(default)]
+    pub ignition_temp: f32,
+    #[serde(default)]
+    pub viscosity: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum PhaseDef {
+pub enum StateDef {
     #[default]
     Solid,
     Liquid,
     Gas,
     Plasma,
+    Powder,
 }
 
-impl From<PhaseDef> for Phase {
-    fn from(p: PhaseDef) -> Self {
+impl From<StateDef> for MaterialState {
+    fn from(p: StateDef) -> Self {
         match p {
-            PhaseDef::Solid => Phase::Solid,
-            PhaseDef::Liquid => Phase::Liquid,
-            PhaseDef::Gas => Phase::Gas,
-            PhaseDef::Plasma => Phase::Plasma,
+            StateDef::Solid => MaterialState::Solid,
+            StateDef::Liquid => MaterialState::Liquid,
+            StateDef::Gas => MaterialState::Gas,
+            StateDef::Plasma => MaterialState::Plasma,
+            StateDef::Powder => MaterialState::Powder,
         }
     }
 }
@@ -59,8 +67,8 @@ fn default_melting() -> f32 {
 fn default_boiling() -> f32 {
     373.15
 }
-fn default_color() -> [u8; 4] {
-    [128, 128, 128, 255]
+fn default_color() -> [f32; 4] {
+    [0.5, 0.5, 0.5, 1.0]
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -192,63 +200,19 @@ pub fn load_materials_json(json: &str) -> Result<Vec<MaterialDef>, Vec<Validatio
     Ok(manifest.materials)
 }
 
-pub fn to_material(def: &MaterialDef) -> Material {
-    Material {
+pub fn to_material_props(def: &MaterialDef) -> MaterialProps {
+    MaterialProps {
         id: def.id,
         name: def.name.clone(),
+        state: def.state.into(),
         density: def.density,
-        thermal_conductivity: def.thermal_conductivity,
         specific_heat: def.specific_heat,
+        thermal_conductivity: def.thermal_conductivity,
         melting_point: def.melting_point,
         boiling_point: def.boiling_point,
-        phase: def.phase.into(),
+        viscosity: def.viscosity,
         color: def.color,
-        reactivity_tags: def.reactivity_tags,
+        flammable: def.flammable,
+        ignition_temp: def.ignition_temp,
     }
-}
-
-pub fn merge_extensions(
-    base: &[Material],
-    ext: &[Material],
-) -> Result<Vec<Material>, Vec<ValidationError>> {
-    let mut errs = Vec::new();
-    let base_ids: BTreeSet<u16> = base.iter().map(|m| m.id).collect();
-    let base_names: BTreeSet<String> = base.iter().map(|m| m.name.clone()).collect();
-    for m in ext {
-        if base_ids.contains(&m.id) {
-            errs.push(ValidationError {
-                field: "id".into(),
-                message: format!("extension reuses existing id {}", m.id),
-            });
-        }
-        if base_names.contains(&m.name) {
-            errs.push(ValidationError {
-                field: "name".into(),
-                message: format!("extension reuses existing name {}", m.name),
-            });
-        }
-    }
-    let mut ids = BTreeSet::new();
-    let mut names = BTreeSet::new();
-    for m in ext {
-        if !ids.insert(m.id) {
-            errs.push(ValidationError {
-                field: "id".into(),
-                message: format!("duplicate extension id {}", m.id),
-            });
-        }
-        if !names.insert(m.name.clone()) {
-            errs.push(ValidationError {
-                field: "name".into(),
-                message: format!("duplicate extension name {}", m.name),
-            });
-        }
-    }
-    if !errs.is_empty() {
-        return Err(errs);
-    }
-    let mut out = base.to_vec();
-    out.extend_from_slice(ext);
-    out.sort_by_key(|m| m.id);
-    Ok(out)
 }

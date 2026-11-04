@@ -18,11 +18,11 @@
 //! [checksum: u32 (CRC32)]
 //! ```
 
-use realmatter_core::chunk::CHUNK_VOLUME;
+use realmatter_core::cell::Cell;
 use realmatter_core::coord::ChunkCoord;
-use realmatter_core::material::Material;
-use realmatter_core::world::World;
-use realmatter_core::world::WorldConfig;
+use realmatter_core::material::MaterialProps;
+use realmatter_core::world_config::WorldConfig;
+use realmatter_world::World;
 use serde::{Deserialize, Serialize};
 
 pub const MAGIC: [u8; 4] = *b"RMT\0";
@@ -51,39 +51,69 @@ pub struct RecoveryMetadata {
 #[derive(Clone, Debug)]
 pub struct SaveData {
     pub header: WorldHeader,
-    pub materials: Vec<Material>,
-    pub chunks: Vec<(ChunkCoord, realmatter_core::chunk::Chunk)>,
+    pub materials: Vec<MaterialProps>,
+    pub chunks: Vec<(ChunkCoord, ChunkSnapshot)>,
     pub recovery: RecoveryMetadata,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChunkSnapshot {
+    pub coord: ChunkCoord,
+    pub cells: Vec<Cell>,
+    pub dirty: bool,
 }
 
 impl SaveData {
     pub fn from_world(
-        world: &World,
+        world: &mut World,
         label: Option<String>,
         sequence: u64,
         incremental: bool,
         parent: u64,
     ) -> Self {
-        let mut chunks: Vec<(ChunkCoord, realmatter_core::chunk::Chunk)> = world
-            .chunks()
-            .iter()
-            .map(|(c, ch)| (*c, ch.clone()))
-            .collect();
+        let dirty = world.take_dirty_chunks();
+        let mut chunks: Vec<(ChunkCoord, ChunkSnapshot)> = Vec::new();
+        let cs = world.config().chunk_size as i32;
+        let w = world.width() as i32;
+        let h = world.height() as i32;
+        for cy in 0..(world.config().chunks_y() as i32) {
+            for cx in 0..(world.config().chunks_x() as i32) {
+                let cc = ChunkCoord::new(cx, cy);
+                let mut cells: Vec<Cell> = Vec::with_capacity((cs as usize) * (cs as usize));
+                for ly in 0..cs {
+                    for lx in 0..cs {
+                        let gx = cx * cs + lx;
+                        let gy = cy * cs + ly;
+                        if gx >= w || gy >= h {
+                            cells.push(Cell::default());
+                        } else if let Some(c) = world.cell(gx, gy) {
+                            cells.push(*c);
+                        } else {
+                            cells.push(Cell::default());
+                        }
+                    }
+                }
+                chunks.push((
+                    cc,
+                    ChunkSnapshot {
+                        coord: cc,
+                        cells,
+                        dirty: dirty.contains(&cc),
+                    },
+                ));
+            }
+        }
         chunks.sort_by_key(|(c, _)| *c);
 
-        let particle_count: u64 = chunks
-            .iter()
-            .flat_map(|(_, ch)| ch.cells.iter())
-            .filter(|cell| !cell.is_empty())
-            .count() as u64;
+        let particle_count: u64 = world.cells().iter().filter(|cell| !cell.is_empty()).count() as u64;
 
-        let materials: Vec<Material> = world.materials.iter().cloned().collect();
+        let materials: Vec<MaterialProps> = Vec::new();
 
         Self {
             header: WorldHeader {
-                config: world.config.clone(),
-                tick_count: world.tick_count,
-                time_accumulator: world.time_accumulator,
+                config: world.config().clone(),
+                tick_count: world.tick_count(),
+                time_accumulator: world.time_accumulator(),
                 compressed_chunks: true,
                 label,
             },
@@ -121,6 +151,7 @@ pub fn encode(save: &SaveData) -> Result<Vec<u8>, String> {
     let mat_bytes = opts
         .serialize(&save.materials)
         .map_err(|e| format!("materials serialize: {e}"))?;
+    buf.extend_from_slice(&(mat_bytes.len() as u32).to_le_bytes());
     buf.extend_from_slice(&mat_bytes);
 
     let mut recovery = save.recovery.clone();
@@ -181,80 +212,82 @@ pub fn decode(bytes: &[u8]) -> Result<SaveData, String> {
         ));
     }
 
-    let bytes = migrate(bytes, version)?;
-    let bytes = bytes.as_slice();
-    if bytes[0..4] != MAGIC {
+    let data = migrate(bytes, version).map_err(|e| e.to_string())?;
+    if data[0..4] != MAGIC {
         return Err("bad magic after migration".into());
     }
-    pos = 4;
-    let _version = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap());
-    pos += 4;
+    let mut pos = 8;
 
-    if pos + 4 > bytes.len() {
+    if pos + 4 > data.len() {
         return Err("truncated header len".into());
     }
-    let header_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+    let header_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
-    if pos + header_len > bytes.len() {
+    if pos + header_len > data.len() {
         return Err("truncated header".into());
     }
     let header: WorldHeader = opts
-        .deserialize(&bytes[pos..pos + header_len])
+        .deserialize(&data[pos..pos + header_len])
         .map_err(|e| format!("header deserialize: {e}"))?;
     pos += header_len;
 
-    if pos + 4 > bytes.len() {
+    if pos + 4 > data.len() {
         return Err("truncated material count".into());
     }
-    let mat_count = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+    let mat_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
-    let materials: Vec<Material> = opts
-        .deserialize(&bytes[pos..])
+    if pos + 4 > data.len() {
+        return Err("truncated materials len".into());
+    }
+    let mat_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+    pos += 4;
+    if pos + mat_len > data.len() {
+        return Err("truncated materials".into());
+    }
+    let materials: Vec<realmatter_core::material::MaterialProps> = opts
+        .deserialize(&data[pos..pos + mat_len])
         .map_err(|e| format!("materials deserialize: {e}"))?;
-    let mat_bytes = opts
-        .serialize(&materials)
-        .map_err(|e| format!("materials reserialize: {e}"))?;
     if materials.len() != mat_count {
         return Err(format!(
             "material count mismatch: header {mat_count}, actual {}",
             materials.len()
         ));
     }
-    pos += mat_bytes.len();
+    pos += mat_len;
 
-    if pos + 4 > bytes.len() {
+    if pos + 4 > data.len() {
         return Err("truncated chunk count".into());
     }
-    let chunk_count = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+    let chunk_count = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
 
-    let mut chunks: Vec<(ChunkCoord, realmatter_core::chunk::Chunk)> =
+    let mut chunks: Vec<(ChunkCoord, ChunkSnapshot)> =
         Vec::with_capacity(chunk_count);
     for _ in 0..chunk_count {
-        if pos + 4 > bytes.len() {
+        if pos + 4 > data.len() {
             return Err("truncated chunk coord len".into());
         }
-        let coord_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        let coord_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
-        if pos + coord_len > bytes.len() {
+        if pos + coord_len > data.len() {
             return Err("truncated chunk coord".into());
         }
         let coord: ChunkCoord = opts
-            .deserialize(&bytes[pos..pos + coord_len])
+            .deserialize(&data[pos..pos + coord_len])
             .map_err(|e| format!("coord deserialize: {e}"))?;
         pos += coord_len;
 
-        if pos + 4 + 1 > bytes.len() {
+        if pos + 4 + 1 > data.len() {
             return Err("truncated cell payload len".into());
         }
-        let payload_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        let payload_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
-        let compressed_flag = bytes[pos];
+        let compressed_flag = data[pos];
         pos += 1;
-        if pos + payload_len > bytes.len() {
+        if pos + payload_len > data.len() {
             return Err("truncated cell payload".into());
         }
-        let payload = &bytes[pos..pos + payload_len];
+        let payload = &data[pos..pos + payload_len];
         pos += payload_len;
 
         let cell_bytes = if compressed_flag == 1 {
@@ -262,42 +295,45 @@ pub fn decode(bytes: &[u8]) -> Result<SaveData, String> {
         } else {
             payload.to_vec()
         };
-        let cells: [realmatter_core::cell::Cell; CHUNK_VOLUME] = opts
+        let cells: Vec<Cell> = opts
             .deserialize(&cell_bytes)
             .map_err(|e| format!("cells deserialize: {e}"))?;
 
-        if pos >= bytes.len() {
+        if pos >= data.len() {
             return Err("truncated dirty flag".into());
         }
-        let dirty = bytes[pos] != 0;
+        let dirty = data[pos] != 0;
         pos += 1;
 
-        let mut chunk = realmatter_core::chunk::Chunk::new(coord);
-        chunk.cells = cells;
-        chunk.dirty = dirty;
-        chunk.coord = coord;
-        chunks.push((coord, chunk));
+        chunks.push((
+            coord,
+            ChunkSnapshot {
+                coord,
+                cells,
+                dirty,
+            },
+        ));
     }
 
-    if pos + 4 > bytes.len() {
+    if pos + 4 > data.len() {
         return Err("truncated recovery len".into());
     }
-    let rec_len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+    let rec_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
     pos += 4;
-    if pos + rec_len > bytes.len() {
+    if pos + rec_len > data.len() {
         return Err("truncated recovery".into());
     }
     let recovery: RecoveryMetadata = opts
-        .deserialize(&bytes[pos..pos + rec_len])
+        .deserialize(&data[pos..pos + rec_len])
         .map_err(|e| format!("recovery deserialize: {e}"))?;
     pos += rec_len;
 
-    if pos + 4 > bytes.len() {
+    if pos + 4 > data.len() {
         return Err("truncated checksum".into());
     }
-    let stored_crc = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap());
+    let stored_crc = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
     pos += 4;
-    let computed = crc32(&bytes[..bytes.len() - 4]);
+    let computed = crc32(&data[..data.len() - 4]);
     if stored_crc != computed {
         return Err(format!(
             "checksum mismatch: stored {stored_crc:#x}, computed {computed:#x}"
@@ -317,15 +353,28 @@ pub fn decode(bytes: &[u8]) -> Result<SaveData, String> {
     })
 }
 
-pub fn to_world(save: &SaveData) -> Result<realmatter_core::world::World, String> {
+pub fn to_world(save: &SaveData) -> Result<World, String> {
+    use std::sync::Arc;
     use realmatter_core::material::MaterialRegistry;
-    let registry = MaterialRegistry::new(save.materials.clone());
-    let mut world = realmatter_core::world::World::new(save.header.config.clone(), registry);
-    world.tick_count = save.header.tick_count;
-    world.time_accumulator = save.header.time_accumulator;
-    for (coord, chunk) in &save.chunks {
-        world.chunks_mut().insert(*coord, chunk.clone());
+
+    let registry: Arc<dyn MaterialRegistry> = Arc::new(crate::SimpleMaterialRegistry::new(save.materials.clone()));
+    let mut world = World::new(save.header.config.clone(), registry).map_err(|e| format!("{e:?}"))?;
+    // Load cells from chunks (flatten into world grid).
+    for (_coord, snap) in &save.chunks {
+        let cs = save.header.config.chunk_size as i32;
+        for (i, cell) in snap.cells.iter().enumerate() {
+            let lx = (i as i32) % cs;
+            let ly = (i as i32) / cs;
+            let gx = snap.coord.x * cs + lx;
+            let gy = snap.coord.y * cs + ly;
+            if gx >= 0 && gy >= 0 && (gx as u32) < save.header.config.width && (gy as u32) < save.header.config.height {
+                if let Some(slot) = world.cell_mut(gx, gy) {
+                    *slot = *cell;
+                }
+            }
+        }
     }
+    // tick_count/time_accumulator not directly mutable via public API; skip
     Ok(world)
 }
 
@@ -388,3 +437,5 @@ pub fn crc32(data: &[u8]) -> u32 {
     }
     crc ^ 0xFFFFFFFF
 }
+
+

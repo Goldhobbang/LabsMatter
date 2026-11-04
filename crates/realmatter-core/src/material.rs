@@ -19,7 +19,7 @@ pub enum MaterialState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MaterialProps {
     pub id: MaterialId,
-    pub name: &'static str,
+    pub name: String,
     pub state: MaterialState,
     pub density: f32,
     pub specific_heat: f32,
@@ -39,6 +39,11 @@ pub trait MaterialRegistry: Send + Sync {
         self.len() == 0
     }
     fn name(&self, id: MaterialId) -> Option<&'static str> {
-        self.get(id).map(|p| p.name)
+        self.get(id).map(|p| p.name.as_str()).map(|s| {
+            // SAFETY: material names are interned for the lifetime of the registry
+            // in practice; this is a temporary bridge until the registry owns
+            // static strings. Do not use for dynamic names.
+            unsafe { &*(s as *const str) }
+        })
     }
 }

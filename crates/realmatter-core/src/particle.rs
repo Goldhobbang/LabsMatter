@@ -1,4 +1,10 @@
-//! Particle representation.
+//! Particle representation (legacy 3D scaffold — NOT part of the 2D contract).
+//!
+//! DEPRECATED: the approved 2D model stores one [`Cell`](crate::cell::Cell)
+//! per grid position (see `docs/contracts/particle-representation.md`); there
+//! is no separate particle list. This module is kept only so historical
+//! references resolve while downstream crates migrate; it will be removed in a
+//! future version. New code must use `crate::cell::Cell`.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +33,7 @@ impl ParticleFlags {
     }
 }
 
-/// Core particle struct.
+/// Legacy 3D particle struct (deprecated; see module docs).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[repr(C)]
 pub struct Particle {

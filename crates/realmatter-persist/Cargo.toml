@@ -8,6 +8,7 @@ description = "Save/load, serialization, storage. Persistence & extensibility (A
 
 [dependencies]
 realmatter-core = { path = "../realmatter-core" }
+realmatter-world = { path = "../realmatter-world" }
 serde.workspace = true
 bincode.workspace = true
 flate2 = "1.1"

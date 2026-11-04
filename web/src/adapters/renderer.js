@@ -41,6 +41,63 @@ export class Canvas2DRenderer extends RendererAdapter {
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
   }
   setOverlay(name, on) { this.overlay[name] = on; }
+  renderRGBA(buf, gw, gh, camera, opts) {
+    const t0 = performance.now();
+    if (!this.ctx || !buf || gw <= 0 || gh <= 0) { this.lastRenderMs = performance.now() - t0; return; }
+    const ctx = this.ctx;
+    const w = this.canvas.width / this.dpr;
+    const h = this.canvas.height / this.dpr;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = "#05060a";
+    ctx.fillRect(0, 0, w, h);
+    const zoom = camera.zoom || 1;
+    const cell = this.cellPx * zoom;
+    const offX = camera.x;
+    const offY = camera.y;
+    // Draw via offscreen ImageData at cell resolution, then scale up.
+    let img = this._rgbaImg;
+    if (!img || img.width !== gw || img.height !== gh) {
+      img = new ImageData(gw, gh);
+      this._rgbaImg = img;
+      this._rgbaCanvas = document.createElement("canvas");
+      this._rgbaCanvas.width = gw;
+      this._rgbaCanvas.height = gh;
+    }
+    const dst = img.data;
+    const n = Math.min(buf.length, gw * gh * 4);
+    dst.set(buf.subarray(0, n));
+    const octx = this._rgbaCanvas.getContext("2d");
+    octx.putImageData(img, 0, 0);
+    ctx.drawImage(this._rgbaCanvas, offX, offY, gw * cell, gh * cell);
+    if (this.overlay.grid && cell >= 6) {
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const startX = Math.max(0, Math.floor(-offX / cell));
+      const startY = Math.max(0, Math.floor(-offY / cell));
+      const endX = Math.min(gw, Math.ceil((w - offX) / cell));
+      const endY = Math.min(gh, Math.ceil((h - offY) / cell));
+      for (let x = startX; x <= endX; x++) {
+        const px = Math.round(offX + x * cell) + 0.5;
+        ctx.moveTo(px, offY + startY * cell);
+        ctx.lineTo(px, offY + endY * cell);
+      }
+      for (let y = startY; y <= endY; y++) {
+        const py = Math.round(offY + y * cell) + 0.5;
+        ctx.moveTo(offX + startX * cell, py);
+        ctx.lineTo(offX + endX * cell, py);
+      }
+      ctx.stroke();
+    }
+    this.lastRenderMs = performance.now() - t0;
+    const now = performance.now();
+    this._fpsAcc += 1;
+    if (now - this._fpsT >= 500) {
+      this.fps = (this._fpsAcc * 1000) / (now - this._fpsT);
+      this._fpsAcc = 0;
+      this._fpsT = now;
+    }
+  }
   render(snapshot, camera, opts) {
     const t0 = performance.now();
     if (!this.ctx || !snapshot) { this.lastRenderMs = performance.now() - t0; return; }

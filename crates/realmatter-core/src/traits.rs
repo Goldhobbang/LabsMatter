@@ -2,9 +2,11 @@
 
 use crate::cell::Cell;
 use crate::error::Result;
+use crate::world_config::WorldConfig;
 use crate::material::MaterialId;
 use crate::units::Time;
-use crate::world::WorldConfig;
+
+
 
 pub trait SimulationModule: Send + Sync {
     fn name(&self) -> &'static str;
