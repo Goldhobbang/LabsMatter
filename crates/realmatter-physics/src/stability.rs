@@ -1,6 +1,5 @@
 //! Stability constraints and numerical error budgets.
 
-use crate::core;
 use crate::core::cell::Cell;
 use crate::core::material::MaterialProps;
 
