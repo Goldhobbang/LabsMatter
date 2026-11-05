@@ -89,6 +89,12 @@ a.skip-link:focus { left: 8px; top: 8px; }
 .slider-label input[type="range"] { width: 120px; accent-color: var(--accent); }
 .slider-value { min-width: 44px; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
 
+/* Panels (base rules must precede the responsive overrides below, otherwise
+   the later `display: flex` would override `display: none` at equal
+   specificity — that collapsed the viewport to zero height on small screens). */
+.panel { background: var(--bg-2); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.panel--right { border-right: none; border-left: 1px solid var(--border); }
+
 /* Layout */
 .layout {
   display: grid;
@@ -100,14 +106,25 @@ a.skip-link:focus { left: 8px; top: 8px; }
   .panel--right { display: none; }
 }
 @media (max-width: 720px) {
-  .layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  /* Only the viewport remains in flow, so give it the full row. */
+  .layout { grid-template-columns: 1fr; grid-template-rows: 1fr; }
   .panel--left { display: none; }
-  .panel--left.is-open, .panel--right.is-open { display: block; position: absolute; z-index: 50; top: var(--toolbar-h); bottom: var(--status-h); background: var(--bg-2); width: 85vw; max-width: 320px; overflow: auto; }
+  .panel--left.is-open, .panel--right.is-open {
+    display: flex; position: absolute; z-index: 50;
+    top: var(--toolbar-h); bottom: var(--status-h);
+    background: var(--bg-2); width: 85vw; max-width: 320px; overflow: auto;
+    box-shadow: 0 0 0 1px var(--border), 12px 0 32px rgba(0,0,0,.45);
+  }
+  .panel--left.is-open { left: 0; }
+  .panel--right.is-open { right: 0; }
 }
 
+/* Mobile panel toggle: the left panel is only hidden at <=720px, so the
+   button appears at exactly that breakpoint. */
+.btn-menu { display: none; }
+@media (max-width: 720px) { .btn-menu { display: inline-flex; } }
+
 /* Panels */
-.panel { background: var(--bg-2); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.panel--right { border-right: none; border-left: 1px solid var(--border); }
 .panel-section { padding: 12px; border-bottom: 1px solid var(--border); }
 .panel-section--grow { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .panel-title { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }

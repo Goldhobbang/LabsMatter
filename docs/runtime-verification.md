@@ -113,3 +113,31 @@ synchronously) rather than the HUD text when checking play/pause.
 - Reset clears the world *and* the tick counter.
 - Pause / resume / single-step / speed controls respond.
 - No console errors during a 2-minute session.
+
+## 10. Responsive layout
+
+Check at 1440×900, 1024×768, 820×1180 (DPR 2), 390×844 and 320×640 (mobile).
+
+- Desktop ≥1101 px: materials panel, viewport, and inspector are all visible.
+- 721–1100 px: the inspector is hidden, materials + viewport remain.
+- ≤720 px: both side panels are hidden, the viewport fills the area, and a ☰
+  button in the toolbar opens the materials/tools panel as an overlay.
+- The canvas must always report a non-zero client width **and** height — a
+  zero-height canvas means the simulation is invisible.
+- Verify HiDPI: at DPR 2 the backing store should be ~2× the CSS size.
+
+Headless caveat: with software rendering (SwiftShader) frame rate scales with
+canvas area — 60 FPS at ~320×240 but single digits at 700×722 while the
+simulation also runs at 60 TPS. Measure `renderMs` and simulation step time
+separately before attributing a low FPS to the application.
+
+## 11. Simulation-integrity checks
+
+- Determinism: two identical runs produce identical material and temperature
+  arrays.
+- No NaN, infinite, or negative cell temperatures after a multi-material soak.
+- Heat is conserved in a lava/iron pair (drift < 1 %).
+- A region that was idle must simulate after being painted into (no frozen
+  chunks).
+- WASM memory must not grow during a 10–15 s dense soak.
+- Save → reset → load restores materials, temperatures, dimensions, and tick.

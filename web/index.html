@@ -33,6 +33,7 @@
         <h1 class="brand-name">LabsMatter</h1>
       </div>
       <div class="toolbar-group">
+        <button id="btn-menu" class="btn btn-menu" type="button" aria-label="Toggle materials panel" aria-expanded="false" aria-controls="materials-panel">☰</button>
         <button id="btn-play" class="btn btn-primary" type="button" aria-pressed="false" aria-label="Play / Pause (Space)">
           <span class="icon" aria-hidden="true">▶</span><span class="label">Play</span>
         </button>
@@ -69,7 +70,7 @@
     <!-- Main layout -->
     <main class="layout">
       <!-- Left: materials + tools -->
-      <aside class="panel panel--left" aria-label="Materials and tools">
+      <aside class="panel panel--left" id="materials-panel" aria-label="Materials and tools">
         <section class="panel-section" aria-labelledby="tools-heading">
           <h2 id="tools-heading" class="panel-title">Tools</h2>
           <div class="tool-grid" role="radiogroup" aria-label="Active tool">

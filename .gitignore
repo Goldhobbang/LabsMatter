@@ -21,3 +21,6 @@ Thumbs.db
 *.log
 verify-site.mjs
 cdp-*.mjs
+audit-*.mjs
+verify-*.mjs
+diag-*.mjs

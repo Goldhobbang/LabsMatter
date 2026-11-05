@@ -207,6 +207,35 @@ function onStateChange(s) {
 
 // ---- Toolbar ----
 function wireToolbar() {
+  // Mobile: toggle the materials/tools panel as an overlay (see .panel--left.is-open).
+  const menuBtn = $("btn-menu");
+  if (menuBtn) {
+    menuBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const panel = $("materials-panel");
+      if (!panel) return;
+      const open = !panel.classList.contains("is-open");
+      panel.classList.toggle("is-open", open);
+      menuBtn.setAttribute("aria-expanded", String(open));
+    });
+    // Close when tapping outside or pressing Escape.
+    const closeMenu = () => {
+      const panel = $("materials-panel");
+      if (panel && panel.classList.contains("is-open")) {
+        panel.classList.remove("is-open");
+        menuBtn.setAttribute("aria-expanded", "false");
+      }
+    };
+    document.addEventListener("click", (e) => {
+      const panel = $("materials-panel");
+      if (!panel || !panel.classList.contains("is-open")) return;
+      if (panel.contains(e.target) || menuBtn.contains(e.target)) return;
+      closeMenu();
+    });
+    canvas.addEventListener("pointerdown", closeMenu, { passive: true });
+    window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+  }
+
   $("btn-play").addEventListener("click", () => {
     const s = getState();
     setState({ playing: !s.playing });
@@ -254,8 +283,7 @@ function wireToolbar() {
     } catch (err) { log("error", "load failed: " + (err?.message || err)); }
     e.target.value = "";
   });
-  $("btn-grid").addEventListener("click", () => setState({ grid: !getState().grid }));
-  $("btn-heat").addEventListener("click", () => {
+  $("btn-grid").addEventListener("click", () => setState({ grid: !getState().grid }));  $("btn-heat").addEventListener("click", () => {
     const on = !getState().heat;
     setState({ heat: on });
     // The live WASM path streams a color buffer without per-cell
