@@ -138,12 +138,36 @@ pub fn react_all(
             // thousands of kelvin while staying wood-colored, and that heat
             // conducted into everything nearby.
             if ma.flammable && cells[i].temperature.is_finite() && cells[i].temperature >= ma.ignition_temp {
+                let was = a;
                 cells[i].material = 6;
                 cells[i].temperature = cells[i].temperature.clamp(1100.0, 1400.0);
                 if cells[i].lifetime <= 0.0 {
                     cells[i].lifetime = 2.5;
                 }
                 cells[i].set_flag(cell_flags::BURNING, true);
+                // Gunpowder bursts: nearby powder catches in the same tick
+                // instead of waiting to burn like a wick.
+                if was == 15 {
+                    for dy in -2i32..=2 {
+                        for dx in -2i32..=2 {
+                            if dx * dx + dy * dy > 5 {
+                                continue;
+                            }
+                            let nx = x as i32 + dx;
+                            let ny = y as i32 + dy;
+                            if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
+                                continue;
+                            }
+                            let ni = ny as usize * w + nx as usize;
+                            if cells[ni].material == 15 {
+                                cells[ni].material = 6;
+                                cells[ni].temperature = 1200.0;
+                                cells[ni].lifetime = 0.45;
+                                cells[ni].set_flag(cell_flags::FIXED, false);
+                            }
+                        }
+                    }
+                }
                 // Spread fire: heat adjacent fuel to its ignition point so it
                 // catches fire on a subsequent tick (observable propagation).
                 for (dx, dy) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
@@ -162,6 +186,23 @@ pub fn react_all(
                         && cells[ni].temperature < mb.ignition_temp
                     {
                         cells[ni].temperature = mb.ignition_temp;
+                    }
+                }
+                processed[i] = true;
+                continue;
+            }
+            // Acid eats sand, wood, iron, salt, and gunpowder. Stone and glass hold.
+            if a == 10 {
+                for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
+                        continue;
+                    }
+                    let ni = ny as usize * w + nx as usize;
+                    if matches!(cells[ni].material, 2 | 7 | 8 | 11 | 15) {
+                        cells[ni] = Cell::default();
+                        break;
                     }
                 }
                 processed[i] = true;

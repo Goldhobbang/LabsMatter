@@ -221,6 +221,29 @@ export class WasmDirectAdapter {
       return new Uint8Array(mem.buffer, ptr, len);
     } catch { return null; }
   }
+  setViewMode(mode) {
+    if (this.mod && typeof this.mod.set_view_mode === "function") {
+      try { this.mod.set_view_mode(mode | 0); } catch (e) { console.warn(e); }
+    }
+  }
+  getCellPressure(x, y) {
+    if (this.mod && typeof this.mod.get_cell_pressure === "function") {
+      try { return this.mod.get_cell_pressure(x, y); } catch { /* ignore */ }
+    }
+    return 0;
+  }
+  getCellVx(x, y) {
+    if (this.mod && typeof this.mod.get_cell_vx === "function") {
+      try { return this.mod.get_cell_vx(x, y); } catch { /* ignore */ }
+    }
+    return 0;
+  }
+  getCellVy(x, y) {
+    if (this.mod && typeof this.mod.get_cell_vy === "function") {
+      try { return this.mod.get_cell_vy(x, y); } catch { /* ignore */ }
+    }
+    return 0;
+  }
   canPaint() { return !!(this.mod && typeof this.mod.set_cell === "function"); }
   canReset() { return !!(this.mod && (typeof this.mod.reset === "function" || typeof this.mod.init === "function")); }
   canRead() { return !!(this.mod && typeof this.mod.get_cell_material === "function"); }

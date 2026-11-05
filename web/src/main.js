@@ -1,611 +1,732 @@
 import { MATERIALS, CATEGORIES, searchMaterials, findMaterial } from "./materials.js";
 import { getState, setState, subscribe, resetState } from "./state/store.js";
-import { MockSimulation, GRID_W, GRID_H } from "./adapters/simulation.js";
 import { WasmDirectAdapter } from "./adapters/wasm-direct.js";
-import { createRenderer, getPreferredBackend } from "./renderers/renderer-factory.js";
+import { createRenderer } from "./renderers/renderer-factory.js";
+import { loadConfig, saveConfig, applyPreset, matchBinding, formatBinding, ACTION_LABELS } from "./shortcuts.js";
 
 const $ = (id) => document.getElementById(id);
-
 let sim = null;
 let renderer = null;
 let canvas = null;
-let rafId = null;
-let lastFrame = performance.now();
+let overlay = null;
+let octx = null;
+let stroke = null;
+let hover = null;
+let pointer = null;
+let panning = null;
+let paste = null;
+let selection = null;
+let clipboard = null;
+let keys = loadConfig();
+let undoStack = [];
+let redoStack = [];
+let strokeLog = null;
 let simAccum = 0;
-let running = false;
-let stroke = null; // current drag stroke
-let hoveredCell = null;
-let spaceDown = false;
-// Measured simulation throughput (ticks actually executed per second).
+let lastFrame = 0;
 let tickSamples = 0;
-let tickWindowStart = performance.now();
+let tickWindow = 0;
 let measuredTps = 0;
-let spacePanUsed = false;
-let materialListKey = "";
+const SHAPES = ["circle", "square", "triangle"];
+const VIEWS = ["Normal", "Fancy", "Heat", "Pressure", "Velocity"];
 
-// ---- Boot ----
 async function boot() {
-  setAppState("loading", "Initializing simulation…");
+  setAppState("loading", "Starting simulation…");
   canvas = $("viewport");
+  overlay = $("overlay");
+  octx = overlay.getContext("2d");
   try {
     renderer = await createRenderer(canvas);
-    log("info", `Renderer: ${renderer.backend || getPreferredBackend()}`);
   } catch (e) {
-    const { Canvas2DRenderer } = await import("./adapters/renderer.js");
-    renderer = new Canvas2DRenderer();
-    renderer.attach(canvas);
-    log("warn", "Using Canvas2D fallback");
+    setAppState("error", "Renderer failed: " + (e?.message || e));
+    return;
   }
-
-  // Use real WASM
   try {
     const wd = new WasmDirectAdapter();
     await wd.init();
     sim = wd;
-    log("info", "Using WASM simulation (real module)");
+    sim.setViewMode(getState().view || 0);
   } catch (e) {
-    log("warn", "WASM init failed, using mock fallback: " + (e?.message||e));
-    sim = new MockSimulation();
-    try {
-      await sim.init();
-    } catch (e2) {
-      setAppState("error", "Failed to initialize simulation: " + (e2?.message || e2));
-      log("error", "init failed: " + (e2?.message || e2));
-      return;
-    }
+    setAppState("error", "WASM failed: " + (e?.message || e));
+    return;
   }
-
-  // wire resize + visibility
   const resizeViewport = () => {
     const box = canvas.parentElement;
-    if (!box) return;
-    // Size from the viewport box, not the canvas. A canvas with height:100%
-    // reports 0 until its parent has a resolved height, and a 0 resize used
-    // to freeze the drawing buffer at one pixel (a black viewport).
-    const w = box.clientWidth;
-    const h = box.clientHeight;
-    if (w < 2 || h < 2) return;
-    try {
-      if (typeof renderer.resize === "function") renderer.resize(w, h);
-      else if (typeof renderer.attach === "function") renderer.attach(canvas);
-    } catch (e) { log("warn", "resize error: " + e.message); }
+    if (!box || box.clientWidth < 2 || box.clientHeight < 2) return;
+    try { renderer.resize(box.clientWidth, box.clientHeight); } catch (e) { console.warn(e); }
+    overlay.width = Math.max(1, Math.floor(box.clientWidth));
+    overlay.height = Math.max(1, Math.floor(box.clientHeight));
   };
-  const ro = new ResizeObserver(resizeViewport);
-  ro.observe(canvas.parentElement);
+  new ResizeObserver(resizeViewport).observe(canvas.parentElement);
   requestAnimationFrame(resizeViewport);
-  document.addEventListener('visibilitychange', () => {});
-
-  // build material UI
-  buildCategories();
-  renderMaterialList();
-  wireToolbar();
-  wireTools();
-  wirePanels();
-  wireViewport();
-  wireShortcuts();
-  wireDialogs();
-
-  subscribe(onStateChange);
-  onStateChange(getState());
-
+  buildRail();
+  buildPalette();
+  wireChrome();
+  wirePointer();
+  wireKeys();
+  subscribe(onState);
+  onState(getState());
   setAppState("ready", "");
-  log("info", "LabsMatter UI ready.");
-  startLoop();
+  lastFrame = performance.now();
+  tickWindow = lastFrame;
+  requestAnimationFrame(loop);
 }
 
 function setAppState(state, msg) {
   const app = $("app");
-  if (state === "ready") {
-    app.dataset.state = "ready";
-    $("viewport-overlay").hidden = true;
-  } else {
-    app.dataset.state = state;
-    $("viewport-overlay").hidden = false;
-    $("overlay-title").textContent = state === "loading" ? "Loading…" : "Error";
+  app.dataset.state = state === "ready" ? "ready" : state;
+  const ov = $("viewport-overlay");
+  if (state === "ready") ov.hidden = true;
+  else {
+    ov.hidden = false;
+    $("overlay-title").textContent = state === "error" ? "Error" : "Loading…";
     $("overlay-message").textContent = msg || "";
     $("overlay-retry").hidden = state !== "error";
-    $("overlay-dismiss").hidden = state !== "error";
-  }
-  if (state === "error") {
     $("overlay-retry").onclick = () => location.reload();
-    $("overlay-dismiss").onclick = () => setAppState("ready", "");
   }
 }
 
-// ---- Render loop ----
-function startLoop() {
-  lastFrame = performance.now();
-  const FIXED = 1/60;
-  const MAX_STEPS = 8;
-  const loop = (now) => {
-    const frameDt = Math.min(0.25, (now - lastFrame) / 1000);
-    lastFrame = now;
-    const s = getState();
-    if (s.playing) {
-      sim.resume?.();
-      simAccum += frameDt * (s.speed || 1);
-      let steps = 0;
-      while (simAccum >= FIXED && steps < MAX_STEPS) {
-        if (typeof sim.tick === "function") sim.tick(FIXED);
-        else if (typeof sim.step === "function") sim.step(FIXED);
-        simAccum -= FIXED;
-        steps++;
-      }
-      if (steps >= MAX_STEPS && simAccum >= FIXED) simAccum = 0;
-      tickSamples += steps;
-      const elapsed = (now - tickWindowStart) / 1000;
-      if (elapsed >= 1.0) {
-        measuredTps = tickSamples / elapsed;
-        tickSamples = 0;
-        tickWindowStart = now;
-      }
-    } else {
-      sim.pause?.();
-      simAccum = 0;
-      measuredTps = 0;
-      tickWindowStart = now;
-      tickSamples = 0;
-    }
-    if (sim.setSpeed) sim.setSpeed(s.speed);
-    if (typeof renderer.setOverlay === "function") {
-      renderer.setOverlay("grid", s.grid);
-      renderer.setOverlay("heat", s.heat);
-    }
-    try {
-      const snap = typeof sim.getSnapshot === "function" ? sim.getSnapshot() : null;
-      if (snap) {
-        renderer.render(snap, s.camera, {});
-      } else if (typeof sim.readRenderBuffer === "function") {
-        const buf = sim.readRenderBuffer();
-        const size = typeof sim.getWorldSize === "function" ? sim.getWorldSize() : null;
-        if (buf && size && size.w > 0 && size.h > 0) {
-          renderer.renderRGBA(buf, size.w, size.h, s.camera, { heat: s.heat });
-        } else {
-          renderer.render(null, s.camera, {});
-        }
-      } else {
-        renderer.render(null, s.camera, {});
-      }
-    } catch(e) {
-      log("warn", "render error: " + (e?.message||e));
-    }
-    updateHud();
-    rafId = requestAnimationFrame(loop);
-  };
-  rafId = requestAnimationFrame(loop);
-}
-
-function updateHud() {
+function loop(now) {
+  const frameDt = Math.min(0.25, (now - lastFrame) / 1000);
+  lastFrame = now;
   const s = getState();
-  const d = sim.getDiagnostics ? sim.getDiagnostics() : {};
-  const fps = typeof renderer.getFps === "function" ? renderer.getFps() : 0;
-  const ws = typeof sim.getWorldSize === "function" ? sim.getWorldSize() : null;
-  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}${renderer.backend ? " ["+renderer.backend+"]" : ""} | TPS ${s.playing ? measuredTps.toFixed(0) : "0"}`;
-  $("hud-particles").textContent = `Particles ${(d.particles||0).toLocaleString()}${ws ? ` | ${ws.w}x${ws.h}` : ""}`;
-  $("hud-coords").textContent = hoveredCell ? `(${hoveredCell.x}, ${hoveredCell.y})` : "—";
-  $("hud-state").textContent = s.playing ? "RUNNING" : "PAUSED";
-  $("d-fps").textContent = fps.toFixed(1);
-  $("d-tick").textContent = (d.tickMs||0).toFixed(2) + " ms";
-  $("d-render").textContent = (typeof renderer.getRenderMs==="function"?renderer.getRenderMs():0).toFixed(2) + " ms";
-  $("d-particles").textContent = (d.particles||0).toLocaleString();
-  $("d-chunks").textContent = (d.chunks||0).toLocaleString();
-  $("d-memory").textContent = (d.memoryMB||0).toFixed(2) + " MB";
-  $("d-state").textContent = d.state || (s.playing?"RUNNING":"PAUSED");
-  $("status-coords").textContent = hoveredCell ? `cell ${hoveredCell.x}, ${hoveredCell.y}` : "";
+  const fixed = 1 / 60;
+  if (s.playing) {
+    simAccum += frameDt * (s.speed || 1);
+    let steps = 0;
+    while (simAccum >= fixed && steps < 8) {
+      sim.step(fixed);
+      simAccum -= fixed;
+      steps++;
+    }
+    if (steps >= 8) simAccum = 0;
+    tickSamples += steps;
+    const elapsed = (now - tickWindow) / 1000;
+    if (elapsed >= 1) {
+      measuredTps = tickSamples / elapsed;
+      tickSamples = 0;
+      tickWindow = now;
+    }
+  } else {
+    simAccum = 0;
+    measuredTps = 0;
+    tickWindow = now;
+    tickSamples = 0;
+  }
+  if (typeof renderer.setOverlay === "function") renderer.setOverlay("grid", s.grid);
+  try {
+    const buf = sim.readRenderBuffer();
+    const size = sim.getWorldSize();
+    if (buf && size.w > 0) renderer.renderRGBA(buf, size.w, size.h, s.camera, {});
+  } catch (e) { console.warn(e); }
+  drawOverlay();
+  paintHud();
+  requestAnimationFrame(loop);
 }
 
-// ---- State change ----
-function onStateChange(s) {
-  $("btn-play").setAttribute("aria-pressed", String(s.playing));
-  $("btn-play").querySelector(".label").textContent = s.playing ? "Pause" : "Play";
-  $("btn-play").querySelector(".icon").textContent = s.playing ? "⏸" : "▶";
+let paletteKey = "";
+function onState(s) {
+  $("btn-play").textContent = s.playing ? "Pause" : "Play";
+  $("btn-play").setAttribute("aria-pressed", String(!!s.playing));
   $("speed").value = s.speed;
   $("speed-value").textContent = s.speed.toFixed(2) + "×";
-  $("speed").setAttribute("aria-valuenow", s.speed);
-  $("brush-size").value = s.brushSize;
-  $("brush-size-value").textContent = s.brushSize;
-  document.querySelectorAll(".tool-btn").forEach((b) => {
-    const active = b.dataset.tool === s.tool;
-    b.classList.toggle("is-active", active);
-    b.setAttribute("aria-checked", String(active));
-  });
-  $("btn-grid").setAttribute("aria-pressed", String(s.grid));
-  $("btn-heat").setAttribute("aria-pressed", String(s.heat));
-  $("app").classList.toggle("high-contrast", s.highContrast);
-  $("app").classList.toggle("reduced-motion", s.reducedMotion);
-  const showFps = s.showFps !== false;
-  $("hud-fps").hidden = !showFps;
-  const fpsRow = $("d-fps") && $("d-fps").parentElement;
-  if (fpsRow) fpsRow.hidden = !showFps;
-  const listKey = `${s.search}\0${s.category}\0${s.materialId}`;
-  if (listKey !== materialListKey) {
-    materialListKey = listKey;
-    renderMaterialList();
+  $("hud").hidden = !s.showHud;
+  $("btn-grid").classList.toggle("is-on", !!s.grid);
+  $("btn-hud").classList.toggle("is-on", !!s.showHud);
+  $("btn-preset").textContent = keys.preset === "legacy" ? "Legacy keys" : "Powder keys";
+  $("brush-readout").textContent = `${s.brushRx}×${s.brushRy} ${s.shape[0]}`;
+  const pri = findMaterial(s.materialId);
+  const sec = findMaterial(s.secondaryId);
+  $("primary-chip").style.background = pri.color;
+  $("primary-chip").title = "Primary " + pri.abbr;
+  $("secondary-chip").style.background = sec.color;
+  $("secondary-chip").title = "Secondary " + sec.abbr;
+  document.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("is-on", b.dataset.tool === s.tool));
+  document.querySelectorAll("[data-shape]").forEach((b) => b.classList.toggle("is-on", b.dataset.shape === s.shape));
+  document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("is-on", Number(b.dataset.view) === s.view));
+  document.querySelectorAll("[data-cat]").forEach((b) => b.classList.toggle("is-on", b.dataset.cat === s.category));
+  const nextKey = `${s.category}\0${s.search}\0${s.materialId}\0${s.secondaryId}`;
+  if (nextKey !== paletteKey) {
+    paletteKey = nextKey;
+    buildPalette();
   }
-  updateInspector(s.selectedMaterial);
 }
 
-// ---- Toolbar ----
-function wireToolbar() {
-  // Mobile: toggle the materials/tools panel as an overlay (see .panel--left.is-open).
-  const menuBtn = $("btn-menu");
-  if (menuBtn) {
-    menuBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const panel = $("materials-panel");
-      if (!panel) return;
-      const open = !panel.classList.contains("is-open");
-      panel.classList.toggle("is-open", open);
-      menuBtn.setAttribute("aria-expanded", String(open));
-    });
-    // Close when tapping outside or pressing Escape.
-    const closeMenu = () => {
-      const panel = $("materials-panel");
-      if (panel && panel.classList.contains("is-open")) {
-        panel.classList.remove("is-open");
-        menuBtn.setAttribute("aria-expanded", "false");
-      }
-    };
-    document.addEventListener("click", (e) => {
-      const panel = $("materials-panel");
-      if (!panel || !panel.classList.contains("is-open")) return;
-      if (panel.contains(e.target) || menuBtn.contains(e.target)) return;
-      closeMenu();
-    });
-    canvas.addEventListener("pointerdown", closeMenu, { passive: true });
-    window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
-  }
-
-  $("btn-play").addEventListener("click", () => {
-    const s = getState();
-    setState({ playing: !s.playing });
-    log("info", s.playing ? "Paused." : "Resumed.");
-  });
-  $("btn-step").addEventListener("click", () => {
-    if (typeof sim.step === "function") sim.step();
-    else if (typeof sim.tick === "function") sim.tick();
-    log("info", "Stepped one tick.");
-  });
-  $("btn-reset").addEventListener("click", () => {
-    if (sim && sim.canReset && !sim.canReset()) log("warn", "Reset unavailable");
-    resetWorld();
-  });
-  $("speed").addEventListener("input", (e) => {
-    setState({ speed: parseFloat(e.target.value) });
-  });
-  $("btn-save").addEventListener("click", () => {
-    try {
-      if (!sim.saveBlob || !sim.canSave || !sim.canSave()) { log("warn", "Save unavailable: WASM save_blob missing"); return; }
-      const blob = sim.saveBlob();
-      if (!blob || blob.length === 0) { log("warn", "Save produced empty blob"); return; }
-      const url = URL.createObjectURL(new Blob([blob], { type: "application/octet-stream" }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "labsmatter-world.rmt";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      log("info", `World saved (${blob.length} bytes)`);
-    } catch (e) { log("error", "save failed: " + (e?.message || e)); }
-  });
-  $("btn-load").addEventListener("click", () => { $("file-load").click(); });
-  $("file-load").addEventListener("change", async (e) => {
-    const f = e.target.files && e.target.files[0];
-    if (!f) return;
-    try {
-      if (!sim.loadBlob || !sim.canSave || !sim.canSave()) { log("warn", "Load unavailable: WASM load_blob missing"); return; }
-      const bytes = new Uint8Array(await f.arrayBuffer());
-      const ok = sim.loadBlob(bytes);
-      log(ok ? "info" : "error", ok ? `World loaded (${bytes.length} bytes)` : "Load failed: invalid save blob");
-    } catch (err) { log("error", "load failed: " + (err?.message || err)); }
-    e.target.value = "";
-  });
-  $("btn-grid").addEventListener("click", () => setState({ grid: !getState().grid }));  $("btn-heat").addEventListener("click", () => {
-    const on = !getState().heat;
-    setState({ heat: on });
-    // The live WASM path streams a color buffer without per-cell
-    // temperatures, so the heat overlay only applies in snapshot mode.
-    if (on && sim && typeof sim.getSnapshot === "function" && !sim.getSnapshot()) {
-      log("info", "Heat overlay: color view only (temperature tint unavailable in live WASM mode).");
-    }
-  });
-  $("btn-settings").addEventListener("click", () => showDialog("settings-dialog"));
-  $("btn-help").addEventListener("click", () => showDialog("help-dialog"));
-}
-
-// ---- Tools ----
-function wireTools() {
-  document.querySelectorAll(".tool-btn").forEach((b) => {
-    b.addEventListener("click", () => setState({ tool: b.dataset.tool }));
-  });
-  $("brush-size").addEventListener("input", (e) => setState({ brushSize: parseInt(e.target.value, 10) }));
-}
-
-// ---- Panels ----
-function buildCategories() {
-  const row = $("material-categories");
+function buildRail() {
+  const row = $("cat-rail");
   row.innerHTML = "";
   for (const c of CATEGORIES) {
-    const btn = document.createElement("button");
-    btn.className = "chip";
-    btn.textContent = c.label;
-    btn.dataset.cat = c.id;
-    btn.addEventListener("click", () => {
-      setState({ category: c.id });
-      document.querySelectorAll("#material-categories .chip").forEach((x) => x.classList.toggle("is-active", x.dataset.cat === c.id));
-    });
-    if (c.id === getState().category) btn.classList.add("is-active");
-    row.appendChild(btn);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "rail-btn";
+    b.dataset.cat = c.id;
+    b.textContent = c.short;
+    b.title = c.label;
+    b.addEventListener("click", () => setState({ category: c.id }));
+    row.appendChild(b);
   }
 }
 
-function renderMaterialList() {
+function buildPalette() {
   const s = getState();
   const list = $("material-list");
   const items = searchMaterials(s.search, s.category);
   list.innerHTML = "";
   for (const m of items) {
-    const el = document.createElement("div");
-    el.className = "material-item" + (m.id === s.materialId ? " is-selected" : "");
-    el.setAttribute("role", "option");
-    el.setAttribute("aria-selected", String(m.id === s.materialId));
-    el.innerHTML = `<span class="material-swatch" style="background:${m.color}"></span><span class="material-name">${m.name}</span>`;
-    el.addEventListener("click", () => {
-      setState({ materialId: m.id, selectedMaterial: m.id });
-      log("info", `Selected material: ${m.name}`);
-    });
-    el.addEventListener("mouseenter", () => updateInspector(m.id));
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "el" + (m.id === s.materialId ? " is-pri" : "") + (m.id === s.secondaryId ? " is-sec" : "");
+    el.innerHTML = `<i style="background:${m.color}"></i><b>${m.abbr}</b>`;
+    el.title = `${m.name} — ${m.desc}`;
+    el.addEventListener("click", (e) => setState({ materialId: m.id }));
+    el.addEventListener("contextmenu", (e) => { e.preventDefault(); setState({ secondaryId: m.id }); });
     list.appendChild(el);
   }
 }
 
-function wirePanels() {
-  $("material-search").addEventListener("input", (e) => {
-    setState({ search: e.target.value });
-  });
-  // settings dialog bindings
-  const syncSettings = () => {
-    const s = getState();
-    $("set-grid").checked = s.grid;
-    $("set-heat").checked = s.heat;
-    $("set-fps").checked = s.showFps;
-    $("set-reduced").checked = s.reducedMotion;
-    $("set-contrast").checked = s.highContrast;
+function wireChrome() {
+  $("btn-play").onclick = () => setState({ playing: !getState().playing });
+  $("btn-step").onclick = () => { sim.step(1 / 60); };
+  $("speed").oninput = (e) => setState({ speed: parseFloat(e.target.value) });
+  $("btn-undo").onclick = () => undo();
+  $("btn-redo").onclick = () => redo();
+  $("btn-reset").onclick = () => resetWorld();
+  $("btn-save").onclick = () => saveWorld();
+  $("btn-load").onclick = () => $("file-load").click();
+  $("file-load").onchange = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const ok = sim.loadBlob(new Uint8Array(await f.arrayBuffer()));
+    if (ok) { undoStack = []; redoStack = []; }
   };
-  $("settings-dialog").addEventListener("open", syncSettings);
-  $("btn-settings").addEventListener("click", syncSettings);
-  $("set-grid").addEventListener("change", (e) => setState({ grid: e.target.checked }));
-  $("set-heat").addEventListener("change", (e) => setState({ heat: e.target.checked }));
-  $("set-fps").addEventListener("change", (e) => setState({ showFps: e.target.checked }));
-  $("set-reduced").addEventListener("change", (e) => setState({ reducedMotion: e.target.checked }));
-  $("set-contrast").addEventListener("change", (e) => setState({ highContrast: e.target.checked }));
-}
-
-function updateInspector(materialId) {
-  const m = findMaterial(materialId ?? getState().materialId);
-  const el = $("inspector");
-  const rows = [
-    ["Name", m.name],
-    ["Category", m.category],
-    ["Phase", m.phase],
-    ["Density", m.density + " kg/m³"],
-    ["Temperature", m.temp + " K"],
-    ["Conductivity", m.conductivity + " W/mK"],
-    ["Heat cap.", m.heatCap + " J/kgK"],
-    ["Melting pt.", m.melt ? m.melt + " K" : "—"],
-    ["Boiling pt.", m.boil ? m.boil + " K" : "—"],
-  ];
-  el.innerHTML = rows.map(([k, v]) => `<div class="row"><span class="key">${k}</span><span class="val">${v}</span></div>`).join("") +
-    `<p class="muted" style="margin-top:8px">${m.desc}</p>`;
-}
-
-// ---- Viewport interaction ----
-function cellFromEvent(e) {
-  const rect = canvas.getBoundingClientRect();
-  const s = getState();
-  const cell = 4 * (s.camera.zoom || 1);
-  // Camera and the renderers are in CSS pixels. Dividing by devicePixelRatio
-  // again mapped the cursor to the wrong cell on HiDPI displays.
-  const x = Math.floor((e.clientX - rect.left - s.camera.x) / cell);
-  const y = Math.floor((e.clientY - rect.top - s.camera.y) / cell);
-  return { x, y };
-}
-
-function showDialog(id) {
-  const d = $(id);
-  if (d && !d.open) d.showModal();
-}
-
-function resetWorld() {
-  if (!confirm("Reset the world?")) return;
-  try {
-    if (sim && sim.reset) sim.reset();
-    resetState();
-    log("info", "World reset.");
-  } catch (e) {
-    log("error", "reset failed: " + (e?.message || e));
-  }
-}
-
-function wireViewport() {
-  canvas.addEventListener("mousemove", (e) => {
-    hoveredCell = cellFromEvent(e);
-  });
-  canvas.addEventListener("mouseleave", () => { hoveredCell = null; });
-
-  canvas.addEventListener("mousedown", (e) => {
-    if (e.button !== 0) return;
-    if (spaceDown) return;
-    const c = cellFromEvent(e);
-    const s = getState();
-    if (s.tool === "brush" || s.tool === "eraser") {
-      if (sim.canPaint && !sim.canPaint()) { log("warn", "Painting unavailable: missing WASM export (set_cell)"); return; }
-      stroke = { type: "paint", points: [c], material: s.tool === "eraser" ? 0 : s.materialId, size: s.brushSize };
-      sim.applyCommand({ type: "paint", x: c.x, y: c.y, material: stroke.material, size: stroke.size });
-    } else if (s.tool === "line" || s.tool === "rect") {
-      if (sim.canPaint && !sim.canPaint()) { log("warn", "Shape tools unavailable: missing WASM export"); return; }
-      stroke = { type: s.tool, start: c, current: c, material: s.materialId, size: s.brushSize };
-    } else if (s.tool === "fill") {
-      if (sim.canPaint && !sim.canPaint()) { log("warn", "Fill unavailable: missing WASM export"); return; }
-      sim.applyCommand({ type: "fill", x: c.x, y: c.y, material: s.materialId });
-    }
-  });
-
-  canvas.addEventListener("mousemove", (e) => {
-    if (!stroke) return;
-    const c = cellFromEvent(e);
-    const s = getState();
-    if (stroke.type === "paint") {
-      stroke.points.push(c);
-      sim.applyCommand({ type: "paint", x: c.x, y: c.y, material: stroke.material, size: stroke.size });
-    } else {
-      stroke.current = c;
-    }
-  });
-
-  window.addEventListener("mouseup", () => {
-    if (!stroke) return;
-    if (stroke.type === "line") {
-      sim.applyCommand({ type: "line", x0: stroke.start.x, y0: stroke.start.y, x1: stroke.current.x, y1: stroke.current.y, material: stroke.material, size: stroke.size });
-    } else if (stroke.type === "rect") {
-      sim.applyCommand({ type: "rect", x0: stroke.start.x, y0: stroke.start.y, x1: stroke.current.x, y1: stroke.current.y, material: stroke.material, fill: false });
-    }
-    stroke = null;
-  });
-
-  // pan with middle mouse / space+drag
-  let panning = false, panStart = null;
-  canvas.addEventListener("mousedown", (e) => {
-    if (e.button === 1 || (e.button === 0 && spaceDown)) {
-      panning = true;
-      panStart = { x: e.clientX, y: e.clientY, cam: { ...getState().camera } };
-      e.preventDefault();
-    }
-  });
-  window.addEventListener("mousemove", (e) => {
-    if (!panning || !panStart) return;
-    const dx = e.clientX - panStart.x;
-    const dy = e.clientY - panStart.y;
-    if (spaceDown) spacePanUsed = true;
-    setState({ camera: { ...panStart.cam, x: panStart.cam.x + dx, y: panStart.cam.y + dy } });
-  });
-  window.addEventListener("mouseup", () => { panning = false; panStart = null; });
-
-  // zoom
-  canvas.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const s = getState();
-    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    const newZoom = Math.min(6, Math.max(0.25, s.camera.zoom * factor));
-    setState({ camera: { ...s.camera, zoom: newZoom } });
-  }, { passive: false });
-
-  // touch: single finger paint, two finger pan/zoom
-  let touches = [];
-  canvas.addEventListener("touchstart", (e) => {
-    touches = [...e.touches];
-    if (e.touches.length === 1) {
-      const t = e.touches[0];
-      const fake = { clientX: t.clientX, clientY: t.clientY, button: 0 };
-      canvas.dispatchEvent(new MouseEvent("mousedown", fake));
-    }
-  }, { passive: true });
-  canvas.addEventListener("touchmove", (e) => {
-    if (e.touches.length === 1) {
-      const t = e.touches[0];
-      const fake = { clientX: t.clientX, clientY: t.clientY };
-      canvas.dispatchEvent(new MouseEvent("mousemove", fake));
-    }
-    e.preventDefault();
-  }, { passive: false });
-  canvas.addEventListener("touchend", () => {
-    window.dispatchEvent(new MouseEvent("mouseup"));
-  });
-}
-
-// ---- Keyboard shortcuts ----
-function wireShortcuts() {
-  const typing = (e) => {
-    const tag = (e.target && e.target.tagName) || "";
-    return tag === "INPUT" || tag === "TEXTAREA";
+  $("btn-preset").onclick = () => {
+    keys = applyPreset(keys.preset === "powder" ? "legacy" : "powder");
+    saveConfig(keys);
+    onState(getState());
   };
-  window.addEventListener("keydown", (e) => {
-    if (e.code === "Space") {
-      spaceDown = true;
-      if (!typing(e)) e.preventDefault();
-    }
-    if (typing(e) || e.repeat) return;
-    const s = getState();
-    switch (e.key) {
-      case " ":
-        // Play/pause is applied on keyup so a Space+drag pan does not also
-        // toggle the simulation, and key-repeat cannot flip it every frame.
-        break;
-      case ".":
-        if (typeof sim.step === "function") sim.step(); else if (typeof sim.tick === "function") sim.tick(); log("info", "Stepped one tick."); break;
-      case "r": case "R":
-        e.preventDefault();
-        resetWorld();
-        break;
-      case "b": case "B": setState({ tool: "brush" }); break;
-      case "e": case "E": setState({ tool: "eraser" }); break;
-      case "l": case "L": setState({ tool: "line" }); break;
-      case "f": case "F": setState({ tool: "fill" }); break;
-      case "q": case "Q": setState({ tool: "rect" }); break;
-      case "g": case "G": setState({ grid: !s.grid }); break;
-      case "h": case "H": setState({ heat: !s.heat }); break;
-      case "ArrowLeft": e.preventDefault(); setState({ camera: { ...s.camera, x: s.camera.x + 20 } }); break;
-      case "ArrowRight": e.preventDefault(); setState({ camera: { ...s.camera, x: s.camera.x - 20 } }); break;
-      case "ArrowUp": e.preventDefault(); setState({ camera: { ...s.camera, y: s.camera.y + 20 } }); break;
-      case "ArrowDown": e.preventDefault(); setState({ camera: { ...s.camera, y: s.camera.y - 20 } }); break;
-      case "+": case "=": setState({ camera: { ...s.camera, zoom: Math.min(6, s.camera.zoom * 1.15) } }); break;
-      case "-": case "_": setState({ camera: { ...s.camera, zoom: Math.max(0.25, s.camera.zoom / 1.15) } }); break;
-      case "0": setState({ camera: { x: 0, y: 0, zoom: 1 } }); break;
-      case "Escape":
-        stroke = null; log("info", "Stroke cancelled."); break;
-      case "?":
-        showDialog("help-dialog"); break;
-      case ",":
-        showDialog("settings-dialog"); break;
-    }
-  });
-  window.addEventListener("keyup", (e) => {
-    if (e.code !== "Space") return;
-    const held = spaceDown;
-    spaceDown = false;
-    if (!held || spacePanUsed || typing(e)) {
-      spacePanUsed = false;
-      return;
-    }
-    spacePanUsed = false;
-    setState({ playing: !getState().playing });
-  });
-}
-
-function wireDialogs() {
-  // close on backdrop click
-  for (const id of ["settings-dialog", "help-dialog"]) {
+  $("btn-help").onclick = () => openHelp();
+  $("btn-keys").onclick = () => openKeys();
+  $("material-search").oninput = (e) => setState({ search: e.target.value });
+  document.querySelectorAll("[data-tool]").forEach((b) => b.addEventListener("click", () => setState({ tool: b.dataset.tool })));
+  document.querySelectorAll("[data-shape]").forEach((b) => b.addEventListener("click", () => setState({ shape: b.dataset.shape })));
+  document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => setView(Number(b.dataset.view))));
+  $("btn-grid").onclick = () => setState({ grid: !getState().grid });
+  $("btn-hud").onclick = () => setState({ showHud: !getState().showHud });
+  for (const id of ["help-dialog", "keys-dialog", "stamp-dialog"]) {
     const d = $(id);
     d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
   }
 }
 
-// ---- Logging ----
-function log(level, msg) {
-  const el = $("diag-log");
-  const entry = document.createElement("div");
-  entry.className = "entry " + (level === "error" ? "error" : level === "warn" ? "warn" : "");
-  const time = new Date().toLocaleTimeString();
-  entry.textContent = `[${time}] ${msg}`;
-  el.appendChild(entry);
-  el.scrollTop = el.scrollHeight;
-  while (el.childElementCount > 200) el.removeChild(el.firstChild);
-  $("status-text").textContent = msg;
+function setView(mode) {
+  setState({ view: mode });
+  sim.setViewMode(mode);
 }
 
-// ---- Start ----
-boot().catch((e) => {
-  setAppState("error", "Boot failed: " + (e?.message || e));
-  console.error(e);
-});
+function wirePointer() {
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  canvas.addEventListener("pointerdown", onDown);
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+  canvas.addEventListener("wheel", onWheel, { passive: false });
+  canvas.addEventListener("pointerleave", () => { hover = null; });
+}
+
+function onDown(e) {
+  if (!sim) return;
+  canvas.setPointerCapture?.(e.pointerId);
+  pointer = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  const c = cellFromEvent(e);
+  hover = c;
+  if (e.button === 1) { sample(c); return; }
+  if (e.altKey && e.button === 0) {
+    panning = { x: e.clientX, y: e.clientY, cam: { ...getState().camera } };
+    return;
+  }
+  if (paste && e.button === 0) { placeStamp(c.x, c.y, paste); paste = null; return; }
+  const s = getState();
+  if (s.tool === "select" && e.button === 0) {
+    stroke = { kind: "select", a: c, b: c };
+    return;
+  }
+  let material = s.materialId;
+  if (e.button === 2) material = s.secondaryId;
+  if (s.tool === "eraser" && e.button === 0) material = 0;
+  if (e.ctrlKey && e.shiftKey) { flood(c.x, c.y, material); return; }
+  if (e.shiftKey) { stroke = { kind: "line", a: c, b: c, material }; return; }
+  if (e.ctrlKey || e.metaKey) { stroke = { kind: "rect", a: c, b: c, material }; return; }
+  stroke = { kind: "paint", material, last: c };
+  beginLog();
+  dab(c.x, c.y, material, true);
+}
+
+function onMove(e) {
+  if (canvas) hover = cellFromEvent(e);
+  if (panning) {
+    const dx = e.clientX - panning.x;
+    const dy = e.clientY - panning.y;
+    setState({ camera: { ...panning.cam, x: panning.cam.x + dx, y: panning.cam.y + dy } });
+    return;
+  }
+  if (!stroke) return;
+  const c = cellFromEvent(e);
+  if (stroke.kind === "paint") {
+    const line = bresenham(stroke.last.x, stroke.last.y, c.x, c.y);
+    for (const p of line) dab(p[0], p[1], stroke.material, true);
+    stroke.last = c;
+  } else {
+    stroke.b = c;
+  }
+}
+
+function onUp() {
+  if (panning) { panning = null; return; }
+  if (!stroke) return;
+  const s = stroke;
+  stroke = null;
+  if (s.kind === "line") commitShape(lineCells(s.a, s.b), s.material);
+  else if (s.kind === "rect") commitShape(rectCells(s.a, s.b), s.material);
+  else if (s.kind === "select") selection = normRect(s.a, s.b);
+  else endLog(s.material);
+}
+
+function onWheel(e) {
+  e.preventDefault();
+  const dir = e.deltaY < 0 ? 1 : -1;
+  const s = getState();
+  if (keys.wheel === "zoom") {
+    const zoom = Math.min(6, Math.max(0.25, s.camera.zoom * (dir > 0 ? 1.15 : 1 / 1.15)));
+    setState({ camera: { ...s.camera, zoom } });
+    return;
+  }
+  let rx = s.brushRx;
+  let ry = s.brushRy;
+  if (e.shiftKey) rx = Math.max(0, Math.min(24, rx + dir));
+  else if (e.ctrlKey || e.metaKey) ry = Math.max(0, Math.min(24, ry + dir));
+  else { rx = Math.max(0, Math.min(24, rx + dir)); ry = Math.max(0, Math.min(24, ry + dir)); }
+  setState({ brushRx: rx, brushRy: ry });
+}
+
+function dab(x, y, material, record) {
+  const s = getState();
+  for (const [cx, cy] of brushCells(x, y, s.brushRx, s.brushRy, s.shape)) {
+    if (record) note(cx, cy);
+    sim.mod.set_cell(cx, cy, material);
+  }
+}
+
+function commitShape(cells, material) {
+  beginLog();
+  for (const [x, y] of cells) { note(x, y); sim.mod.set_cell(x, y, material); }
+  endLog(material);
+}
+
+function brushCells(cx, cy, rx, ry, shape) {
+  if (rx === 0 && ry === 0) return [[cx, cy]];
+  const out = [];
+  for (let y = cy - ry; y <= cy + ry; y++) {
+    for (let x = cx - rx; x <= cx + rx; x++) {
+      const nx = rx === 0 ? 0 : (x - cx) / rx;
+      const ny = ry === 0 ? 0 : (y - cy) / ry;
+      let hit = nx * nx + ny * ny <= 1;
+      if (shape === "square") hit = true;
+      if (shape === "triangle") hit = ny >= -1 && Math.abs(nx) <= (ny + 1) * 0.5;
+      if (hit) out.push([x, y]);
+    }
+  }
+  return out.length ? out : [[cx, cy]];
+}
+
+function bresenham(x0, y0, x1, y1) {
+  const pts = [];
+  let x = x0, y = y0;
+  const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+  for (let n = 0; n < 2000; n++) {
+    pts.push([x, y]);
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 < dx) { err += dx; y += sy; }
+  }
+  return pts;
+}
+
+function lineCells(a, b) {
+  const s = getState();
+  const set = new Set();
+  const out = [];
+  for (const [x, y] of bresenham(a.x, a.y, b.x, b.y)) {
+    for (const c of brushCells(x, y, s.brushRx, s.brushRy, s.shape)) {
+      const k = c[0] + "," + c[1];
+      if (set.has(k)) continue;
+      set.add(k);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+function rectCells(a, b) {
+  const r = normRect(a, b);
+  const out = [];
+  for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) out.push([x, y]);
+  return out;
+}
+
+function normRect(a, b) {
+  return { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) };
+}
+
+function flood(x, y, material) {
+  const target = sim.getCellMaterial(x, y);
+  if (target === material) return;
+  const { w, h } = sim.getWorldSize();
+  const stack = [[x, y]];
+  const seen = new Set();
+  beginLog();
+  let guard = w * h;
+  while (stack.length && guard > 0) {
+    const [cx, cy] = stack.pop();
+    if (cx < 0 || cy < 0 || cx >= w || cy >= h) continue;
+    const k = cx + cy * w;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    guard--;
+    if (sim.getCellMaterial(cx, cy) !== target) continue;
+    note(cx, cy);
+    sim.mod.set_cell(cx, cy, material);
+    stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+  }
+  endLog(material);
+}
+
+function sample(c) {
+  const id = sim.getCellMaterial(c.x, c.y);
+  setState({ materialId: id, category: findMaterial(id).category });
+}
+
+function beginLog() { strokeLog = new Map(); }
+function note(x, y) {
+  if (!strokeLog) return;
+  const k = x + "," + y;
+  if (!strokeLog.has(k)) strokeLog.set(k, sim.getCellMaterial(x, y));
+}
+function endLog(material) {
+  if (!strokeLog || strokeLog.size === 0) { strokeLog = null; return; }
+  const before = [];
+  for (const [k, m] of strokeLog) {
+    const [x, y] = k.split(",").map(Number);
+    before.push({ x, y, m });
+  }
+  undoStack.push({ before, material });
+  if (undoStack.length > 30) undoStack.shift();
+  redoStack.length = 0;
+  strokeLog = null;
+}
+function undo() {
+  const op = undoStack.pop();
+  if (!op) return;
+  for (const c of op.before) sim.mod.set_cell(c.x, c.y, c.m);
+  redoStack.push(op);
+}
+function redo() {
+  const op = redoStack.pop();
+  if (!op) return;
+  for (const c of op.before) sim.mod.set_cell(c.x, c.y, op.material);
+  undoStack.push(op);
+}
+
+function activeRect() {
+  if (selection) return selection;
+  if (!hover) return null;
+  const s = getState();
+  return { x0: hover.x - s.brushRx, y0: hover.y - s.brushRy, x1: hover.x + s.brushRx, y1: hover.y + s.brushRy };
+}
+function grab(rect) {
+  if (!rect) return null;
+  const cells = [];
+  for (let y = rect.y0; y <= rect.y1; y++) {
+    for (let x = rect.x0; x <= rect.x1; x++) {
+      const m = sim.getCellMaterial(x, y);
+      if (m) cells.push({ dx: x - rect.x0, dy: y - rect.y0, m });
+    }
+  }
+  return { w: rect.x1 - rect.x0 + 1, h: rect.y1 - rect.y0 + 1, cells, name: "stamp" };
+}
+function copySel(clear) {
+  const data = grab(selection || activeRect());
+  if (!data) return;
+  clipboard = data;
+  localStorage.setItem("labsmatter-last-stamp", JSON.stringify(data));
+  if (clear && selection) {
+    beginLog();
+    for (let y = selection.y0; y <= selection.y1; y++) {
+      for (let x = selection.x0; x <= selection.x1; x++) { note(x, y); sim.mod.set_cell(x, y, 0); }
+    }
+    endLog(0);
+  }
+}
+function placeStamp(x, y, data) {
+  beginLog();
+  for (const c of data.cells) {
+    note(x + c.dx, y + c.dy);
+    sim.mod.set_cell(x + c.dx, y + c.dy, c.m);
+  }
+  endLog(data.cells[0] ? data.cells[0].m : 0);
+}
+function saveStamp() {
+  const data = grab(selection || activeRect());
+  if (!data || !data.cells.length) return;
+  data.name = "stamp-" + new Date().toISOString().slice(11, 19);
+  const all = loadStamps();
+  all.unshift(data);
+  localStorage.setItem("labsmatter-stamps", JSON.stringify(all.slice(0, 24)));
+  localStorage.setItem("labsmatter-last-stamp", JSON.stringify(data));
+  clipboard = data;
+}
+function loadStamps() {
+  try { return JSON.parse(localStorage.getItem("labsmatter-stamps") || "[]"); } catch { return []; }
+}
+function loadLastStamp() {
+  try {
+    const raw = localStorage.getItem("labsmatter-last-stamp");
+    if (raw) paste = JSON.parse(raw);
+  } catch { /* ignore */ }
+}
+function openStamps() {
+  const body = $("stamp-body");
+  body.innerHTML = "";
+  const all = loadStamps();
+  if (!all.length) body.textContent = "No stamps yet. Select an area and press S.";
+  for (const st of all) {
+    const row = document.createElement("div");
+    row.className = "stamp-row";
+    row.innerHTML = `<span>${st.name} · ${st.w}×${st.h}</span>`;
+    const b = document.createElement("button");
+    b.className = "tb";
+    b.type = "button";
+    b.textContent = "Place";
+    b.onclick = () => { paste = st; $("stamp-dialog").close(); };
+    row.appendChild(b);
+    body.appendChild(row);
+  }
+  $("stamp-dialog").showModal();
+}
+
+function shot() {
+  const buf = sim.readRenderBuffer();
+  const { w, h } = sim.getWorldSize();
+  if (!buf) return;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const ctx = c.getContext("2d");
+  const img = ctx.createImageData(w, h);
+  const n = Math.min(buf.length, w * h * 4);
+  img.data.set(buf.subarray(0, n));
+  for (let i = 3; i < n; i += 4) if (img.data[i] === 0) img.data[i] = 255;
+  ctx.putImageData(img, 0, 0);
+  c.toBlob((blob) => {
+    if (!blob) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "labsmatter.png";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
+}
+
+function saveWorld() {
+  const blob = sim.saveBlob();
+  if (!blob || !blob.length) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([blob], { type: "application/octet-stream" }));
+  a.download = "labsmatter-world.rmt";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function resetWorld() {
+  if (!confirm("Clear the world?")) return;
+  sim.reset();
+  undoStack = [];
+  redoStack = [];
+  selection = null;
+  paste = null;
+}
+
+function wireKeys() {
+  window.addEventListener("keydown", (e) => {
+    const tag = e.target && e.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") {
+      if (e.key === "Escape") e.target.blur();
+      return;
+    }
+    if (document.querySelector("dialog[open]")) return;
+    const hit = matchBinding(keys.bindings, e);
+    if (!hit) {
+      if (e.code.startsWith("Arrow")) panKey(e);
+      return;
+    }
+    if (e.repeat && hit.action !== "brush-dec" && hit.action !== "brush-inc") return;
+    e.preventDefault();
+    runAction(hit);
+  });
+}
+
+function panKey(e) {
+  const s = getState();
+  const cam = { ...s.camera };
+  if (e.code === "ArrowLeft") cam.x += 24;
+  if (e.code === "ArrowRight") cam.x -= 24;
+  if (e.code === "ArrowUp") cam.y += 24;
+  if (e.code === "ArrowDown") cam.y -= 24;
+  setState({ camera: cam });
+  e.preventDefault();
+}
+
+function runAction(hit) {
+  const s = getState();
+  switch (hit.action) {
+    case "pause": setState({ playing: !s.playing }); break;
+    case "step": sim.step(1 / 60); break;
+    case "search": $("material-search").focus(); $("material-search").select(); break;
+    case "brush-shape": {
+      const i = (SHAPES.indexOf(s.shape) + 1) % SHAPES.length;
+      setState({ shape: SHAPES[i] });
+      break;
+    }
+    case "brush-dec": setState({ brushRx: Math.max(0, s.brushRx - 1), brushRy: Math.max(0, s.brushRy - 1) }); break;
+    case "brush-inc": setState({ brushRx: Math.min(24, s.brushRx + 1), brushRy: Math.min(24, s.brushRy + 1) }); break;
+    case "hud": setState({ showHud: !s.showHud }); break;
+    case "grid": setState({ grid: !s.grid }); break;
+    case "zoom": setState({ camera: { ...s.camera, zoom: s.camera.zoom > 1.2 ? 1 : 3 } }); break;
+    case "zoom-in": setState({ camera: { ...s.camera, zoom: Math.min(6, s.camera.zoom * 1.15) } }); break;
+    case "zoom-out": setState({ camera: { ...s.camera, zoom: Math.max(0.25, s.camera.zoom / 1.15) } }); break;
+    case "zoom-reset": setState({ camera: { x: 0, y: 0, zoom: 1 } }); break;
+    case "view": setView(hit.arg | 0); break;
+    case "heat-toggle": setView(s.view === 2 ? 0 : 2); break;
+    case "shot": shot(); break;
+    case "stamp-save": saveStamp(); break;
+    case "stamp-load": loadLastStamp(); break;
+    case "stamp-lib": openStamps(); break;
+    case "select": setState({ tool: "select" }); break;
+    case "tool":
+      if (hit.arg === "eraser") setState({ tool: "eraser" });
+      else if (hit.arg === "fill") setState({ tool: "brush" });
+      else setState({ tool: "brush" });
+      break;
+    case "undo": undo(); break;
+    case "redo": redo(); break;
+    case "copy": copySel(false); break;
+    case "cut": copySel(true); break;
+    case "paste": loadLastStamp(); break;
+    case "fullscreen":
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+      else document.exitFullscreen?.();
+      break;
+    case "reset": resetWorld(); break;
+    case "help": openHelp(); break;
+    default: break;
+  }
+}
+
+function openHelp() {
+  const rows = keys.bindings.map((b) => `<tr><td>${formatBinding(b)}</td><td>${b.action}${b.arg != null ? " " + b.arg : ""}</td></tr>`).join("");
+  $("help-body").innerHTML = `<table class="keys"><tr><td>Left drag</td><td>Draw primary</td></tr><tr><td>Right drag</td><td>Draw secondary</td></tr><tr><td>Middle click</td><td>Sample material</td></tr><tr><td>Wheel</td><td>${keys.wheel === "brush" ? "Brush size (Shift horizontal, Ctrl vertical)" : "Zoom"}</td></tr><tr><td>Shift drag</td><td>Line</td></tr><tr><td>Ctrl drag</td><td>Filled rectangle</td></tr><tr><td>Ctrl+Shift click</td><td>Flood fill</td></tr><tr><td>Alt drag</td><td>Pan</td></tr><tr><td>Arrows</td><td>Pan</td></tr>${rows}</table>`;
+  if (!$("help-dialog").open) $("help-dialog").showModal();
+}
+
+let rebindAction = null;
+function openKeys() {
+  const body = $("keys-body");
+  body.innerHTML = "";
+  for (const [action, label] of ACTION_LABELS) {
+    const found = keys.bindings.find((b) => b.action === action);
+    const row = document.createElement("div");
+    row.className = "stamp-row";
+    const name = document.createElement("span");
+    name.textContent = label;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tb";
+    btn.textContent = found ? formatBinding(found) : "unbound";
+    btn.onclick = () => { rebindAction = action; btn.textContent = "press a key…"; };
+    row.append(name, btn);
+    body.appendChild(row);
+  }
+  if (!$("keys-dialog").open) $("keys-dialog").showModal();
+}
+
+window.addEventListener("keydown", (e) => {
+  if (!rebindAction || !$("keys-dialog").open) return;
+  if (e.key === "Escape") { rebindAction = null; openKeys(); return; }
+  e.preventDefault();
+  e.stopPropagation();
+  const action = rebindAction;
+  keys.bindings = keys.bindings.filter((b) => b.action !== action);
+  keys.bindings.push({ action, code: e.code, ctrl: !!(e.ctrlKey || e.metaKey), shift: !!e.shiftKey, alt: !!e.altKey, arg: null });
+  keys.preset = "custom";
+  saveConfig(keys);
+  rebindAction = null;
+  openKeys();
+}, true);
+
+function cellFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const s = getState();
+  const cell = 4 * (s.camera.zoom || 1);
+  return {
+    x: Math.floor((e.clientX - rect.left - s.camera.x) / cell),
+    y: Math.floor((e.clientY - rect.top - s.camera.y) / cell),
+  };
+}
+
+function drawOverlay() {
+  if (!octx || !canvas) return;
+  const w = overlay.width, h = overlay.height;
+  octx.clearRect(0, 0, w, h);
+  const s = getState();
+  const cell = 4 * (s.camera.zoom || 1);
+  octx.strokeStyle = "rgba(255,255,255,.85)";
+  octx.lineWidth = 1;
+  const drawCell = (x, y) => {
+    octx.strokeRect(s.camera.x + x * cell + 0.5, s.camera.y + y * cell + 0.5, cell - 1, cell - 1);
+  };
+  if (selection) {
+    octx.strokeStyle = "rgba(120,200,255,.9)";
+    for (let y = selection.y0; y <= selection.y1; y++) for (let x = selection.x0; x <= selection.x1; x++) {
+      if (x === selection.x0 || x === selection.x1 || y === selection.y0 || y === selection.y1) drawCell(x, y);
+    }
+  }
+  if (stroke && (stroke.kind === "line" || stroke.kind === "rect" || stroke.kind === "select")) {
+    const cells = stroke.kind === "line" ? lineCells(stroke.a, stroke.b) : rectCells(stroke.a, stroke.b);
+    octx.strokeStyle = stroke.kind === "select" ? "rgba(120,200,255,.9)" : "rgba(255,255,255,.8)";
+    for (const [x, y] of cells) drawCell(x, y);
+  } else if (hover && !stroke) {
+    for (const [x, y] of brushCells(hover.x, hover.y, s.brushRx, s.brushRy, s.shape)) drawCell(x, y);
+  }
+  if (paste && hover) {
+    octx.fillStyle = "rgba(255,255,255,.25)";
+    for (const c of paste.cells) {
+      octx.fillRect(s.camera.x + (hover.x + c.dx) * cell, s.camera.y + (hover.y + c.dy) * cell, cell, cell);
+    }
+  }
+}
+
+function paintHud() {
+  const s = getState();
+  if (!s.showHud) return;
+  const fps = renderer && renderer.getFps ? renderer.getFps() : 0;
+  const d = sim.getDiagnostics ? sim.getDiagnostics() : {};
+  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  ${renderer?.backend || ""}`;
+  $("hud-parts").textContent = `${(d.particles || 0).toLocaleString()} pts  ${VIEWS[s.view] || ""}`;
+  if (!hover) { $("hud-cell").textContent = "—"; return; }
+  const m = findMaterial(sim.getCellMaterial(hover.x, hover.y));
+  const t = sim.getCellTemperature(hover.x, hover.y);
+  const p = sim.getCellPressure(hover.x, hover.y);
+  $("hud-cell").textContent = `${hover.x},${hover.y}  ${t.toFixed(0)}K  ${(p / 1000).toFixed(1)}kPa`;
+  $("hud-mat").textContent = `${m.abbr} ${m.name}`;
+}
+
+boot().catch((e) => setAppState("error", String(e?.message || e)));

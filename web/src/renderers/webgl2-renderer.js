@@ -132,7 +132,7 @@ void main(){
   // Write straight RGB. Blend is off for this blit; void stays the clear color
   // via discard when alpha is empty.
   if(c.a<0.004) discard;
-  o=vec4(c.rgb, 1.0);
+  o=c;
   if(uGrid>0.5){
     vec2 cell=uv*uWorld;
     vec2 f=fract(cell);
@@ -157,7 +157,8 @@ void main(){
     gl.useProgram(this._blit.pr);
     gl.bindBuffer(gl.ARRAY_BUFFER, this._blit.vb);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    gl.disable(gl.BLEND);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uOff"), (camera.x || 0) / cssW, (camera.y || 0) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uScale"), (gw * cellPx) / cssW, (gh * cellPx) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uWorld"), gw, gh);
@@ -166,7 +167,6 @@ void main(){
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);
     gl.uniform1i(gl.getUniformLocation(this._blit.pr, "uT"), 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    gl.enable(gl.BLEND);
     this.lastRenderMs = performance.now()-t0;
     const now=performance.now(); this._fpsAcc++; if (now-this._fpsT>=500){this.fps=this._fpsAcc*1000/(now-this._fpsT);this._fpsAcc=0;this._fpsT=now;}
   }

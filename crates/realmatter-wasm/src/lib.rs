@@ -332,6 +332,8 @@ struct SimState {
     /// world, not per tick). Dimensions follow the world; callers must
     /// refresh it after `init`/`load_blob` replace the world.
     chemistry: realmatter_chemistry::ChemistryEngine,
+    /// 0 material, 1 fancy, 2 heat, 3 pressure, 4 velocity.
+    view: u8,
 }
 
 fn make_chemistry(world: &World) -> realmatter_chemistry::ChemistryEngine {
@@ -365,7 +367,7 @@ fn rebuild_render(state: &mut SimState) {
     for y in 0..h {
         for x in 0..w {
             let cell = state.world.cell(x as i32, y as i32).cloned().unwrap_or_default();
-            let (r, g, b, a) = rgba_for(&cell);
+            let (r, g, b, a) = rgba_for(&cell, x as i32, y as i32, state.view);
             let i = (y * w + x) * 4;
             state.render[i] = r;
             state.render[i + 1] = g;
@@ -375,26 +377,73 @@ fn rebuild_render(state: &mut SimState) {
     }
 }
 
-fn rgba_for(cell: &Cell) -> (u8, u8, u8, u8) {
-    match cell.material {
+fn rgba_for(cell: &Cell, x: i32, y: i32, mode: u8) -> (u8, u8, u8, u8) {
+    if cell.material == 0 {
+        return (0, 0, 0, 0);
+    }
+    let (mut r, mut g, mut b, a) = match cell.material {
         0 => (0, 0, 0, 0),
         1 => (128, 128, 128, 255),
         2 => (217, 194, 122, 255),
-        3 => (79, 195, 247, 255),
-        4 => (141, 110, 99, 255),
-        5 => (176, 190, 197, 230),
+        3 => (79, 195, 247, 220),
+        4 => (141, 110, 99, 230),
+        5 => (176, 190, 197, 140),
         6 => (255, 111, 0, 255),
         7 => (109, 76, 65, 255),
         8 => (144, 164, 174, 255),
         9 => (255, 61, 0, 255),
-        10 => (118, 255, 3, 255),
+        10 => (118, 255, 3, 220),
         11 => (238, 238, 238, 255),
-        12 => (97, 97, 97, 230),
-        13 => (179, 229, 252, 255),
-        14 => (128, 222, 234, 255),
+        12 => (97, 97, 97, 120),
+        13 => (179, 229, 252, 230),
+        14 => (128, 222, 234, 180),
         15 => (66, 66, 66, 255),
         _ => (255, 0, 255, 255),
+    };
+    if cell.material != 0 && matches!(cell.material, 2 | 3 | 4 | 10 | 11 | 15) {
+        let n = ((x.wrapping_mul(13).wrapping_add(y.wrapping_mul(7))) & 15) as i32 - 8;
+        r = add_u8(r, n);
+        g = add_u8(g, n);
+        b = add_u8(b, n);
     }
+    match mode {
+        2 => return heat_rgba(cell.temperature),
+        3 => {
+            let k = ((cell.pressure - 90_000.0) / 40_000.0).clamp(0.0, 1.0);
+            return (
+                (40.0 + k * 200.0) as u8,
+                (80.0 + (0.5 - (k - 0.5).abs()) * 120.0) as u8,
+                (200.0 - k * 160.0) as u8,
+                255,
+            );
+        }
+        4 => {
+            let s = (cell.vx * cell.vx + cell.vy * cell.vy).sqrt();
+            let k = (s / 8.0).clamp(0.0, 1.0);
+            return ((40.0 + k * 215.0) as u8, (180.0 - k * 100.0) as u8, 80, 255);
+        }
+        1 if cell.temperature > 500.0 => {
+            let hot = heat_rgba(cell.temperature);
+            let t = ((cell.temperature - 500.0) / 1000.0).clamp(0.0, 0.75);
+            r = ((r as f32) * (1.0 - t) + (hot.0 as f32) * t) as u8;
+            g = ((g as f32) * (1.0 - t) + (hot.1 as f32) * t) as u8;
+            b = ((b as f32) * (1.0 - t) + (hot.2 as f32) * t) as u8;
+        }
+        _ => {}
+    }
+    (r, g, b, a)
+}
+
+fn add_u8(c: u8, d: i32) -> u8 {
+    (c as i32 + d).clamp(0, 255) as u8
+}
+
+fn heat_rgba(t: f32) -> (u8, u8, u8, u8) {
+    let k = ((t - 200.0) / 1600.0).clamp(0.0, 1.0);
+    let r = (k * 255.0) as u8;
+    let g = ((k * 2.2 - 0.7).clamp(0.0, 1.0) * 255.0) as u8;
+    let b = ((1.0 - k).clamp(0.0, 1.0) * 200.0) as u8;
+    (r, g, b, 255)
 }
 
 /// Initialize the simulation. Called once from JS.
@@ -413,7 +462,7 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
     let registry: Arc<dyn MaterialRegistry> = Arc::new(StaticRegistry::builtin());
     let world = World::new(config, registry).map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
     let chemistry = make_chemistry(&world);
-    let mut state = SimState { world, render: Vec::new(), chemistry };
+    let mut state = SimState { world, render: Vec::new(), chemistry, view: 0 };
     rebuild_render(&mut state);
     match global().lock() {
         Ok(mut g) => {
@@ -553,7 +602,7 @@ pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
                     if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h
                         && state.render.len() == w * h * 4
                     {
-                        let (r, g, b, a) = rgba_for(&cell);
+                        let (r, g, b, a) = rgba_for(&cell, x, y, state.view);
                         let i = (y as usize * w + x as usize) * 4;
                         state.render[i] = r;
                         state.render[i + 1] = g;
@@ -587,6 +636,19 @@ fn initial_temperature(material: u16) -> f32 {
     }
 }
 
+/// 0 material, 1 fancy (heat tint), 2 heat, 3 pressure, 4 velocity.
+/// Colors come from the live cell fields, not from invented values.
+#[wasm_bindgen]
+pub fn set_view_mode(mode: u32) {
+    with_state(
+        |state| {
+            state.view = mode.min(4) as u8;
+            rebuild_render(state);
+        },
+        (),
+    );
+}
+
 /// Get a cell's material id (0 if out of bounds / uninitialized).
 #[wasm_bindgen]
 pub fn get_cell_material(x: i32, y: i32) -> u16 {
@@ -594,6 +656,27 @@ pub fn get_cell_material(x: i32, y: i32) -> u16 {
         |state| state.world.cell(x, y).map(|c| c.material).unwrap_or(0),
         0,
     )
+}
+
+/// Pressure in pascals (0 if out of bounds).
+#[wasm_bindgen]
+pub fn get_cell_pressure(x: i32, y: i32) -> f32 {
+    with_state(
+        |state| state.world.cell(x, y).map(|c| c.pressure).unwrap_or(0.0),
+        0.0,
+    )
+}
+
+/// Horizontal velocity, m/s (0 if out of bounds).
+#[wasm_bindgen]
+pub fn get_cell_vx(x: i32, y: i32) -> f32 {
+    with_state(|state| state.world.cell(x, y).map(|c| c.vx).unwrap_or(0.0), 0.0)
+}
+
+/// Vertical velocity, m/s (0 if out of bounds). Positive is downward.
+#[wasm_bindgen]
+pub fn get_cell_vy(x: i32, y: i32) -> f32 {
+    with_state(|state| state.world.cell(x, y).map(|c| c.vy).unwrap_or(0.0), 0.0)
 }
 
 /// Get a cell's temperature (Kelvin; 0.0 if out of bounds / uninitialized).

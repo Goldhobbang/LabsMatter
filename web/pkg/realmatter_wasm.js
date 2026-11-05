@@ -10,6 +10,17 @@ export function get_cell_material(x, y) {
 }
 
 /**
+ * Pressure in pascals (0 if out of bounds).
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_pressure(x, y) {
+    const ret = wasm.get_cell_pressure(x, y);
+    return ret;
+}
+
+/**
  * Get a cell's temperature (Kelvin; 0.0 if out of bounds / uninitialized).
  * @param {number} x
  * @param {number} y
@@ -17,6 +28,28 @@ export function get_cell_material(x, y) {
  */
 export function get_cell_temperature(x, y) {
     const ret = wasm.get_cell_temperature(x, y);
+    return ret;
+}
+
+/**
+ * Horizontal velocity, m/s (0 if out of bounds).
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_vx(x, y) {
+    const ret = wasm.get_cell_vx(x, y);
+    return ret;
+}
+
+/**
+ * Vertical velocity, m/s (0 if out of bounds). Positive is downward.
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_vy(x, y) {
+    const ret = wasm.get_cell_vy(x, y);
     return ret;
 }
 
@@ -112,6 +145,15 @@ export function save_blob() {
 export function set_cell(x, y, material) {
     const ret = wasm.set_cell(x, y, material);
     return ret !== 0;
+}
+
+/**
+ * 0 material, 1 fancy (heat tint), 2 heat, 3 pressure, 4 velocity.
+ * Colors come from the live cell fields, not from invented values.
+ * @param {number} mode
+ */
+export function set_view_mode(mode) {
+    wasm.set_view_mode(mode);
 }
 
 /**
