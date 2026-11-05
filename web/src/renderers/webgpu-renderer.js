@@ -132,6 +132,7 @@ export class WebGPURenderer {
 
   resize(w, h) {
     if (!this.canvas || this._lost) return;
+    if (!(w > 1 && h > 1)) return;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.canvas.width = Math.max(1, Math.floor(w * this.dpr));
     this.canvas.height = Math.max(1, Math.floor(h * this.dpr));
@@ -149,9 +150,12 @@ export class WebGPURenderer {
     try {
       this._ensureTexture(gw, gh);
       const bytesPerRow = gw * 4;
+      const n = bytesPerRow * gh;
+      if (!this._upload || this._upload.length !== n) this._upload = new Uint8Array(n);
+      this._upload.set(buf.subarray(0, n));
       this.device.queue.writeTexture(
         { texture: this.simTex },
-        buf.subarray(0, gw * gh * 4),
+        this._upload,
         { bytesPerRow, rowsPerImage: gh },
         { width: gw, height: gh }
       );

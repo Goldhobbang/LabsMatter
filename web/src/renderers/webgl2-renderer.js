@@ -67,6 +67,10 @@ export class WebGL2Renderer {
 
   resize(w, h) {
     if (!this.canvas || !this.gl || this._lost) return;
+    // A 0-size layout pass used to pin the backing store at 1px. CSS then
+    // stretched that single clear-color pixel over the whole viewport, so the
+    // simulation looked black while the particle counter still climbed.
+    if (!(w > 1 && h > 1)) return;
     const dpr = Math.min(window.devicePixelRatio||1,2);
     this.canvas.width = Math.max(1, Math.floor(w*dpr));
     this.canvas.height = Math.max(1, Math.floor(h*dpr));
@@ -90,7 +94,15 @@ export class WebGL2Renderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     const rows = Math.min(gh, Math.floor(buf.length / (gw * 4)));
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf.subarray(0, gw * rows * 4));
+    const n = gw * rows * 4;
+    // Copy out of the wasm heap. texImage2D on a view into WebAssembly.Memory
+    // (non-zero byteOffset, buffer may detach on grow) uploads zeros on
+    // several browsers, which is a black frame. The CPU particle count still
+    // reads the real cells.
+    if (!this._upload || this._upload.length !== n) this._upload = new Uint8Array(n);
+    this._upload.set(buf.subarray(0, n));
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._upload);
     // Fullscreen textured quad via the instanced shader path is overkill;
     // use a minimal blit program created lazily.
     if (!this._blit) {
@@ -114,9 +126,13 @@ uniform float uGrid;
 in vec2 vUV;
 out vec4 o;
 void main(){
-  vec2 uv=(vUV-uOff)/uScale;
+  vec2 uv=(vUV-uOff)/max(uScale, vec2(1e-6));
   if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.) discard;
-  o=texture(uT, uv);
+  vec4 c=texture(uT, uv);
+  // Write straight RGB. Blend is off for this blit; void stays the clear color
+  // via discard when alpha is empty.
+  if(c.a<0.004) discard;
+  o=vec4(c.rgb, 1.0);
   if(uGrid>0.5){
     vec2 cell=uv*uWorld;
     vec2 f=fract(cell);
@@ -141,6 +157,7 @@ void main(){
     gl.useProgram(this._blit.pr);
     gl.bindBuffer(gl.ARRAY_BUFFER, this._blit.vb);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.disable(gl.BLEND);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uOff"), (camera.x || 0) / cssW, (camera.y || 0) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uScale"), (gw * cellPx) / cssW, (gh * cellPx) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uWorld"), gw, gh);
@@ -149,6 +166,7 @@ void main(){
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);
     gl.uniform1i(gl.getUniformLocation(this._blit.pr, "uT"), 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.enable(gl.BLEND);
     this.lastRenderMs = performance.now()-t0;
     const now=performance.now(); this._fpsAcc++; if (now-this._fpsT>=500){this.fps=this._fpsAcc*1000/(now-this._fpsT);this._fpsAcc=0;this._fpsT=now;}
   }

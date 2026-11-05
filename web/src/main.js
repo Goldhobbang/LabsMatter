@@ -56,13 +56,23 @@ async function boot() {
   }
 
   // wire resize + visibility
-  const ro = new ResizeObserver(() => {
+  const resizeViewport = () => {
+    const box = canvas.parentElement;
+    if (!box) return;
+    // Size from the viewport box, not the canvas. A canvas with height:100%
+    // reports 0 until its parent has a resolved height, and a 0 resize used
+    // to freeze the drawing buffer at one pixel (a black viewport).
+    const w = box.clientWidth;
+    const h = box.clientHeight;
+    if (w < 2 || h < 2) return;
     try {
-      if (typeof renderer.resize === "function") renderer.resize(canvas.clientWidth, canvas.clientHeight);
+      if (typeof renderer.resize === "function") renderer.resize(w, h);
       else if (typeof renderer.attach === "function") renderer.attach(canvas);
-    } catch(e) { log("warn", "resize error: " + e.message); }
-  });
+    } catch (e) { log("warn", "resize error: " + e.message); }
+  };
+  const ro = new ResizeObserver(resizeViewport);
   ro.observe(canvas.parentElement);
+  requestAnimationFrame(resizeViewport);
   document.addEventListener('visibilitychange', () => {});
 
   // build material UI
