@@ -12,6 +12,7 @@ struct Params {
   worldCells: vec2<f32>,
   // background color
   bg: vec4<f32>,
+  grid: f32,
 };
 
 @group(0) @binding(0) var<uniform> p: Params;
@@ -45,10 +46,19 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let uv = (floor(cell) + 0.5) / p.worldCells;
   // texture_2d y=0 is the first row; our buffer is row-major y-outer.
   let c = textureSample(simTex, simSamp, vec2<f32>(uv.x, uv.y));
+  var color: vec4<f32>;
   if (c.a <= 0.003) {
-    return p.bg;
+    color = p.bg;
+  } else {
+    color = vec4<f32>(c.rgb, 1.0);
   }
-  return vec4<f32>(c.rgb, 1.0);
+  if (p.grid > 0.5) {
+    let f = fract(cell);
+    if (f.x < 0.08 || f.y < 0.08) {
+      color = mix(color, vec4<f32>(0.82, 0.86, 0.9, 1.0), 0.35);
+    }
+  }
+  return color;
 }
 `;
 
@@ -159,6 +169,7 @@ export class WebGPURenderer {
       // Pad to 64 bytes (16 floats).
       const padded = new Float32Array(16);
       padded.set(params.subarray(0, 12));
+      padded[12] = this.overlay.grid && cellPx >= 6 ? 1 : 0;
       this.device.queue.writeBuffer(this.uniformBuf, 0, padded);
       const encoder = this.device.createCommandEncoder();
       const pass = encoder.beginRenderPass({

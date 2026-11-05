@@ -24,7 +24,8 @@
 //! - `save_blob() -> Vec<u8>` / `load_blob(bytes: &[u8]) -> bool`
 //!   (persist format v1; errors reported as `false`, details in console)
 //!
-//! Coordinates are world cell coordinates (integer, Y-up per architecture).
+//! Coordinates are world cell coordinates (integer). Y increases downward,
+//! matching the viewport and the cellular-automaton fall direction.
 //! `material` is core MaterialId (u16); 0 = empty/void.
 
 use std::sync::{Arc, Mutex, OnceLock};
@@ -501,33 +502,13 @@ pub fn step(_dt: f64) {
             stability::sanitize(cells, materials);
 
             // 3. Movement (powder + liquid cellular automaton).
+            // Use the registry table. A hardcoded match had grouped gunpowder
+            // with oil at 900 kg/m³ while the material is 1000 kg/m³.
             let state_of = |id: MaterialId| -> Option<MaterialState> {
-                match id {
-                    0 | 5 | 12 => Some(MaterialState::Gas),
-                    1 | 7 | 8 | 13 | 14 => Some(MaterialState::Solid),
-                    2 | 11 | 15 => Some(MaterialState::Powder),
-                    3 | 4 | 9 | 10 => Some(MaterialState::Liquid),
-                    6 => Some(MaterialState::Plasma),
-                    _ => None,
-                }
+                materials.get(id as usize).map(|m| m.state)
             };
             let density_of = |id: MaterialId| -> f32 {
-                match id {
-                    1 | 14 => 2500.0,
-                    2 => 1600.0,
-                    3 => 1000.0,
-                    4 | 15 => 900.0,
-                    5 => 0.6,
-                    6 => 0.3,
-                    7 => 700.0,
-                    8 => 7874.0,
-                    9 => 3100.0,
-                    10 => 1050.0,
-                    11 => 2160.0,
-                    12 => 0.4,
-                    13 => 917.0,
-                    _ => 0.0,
-                }
+                materials.get(id as usize).map(|m| m.density).unwrap_or(0.0)
             };
             realmatter_world::move_powder_step(cells, w, h, &state_of, &density_of, active);
             realmatter_world::move_liquid_step(cells, w, h, &state_of, &density_of, active);
@@ -554,7 +535,12 @@ pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
             let mut cell = Cell::default();
             cell.material = material;
             cell.temperature = initial_temperature(material);
-            if material == 1 {
+            // Solids are structures. Only wall used to be flagged, so sand and
+            // water density-swapped through wood, ice, and glass.
+            let solid = material_table()
+                .get(material as usize)
+                .is_some_and(|m| m.state == MaterialState::Solid);
+            if solid {
                 cell.set_flag(realmatter_core::cell::cell_flags::FIXED, true);
             }
             match state.world.set(CellCoord::new(x, y), cell) {

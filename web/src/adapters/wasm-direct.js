@@ -48,7 +48,9 @@ export class WasmDirectAdapter {
   isReady() { return this.ready; }
   step(dt = 1 / 60) {
     if (this.mod && typeof this.mod.step === "function") {
+      const t0 = performance.now();
       try { this.mod.step(dt); } catch (e) { console.warn(e); }
+      this._tickMs = performance.now() - t0;
     }
   }
   tick(dt = 1 / 60) { this.step(dt); }
@@ -63,10 +65,16 @@ export class WasmDirectAdapter {
   paint(x, y, material, size = 1) {
     if (!this.mod || typeof this.mod.set_cell !== "function") return;
     const s = Math.max(1, size | 0);
+    // Size 1 is a single cell. The old loop used radius max(size, 1) and
+    // skipped the circle test at radius 1, so the smallest brush painted 3×3.
+    if (s <= 1) {
+      try { this.mod.set_cell(x, y, material); } catch (e) { console.warn(e); }
+      return;
+    }
     try {
       for (let dy = -s; dy <= s; dy++) {
         for (let dx = -s; dx <= s; dx++) {
-          if (s > 1 && dx * dx + dy * dy > s * s) continue;
+          if (dx * dx + dy * dy > s * s) continue;
           this.mod.set_cell(x + dx, y + dy, material);
         }
       }
@@ -76,7 +84,7 @@ export class WasmDirectAdapter {
     const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
     for (let i = 0; i <= steps; i++) {
       const t = steps === 0 ? 0 : i / steps;
-      this.paint(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t), material, Math.max(1, size - 1));
+      this.paint(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t), material, Math.max(1, size | 0));
     }
   }
   rect(x0, y0, x1, y1, material, fill = false) {
@@ -98,13 +106,16 @@ export class WasmDirectAdapter {
     if (target === material) return;
     const stack = [[x, y]];
     const seen = new Set();
+    // Bound visits by the grid, not by raw stack pops. The old guard counted
+    // duplicate neighbor pushes, so a fill of the empty world stopped halfway.
     let guard = w * h;
-    while (stack.length && guard-- > 0) {
+    while (stack.length && guard > 0) {
       const [cx, cy] = stack.pop();
       if (cx < 0 || cy < 0 || cx >= w || cy >= h) continue;
       const k = cy * w + cx;
       if (seen.has(k)) continue;
       seen.add(k);
+      guard--;
       let m = -1;
       try { m = this.mod.get_cell_material(cx, cy); } catch { continue; }
       if (m !== target) continue;
@@ -126,11 +137,56 @@ export class WasmDirectAdapter {
     }
   }
   getSnapshot() { return null; }
+  _refreshCounts() {
+    const now = performance.now();
+    if (this._countAt && now - this._countAt < 250) return;
+    this._countAt = now;
+    const { w, h } = this.getWorldSize();
+    const buf = this.readRenderBuffer();
+    let particles = 0;
+    let chunks = 0;
+    if (buf && w > 0 && h > 0) {
+      const cs = 32;
+      const cw = Math.ceil(w / cs);
+      const ch = Math.ceil(h / cs);
+      const hit = new Uint8Array(cw * ch);
+      const stride = w * 4;
+      for (let y = 0; y < h; y++) {
+        const row = y * stride;
+        const cy = (y / cs) | 0;
+        for (let x = 0; x < w; x++) {
+          if (buf[row + x * 4 + 3] !== 0) {
+            particles++;
+            hit[cy * cw + ((x / cs) | 0)] = 1;
+          }
+        }
+      }
+      for (let i = 0; i < hit.length; i++) chunks += hit[i];
+    }
+    this._particles = particles;
+    this._chunks = chunks;
+  }
   getDiagnostics() {
     let w = this.width, h = this.height;
     if (this.mod && typeof this.mod.world_width === "function") { try { w = this.mod.world_width(); } catch {} }
     if (this.mod && typeof this.mod.world_height === "function") { try { h = this.mod.world_height(); } catch {} }
-    return { fps: 0, tickMs: 0, renderMs: 0, particles: 0, chunks: 0, memoryMB: this.memory ? this.memory.buffer.byteLength / (1024 * 1024) : 0, state: this.ready ? "READY(WASM)" : "UNAVAILABLE", tick: 0, worldW: w, worldH: h };
+    this._refreshCounts();
+    let tick = 0;
+    if (this.mod && typeof this.mod.tick_count === "function") {
+      try { tick = Number(this.mod.tick_count()); } catch {}
+    }
+    return {
+      fps: 0,
+      tickMs: this._tickMs || 0,
+      renderMs: 0,
+      particles: this._particles || 0,
+      chunks: this._chunks || 0,
+      memoryMB: this.memory ? this.memory.buffer.byteLength / (1024 * 1024) : 0,
+      state: this.ready ? "READY(WASM)" : "UNAVAILABLE",
+      tick,
+      worldW: w,
+      worldH: h,
+    };
   }
   getWorldSize() {
     let w = this.width, h = this.height;

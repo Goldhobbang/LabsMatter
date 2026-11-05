@@ -20,6 +20,8 @@ let spaceDown = false;
 let tickSamples = 0;
 let tickWindowStart = performance.now();
 let measuredTps = 0;
+let spacePanUsed = false;
+let materialListKey = "";
 
 // ---- Boot ----
 async function boot() {
@@ -201,7 +203,15 @@ function onStateChange(s) {
   $("btn-heat").setAttribute("aria-pressed", String(s.heat));
   $("app").classList.toggle("high-contrast", s.highContrast);
   $("app").classList.toggle("reduced-motion", s.reducedMotion);
-  renderMaterialList();
+  const showFps = s.showFps !== false;
+  $("hud-fps").hidden = !showFps;
+  const fpsRow = $("d-fps") && $("d-fps").parentElement;
+  if (fpsRow) fpsRow.hidden = !showFps;
+  const listKey = `${s.search}\0${s.category}\0${s.materialId}`;
+  if (listKey !== materialListKey) {
+    materialListKey = listKey;
+    renderMaterialList();
+  }
   updateInspector(s.selectedMaterial);
 }
 
@@ -247,10 +257,8 @@ function wireToolbar() {
     log("info", "Stepped one tick.");
   });
   $("btn-reset").addEventListener("click", () => {
-    if (!confirm("Reset the world?")) return;
     if (sim && sim.canReset && !sim.canReset()) log("warn", "Reset unavailable");
-    try { if (sim && sim.reset) { sim.reset(); log("info", "World reset"); } } catch(e) { log("error", "reset failed: " + e.message); }
-    resetState();
+    resetWorld();
   });
   $("speed").addEventListener("input", (e) => {
     setState({ speed: parseFloat(e.target.value) });
@@ -292,8 +300,8 @@ function wireToolbar() {
       log("info", "Heat overlay: color view only (temperature tint unavailable in live WASM mode).");
     }
   });
-  $("btn-settings").addEventListener("click", () => $("settings-dialog").showModal());
-  $("btn-help").addEventListener("click", () => $("help-dialog").showModal());
+  $("btn-settings").addEventListener("click", () => showDialog("settings-dialog"));
+  $("btn-help").addEventListener("click", () => showDialog("help-dialog"));
 }
 
 // ---- Tools ----
@@ -386,13 +394,28 @@ function updateInspector(materialId) {
 function cellFromEvent(e) {
   const rect = canvas.getBoundingClientRect();
   const s = getState();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const cell = 4 * s.camera.zoom;
-  const cx = (e.clientX - rect.left) * (canvas.width / (rect.width * dpr));
-  const cy = (e.clientY - rect.top) * (canvas.height / (rect.height * dpr));
-  const x = Math.floor((cx / dpr - s.camera.x) / cell);
-  const y = Math.floor((cy / dpr - s.camera.y) / cell);
+  const cell = 4 * (s.camera.zoom || 1);
+  // Camera and the renderers are in CSS pixels. Dividing by devicePixelRatio
+  // again mapped the cursor to the wrong cell on HiDPI displays.
+  const x = Math.floor((e.clientX - rect.left - s.camera.x) / cell);
+  const y = Math.floor((e.clientY - rect.top - s.camera.y) / cell);
   return { x, y };
+}
+
+function showDialog(id) {
+  const d = $(id);
+  if (d && !d.open) d.showModal();
+}
+
+function resetWorld() {
+  if (!confirm("Reset the world?")) return;
+  try {
+    if (sim && sim.reset) sim.reset();
+    resetState();
+    log("info", "World reset.");
+  } catch (e) {
+    log("error", "reset failed: " + (e?.message || e));
+  }
 }
 
 function wireViewport() {
@@ -454,6 +477,7 @@ function wireViewport() {
     if (!panning || !panStart) return;
     const dx = e.clientX - panStart.x;
     const dy = e.clientY - panStart.y;
+    if (spaceDown) spacePanUsed = true;
     setState({ camera: { ...panStart.cam, x: panStart.cam.x + dx, y: panStart.cam.y + dy } });
   });
   window.addEventListener("mouseup", () => { panning = false; panStart = null; });
@@ -492,21 +516,27 @@ function wireViewport() {
 
 // ---- Keyboard shortcuts ----
 function wireShortcuts() {
-  window.addEventListener("keydown", (e) => {
-    if (e.code === "Space") spaceDown = true;
+  const typing = (e) => {
     const tag = (e.target && e.target.tagName) || "";
-    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    return tag === "INPUT" || tag === "TEXTAREA";
+  };
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Space") {
+      spaceDown = true;
+      if (!typing(e)) e.preventDefault();
+    }
+    if (typing(e) || e.repeat) return;
     const s = getState();
     switch (e.key) {
       case " ":
-        e.preventDefault();
-        setState({ playing: !s.playing });
+        // Play/pause is applied on keyup so a Space+drag pan does not also
+        // toggle the simulation, and key-repeat cannot flip it every frame.
         break;
       case ".":
         if (typeof sim.step === "function") sim.step(); else if (typeof sim.tick === "function") sim.tick(); log("info", "Stepped one tick."); break;
       case "r": case "R":
-        if (e.shiftKey) { /* rect tool handled below? no */ }
-        if (!e.ctrlKey && !e.metaKey) { /* reset requires confirm; use Shift+R? */ }
+        e.preventDefault();
+        resetWorld();
         break;
       case "b": case "B": setState({ tool: "brush" }); break;
       case "e": case "E": setState({ tool: "eraser" }); break;
@@ -515,25 +545,31 @@ function wireShortcuts() {
       case "q": case "Q": setState({ tool: "rect" }); break;
       case "g": case "G": setState({ grid: !s.grid }); break;
       case "h": case "H": setState({ heat: !s.heat }); break;
-      case "ArrowLeft": setState({ camera: { ...s.camera, x: s.camera.x + 20 } }); break;
-      case "ArrowRight": setState({ camera: { ...s.camera, x: s.camera.x - 20 } }); break;
-      case "ArrowUp": setState({ camera: { ...s.camera, y: s.camera.y + 20 } }); break;
-      case "ArrowDown": setState({ camera: { ...s.camera, y: s.camera.y - 20 } }); break;
+      case "ArrowLeft": e.preventDefault(); setState({ camera: { ...s.camera, x: s.camera.x + 20 } }); break;
+      case "ArrowRight": e.preventDefault(); setState({ camera: { ...s.camera, x: s.camera.x - 20 } }); break;
+      case "ArrowUp": e.preventDefault(); setState({ camera: { ...s.camera, y: s.camera.y + 20 } }); break;
+      case "ArrowDown": e.preventDefault(); setState({ camera: { ...s.camera, y: s.camera.y - 20 } }); break;
       case "+": case "=": setState({ camera: { ...s.camera, zoom: Math.min(6, s.camera.zoom * 1.15) } }); break;
       case "-": case "_": setState({ camera: { ...s.camera, zoom: Math.max(0.25, s.camera.zoom / 1.15) } }); break;
       case "0": setState({ camera: { x: 0, y: 0, zoom: 1 } }); break;
       case "Escape":
         stroke = null; log("info", "Stroke cancelled."); break;
       case "?":
-        $("help-dialog").showModal(); break;
+        showDialog("help-dialog"); break;
       case ",":
-        $("settings-dialog").showModal(); break;
+        showDialog("settings-dialog"); break;
     }
-    if ((e.key === "r" || e.key === "R") && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      if (confirm("Reset the world?")) { sim.reset(); resetState(); log("warn", "World reset."); }
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.code !== "Space") return;
+    const held = spaceDown;
+    spaceDown = false;
+    if (!held || spacePanUsed || typing(e)) {
+      spacePanUsed = false;
+      return;
     }
-    window.addEventListener("keyup", (e) => { if (e.code === "Space") spaceDown = false; });
+    spacePanUsed = false;
+    setState({ playing: !getState().playing });
   });
 }
 

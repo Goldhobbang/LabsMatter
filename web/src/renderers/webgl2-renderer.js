@@ -98,10 +98,38 @@ export class WebGL2Renderer {
       gl.shaderSource(vs, `#version 300 es\nlayout(location=0) in vec2 aP; out vec2 vUV; void main(){ vUV=vec2(aP.x*0.5+0.5, 0.5-aP.y*0.5); gl_Position=vec4(aP,0.,1.);}`);
       gl.compileShader(vs);
       const fs = gl.createShader(gl.FRAGMENT_SHADER);
-      gl.shaderSource(fs, `#version 300 es\nprecision mediump float; uniform sampler2D uT; uniform vec2 uOff; uniform vec2 uScale; in vec2 vUV; out vec4 o; void main(){ vec2 uv=(vUV-uOff)/uScale; if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.) discard; o=texture(uT, vec2(uv.x, 1.0-uv.y)); }`);
+      // World row 0 is the first uploaded row (GL uv y = 0). Sampling `uv`
+      // directly, with uv derived as (css - camera) / worldSize, puts cell
+      // (0,0) at the top-left and keeps the pointer on the cell it paints.
+      // The previous 1-uv.y flip plus a negated camera offset drew the world
+      // upside down and shifted it when panning, so sand appeared to fall up
+      // and strokes landed off the cursor.
+      gl.shaderSource(fs, `#version 300 es
+precision mediump float;
+uniform sampler2D uT;
+uniform vec2 uOff;
+uniform vec2 uScale;
+uniform vec2 uWorld;
+uniform float uGrid;
+in vec2 vUV;
+out vec4 o;
+void main(){
+  vec2 uv=(vUV-uOff)/uScale;
+  if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.) discard;
+  o=texture(uT, uv);
+  if(uGrid>0.5){
+    vec2 cell=uv*uWorld;
+    vec2 f=fract(cell);
+    float w=max(fwidth(cell.x), 0.04);
+    if(f.x<w||f.y<w) o=vec4(mix(o.rgb, vec3(0.82), 0.35), 1.0);
+  }
+}`);
       gl.compileShader(fs);
       const pr = gl.createProgram();
       gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr);
+      if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) {
+        console.warn("WebGL blit link failed", gl.getProgramInfoLog(pr), gl.getShaderInfoLog(fs));
+      }
       const vb = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, vb);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
@@ -113,8 +141,10 @@ export class WebGL2Renderer {
     gl.useProgram(this._blit.pr);
     gl.bindBuffer(gl.ARRAY_BUFFER, this._blit.vb);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-    gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uOff"), -camera.x / cssW, -camera.y / cssH);
+    gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uOff"), (camera.x || 0) / cssW, (camera.y || 0) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uScale"), (gw * cellPx) / cssW, (gh * cellPx) / cssH);
+    gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uWorld"), gw, gh);
+    gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGrid"), this.overlay.grid && cellPx >= 6 ? 1 : 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);
     gl.uniform1i(gl.getUniformLocation(this._blit.pr, "uT"), 0);

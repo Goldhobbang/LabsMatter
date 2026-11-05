@@ -115,9 +115,8 @@ pub fn sanitize(cells: &mut [Cell], materials: &[MaterialProps]) {
         if !cell.temperature.is_finite() {
             cell.temperature = 293.15;
         }
-        if cell.temperature < 0.0 {
-            cell.temperature = 0.0;
-        }
+        // Ceiling stops a bad heat source from running away to millions of kelvin.
+        cell.temperature = cell.temperature.clamp(0.0, 4000.0);
         if !cell.vx.is_finite() { cell.vx = 0.0; }
         if !cell.vy.is_finite() { cell.vy = 0.0; }
         if !cell.pressure.is_finite() {

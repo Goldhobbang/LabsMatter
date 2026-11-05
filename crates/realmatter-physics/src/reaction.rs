@@ -132,28 +132,18 @@ pub fn react_all(
                 processed[i] = true;
                 continue;
             }
-            // Combustion and fire propagation
+            // Combustion and fire propagation.
+            // Ignited fuel becomes fire. The previous branch added ~900 K of
+            // heat every tick with no ceiling, so a wood cell reached tens of
+            // thousands of kelvin while staying wood-colored, and that heat
+            // conducted into everything nearby.
             if ma.flammable && cells[i].temperature.is_finite() && cells[i].temperature >= ma.ignition_temp {
+                cells[i].material = 6;
+                cells[i].temperature = cells[i].temperature.clamp(1100.0, 1400.0);
+                if cells[i].lifetime <= 0.0 {
+                    cells[i].lifetime = 2.5;
+                }
                 cells[i].set_flag(cell_flags::BURNING, true);
-                let mass = ma.density * (0.01 * 0.01 * 0.01);
-                if mass > 0.0 {
-                    cells[i].temperature += (70000.0 / (mass * ma.specific_heat.max(1.0))) * dt.min(0.016);
-                }
-                if cells[i].lifetime == 0.0 {
-                    cells[i].lifetime = 5.0;
-                }
-                if cells[i].lifetime > 0.0 {
-                    cells[i].lifetime = (cells[i].lifetime - dt).max(0.0);
-                    if cells[i].lifetime == 0.0 {
-                        cells[i].material = 0;
-                        cells[i].vx = 0.0;
-                        cells[i].vy = 0.0;
-                        cells[i].flags = 0;
-                        cells[i].pressure = 101325.0;
-                        processed[i] = true;
-                        continue;
-                    }
-                }
                 // Spread fire: heat adjacent fuel to its ignition point so it
                 // catches fire on a subsequent tick (observable propagation).
                 for (dx, dy) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
