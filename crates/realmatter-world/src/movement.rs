@@ -54,14 +54,23 @@ fn try_move(cells: &mut [Cell], i: usize, j: usize, stats: &mut MovementStats) -
 }
 
 /// Density-driven swap: heavier cell sinks through lighter mobile cell.
+/// Solids (wood, iron, ice, glass, wall) are structures, not fluids, so a
+/// denser powder or liquid must not displace them.
 fn try_sink_swap(
     cells: &mut [Cell],
     i: usize,
     j: usize,
+    state_of: &StateOf,
     density_of: &dyn Fn(MaterialId) -> f32,
     stats: &mut MovementStats,
 ) -> bool {
     if cells[j].is_empty() || cells[j].has_flag(cell_flags::FIXED) {
+        return false;
+    }
+    if !matches!(
+        state_of(cells[j].material),
+        Some(MaterialState::Powder | MaterialState::Liquid | MaterialState::Gas | MaterialState::Plasma)
+    ) {
         return false;
     }
     let di = density_of(cells[i].material);
@@ -120,7 +129,7 @@ pub fn move_powder_step(
                     try_move(cells, i, j, &mut stats);
                     continue;
                 }
-                if try_sink_swap(cells, i, j, density_of, &mut stats) {
+                if try_sink_swap(cells, i, j, state_of, density_of, &mut stats) {
                     continue;
                 }
                 // Down-left, then down-right (deterministic order).
@@ -186,7 +195,7 @@ pub fn move_liquid_step(
                     try_move(cells, i, j, &mut stats);
                     continue;
                 }
-                if try_sink_swap(cells, i, j, density_of, &mut stats) {
+                if try_sink_swap(cells, i, j, state_of, density_of, &mut stats) {
                     continue;
                 }
                 for dx in [-1isize, 1] {

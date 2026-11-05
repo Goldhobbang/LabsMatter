@@ -15,16 +15,16 @@ export async function createRenderer(canvas) {
       console.warn("WebGPU init failed, falling back:", e?.message);
     }
   }
-  // Try WebGL2
+  // Try WebGL2. Do not call getContext here first: a second getContext with
+  // different attributes returns null in Firefox and the real renderer never
+  // attaches. WebGL2Renderer.attach is the only caller.
   try {
-    const gl = canvas.getContext("webgl2", { failIfMajorPerformanceCaveat: false });
-    if (gl) {
-      const { WebGL2Renderer } = await import("./webgl2-renderer.js");
-      const r = new WebGL2Renderer();
-      r.attach(canvas);
-      r.backend = "webgl2";
-      return r;
-    }
+    const { WebGL2Renderer } = await import("./webgl2-renderer.js");
+    const r = new WebGL2Renderer();
+    r.attach(canvas);
+    if (!r.gl) throw new Error("no webgl2");
+    r.backend = "webgl2";
+    return r;
   } catch (e) {
     console.warn("WebGL2 init failed:", e?.message);
   }

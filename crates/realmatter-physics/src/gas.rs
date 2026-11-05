@@ -85,7 +85,11 @@ pub fn diffuse(
     if cells.len() != w * h {
         return;
     }
-    // Pressure propagation: move gas to lower pressure / empty cells
+    // Rise, then spread. The previous pass moved every gas cell into the
+    // first empty neighbor in left, right, up, down order, so smoke and steam
+    // marched to the left edge and oscillated there. Buoyancy is upward
+    // (decreasing y, which is up on screen). Sideways order alternates with
+    // position so a plume spreads without an RNG.
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
@@ -94,42 +98,36 @@ pub fn diffuse(
                     continue;
                 }
             }
-            if cells[i].is_empty() || cells[i].has_flag(cell_flags::FIXED) {
+            if cells[i].is_empty()
+                || cells[i].has_flag(cell_flags::FIXED)
+                || cells[i].has_flag(cell_flags::UPDATED)
+            {
                 continue;
             }
             let m = material_or_default(materials, cells[i].material);
             if m.state != core::material::MaterialState::Gas {
                 continue;
             }
-            let pi = cells[i].pressure;
-            // Find empty neighbor with lower pressure preference
-            let mut best = i;
-            let mut best_p = pi;
-            for (dx, dy) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
+            let order: [(i32, i32); 5] = if (x + y) & 1 == 0 {
+                [(0, -1), (-1, -1), (1, -1), (-1, 0), (1, 0)]
+            } else {
+                [(0, -1), (1, -1), (-1, -1), (1, 0), (-1, 0)]
+            };
+            for (dx, dy) in order {
                 let nx = x as i32 + dx;
                 let ny = y as i32 + dy;
                 if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
                     continue;
                 }
                 let ni = ny as usize * w + nx as usize;
-                if cells[ni].is_empty() {
-                    // Empty cells act as low pressure sink: move there.
-                    cells[ni] = cells[i];
-                    cells[i] = Cell::default();
+                if cells[ni].is_empty() && !cells[ni].has_flag(cell_flags::UPDATED) {
+                    cells.swap(i, ni);
+                    cells[ni].set_flag(cell_flags::UPDATED, true);
                     break;
                 }
-                if cells[ni].pressure < best_p - 1.0 {
-                    best_p = cells[ni].pressure;
-                    best = ni;
-                }
-            }
-            if best != i && cells[best].is_empty() {
-                cells[best] = cells[i];
-                cells[i] = Cell::default();
             }
         }
     }
-    let _ = dt;
 }
 
 /// Gas buoyancy and density-driven movement.
