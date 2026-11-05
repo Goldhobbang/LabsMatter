@@ -1,7 +1,7 @@
 // Configurable keyboard map. Powder preset follows The Powder Toy where a
 // browser can actually honor the key. Legacy preset keeps the older LabsMatter keys.
 
-const KEY = "labsmatter-keys-v1";
+const KEY = "labsmatter-keys-v2";
 
 function bind(action, code, extra = {}) {
   return { action, code, ctrl: false, shift: false, alt: false, arg: null, ...extra };
@@ -15,6 +15,9 @@ export function powderPreset() {
     bind("brush-shape", "Tab"),
     bind("brush-dec", "BracketLeft"),
     bind("brush-inc", "BracketRight"),
+    bind("brush-dec-1", "BracketLeft", { alt: true }),
+    bind("brush-inc-1", "BracketRight", { alt: true }),
+    bind("grid-dec", "KeyG", { shift: true }),
     bind("hud", "KeyH"),
     bind("grid", "KeyG"),
     bind("zoom", "KeyZ"),
@@ -38,6 +41,14 @@ export function powderPreset() {
     bind("paste", "KeyV", { ctrl: true }),
     bind("help", "Slash", { shift: true }),
     bind("reset", "Backspace", { ctrl: true }),
+    bind("gravity", "KeyW"),
+    bind("air", "KeyY"),
+    bind("edge", "KeyE", { ctrl: true }),
+    bind("newton", "KeyN"),
+    bind("ambient", "KeyU"),
+    bind("stamp-rot", "KeyR"),
+    bind("stamp-flip-x", "KeyR", { shift: true }),
+    bind("stamp-flip-y", "KeyR", { ctrl: true, shift: true }),
   ];
 }
 

@@ -13,6 +13,7 @@ let state = {
   playing: false,
   speed: 1,
   grid: false,
+  gridSize: 8,
   view: 0,
   showHud: true,
   showFps: true,

@@ -112,7 +112,10 @@ function loop(now) {
     tickWindow = now;
     tickSamples = 0;
   }
-  if (typeof renderer.setOverlay === "function") renderer.setOverlay("grid", s.grid);
+  if (typeof renderer.setOverlay === "function") {
+    renderer.setOverlay("grid", s.grid && s.gridSize > 0);
+    renderer.setOverlay("gridSize", s.gridSize || 0);
+  }
   try {
     const buf = sim.readRenderBuffer();
     const size = sim.getWorldSize();
@@ -468,6 +471,27 @@ function copySel(clear) {
     endLog(0);
   }
 }
+function normalizeStamp(cells) {
+  if (!cells.length) return cells;
+  const minX = Math.min(...cells.map((c) => c.dx));
+  const minY = Math.min(...cells.map((c) => c.dy));
+  return cells.map((c) => ({ dx: c.dx - minX, dy: c.dy - minY, m: c.m }));
+}
+function rotatePaste() {
+  if (!paste) return;
+  paste = { ...paste, cells: normalizeStamp(paste.cells.map((c) => ({ dx: c.dy, dy: -c.dx, m: c.m }))) };
+}
+function flipPaste(axis) {
+  if (!paste) return;
+  paste = {
+    ...paste,
+    cells: normalizeStamp(paste.cells.map((c) => ({
+      dx: axis === "x" ? -c.dx : c.dx,
+      dy: axis === "y" ? -c.dy : c.dy,
+      m: c.m,
+    }))),
+  };
+}
 function placeStamp(x, y, data) {
   beginLog();
   for (const c of data.cells) {
@@ -589,17 +613,39 @@ function runAction(hit) {
   const s = getState();
   switch (hit.action) {
     case "pause": setState({ playing: !s.playing }); break;
-    case "step": sim.step(1 / 60); break;
+    case "step":
+      setState({ playing: false });
+      sim.step(1 / 60);
+      break;
     case "search": $("material-search").focus(); $("material-search").select(); break;
     case "brush-shape": {
       const i = (SHAPES.indexOf(s.shape) + 1) % SHAPES.length;
       setState({ shape: SHAPES[i] });
       break;
     }
-    case "brush-dec": setState({ brushRx: Math.max(0, s.brushRx - 1), brushRy: Math.max(0, s.brushRy - 1) }); break;
-    case "brush-inc": setState({ brushRx: Math.min(24, s.brushRx + 1), brushRy: Math.min(24, s.brushRy + 1) }); break;
+    case "brush-dec": setState({ brushRx: Math.max(0, s.brushRx - 4), brushRy: Math.max(0, s.brushRy - 4) }); break;
+    case "brush-inc": setState({ brushRx: Math.min(24, s.brushRx + 4), brushRy: Math.min(24, s.brushRy + 4) }); break;
+    case "brush-dec-1": setState({ brushRx: Math.max(0, s.brushRx - 1), brushRy: Math.max(0, s.brushRy - 1) }); break;
+    case "brush-inc-1": setState({ brushRx: Math.min(24, s.brushRx + 1), brushRy: Math.min(24, s.brushRy + 1) }); break;
     case "hud": setState({ showHud: !s.showHud }); break;
-    case "grid": setState({ grid: !s.grid }); break;
+    case "grid": {
+      const next = s.gridSize >= 32 ? 32 : Math.max(4, (s.gridSize || 4) * 2);
+      setState({ grid: true, gridSize: s.gridSize === 0 ? 4 : next });
+      break;
+    }
+    case "grid-dec": {
+      const next = s.gridSize <= 4 ? 0 : Math.floor(s.gridSize / 2);
+      setState({ grid: next > 0, gridSize: next });
+      break;
+    }
+    case "gravity": sim.cycleGravity(); break;
+    case "air": sim.cycleAir(); break;
+    case "edge": sim.cycleEdge(); break;
+    case "newton": sim.toggleNewtonian(); break;
+    case "ambient": sim.toggleAmbient(); break;
+    case "stamp-rot": rotatePaste(); break;
+    case "stamp-flip-x": flipPaste("x"); break;
+    case "stamp-flip-y": flipPaste("y"); break;
     case "zoom": setState({ camera: { ...s.camera, zoom: s.camera.zoom > 1.2 ? 1 : 3 } }); break;
     case "zoom-in": setState({ camera: { ...s.camera, zoom: Math.min(6, s.camera.zoom * 1.15) } }); break;
     case "zoom-out": setState({ camera: { ...s.camera, zoom: Math.max(0.25, s.camera.zoom / 1.15) } }); break;
@@ -720,7 +766,7 @@ function paintHud() {
   const fps = renderer && renderer.getFps ? renderer.getFps() : 0;
   const d = sim.getDiagnostics ? sim.getDiagnostics() : {};
   $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  ${renderer?.backend || ""}`;
-  $("hud-parts").textContent = `${(d.particles || 0).toLocaleString()} pts  ${VIEWS[s.view] || ""}`;
+  $("hud-parts").textContent = `${(d.particles || 0).toLocaleString()} pts  ${VIEWS[s.view] || ""}  ${sim.simStatus ? sim.simStatus() : ""}  grid ${s.grid ? s.gridSize : 0}`;
   if (!hover) { $("hud-cell").textContent = "—"; return; }
   const m = findMaterial(sim.getCellMaterial(hover.x, hover.y));
   const t = sim.getCellTemperature(hover.x, hover.y);

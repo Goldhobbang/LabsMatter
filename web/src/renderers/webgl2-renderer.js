@@ -133,11 +133,11 @@ void main(){
   // via discard when alpha is empty.
   if(c.a<0.004) discard;
   o=c;
-  if(uGrid>0.5){
+  if(uGrid>=1.0){
     vec2 cell=uv*uWorld;
-    vec2 f=fract(cell);
-    float w=max(fwidth(cell.x), 0.04);
-    if(f.x<w||f.y<w) o=vec4(mix(o.rgb, vec3(0.82), 0.35), 1.0);
+    vec2 g=fract(cell/uGrid);
+    float w=max(fwidth(cell.x)/uGrid, 0.05);
+    if(g.x<w||g.y<w) o=vec4(mix(o.rgb, vec3(0.8), 0.45), 1.0);
   }
 }`);
       gl.compileShader(fs);
@@ -162,7 +162,8 @@ void main(){
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uOff"), (camera.x || 0) / cssW, (camera.y || 0) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uScale"), (gw * cellPx) / cssW, (gh * cellPx) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uWorld"), gw, gh);
-    gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGrid"), this.overlay.grid && cellPx >= 6 ? 1 : 0);
+    const gridSpacing = this.overlay.grid ? (this.overlay.gridSize || 8) : 0;
+    gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGrid"), gridSpacing);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);
     gl.uniform1i(gl.getUniformLocation(this._blit.pr, "uT"), 0);

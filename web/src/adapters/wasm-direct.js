@@ -21,9 +21,9 @@ export class WasmDirectAdapter {
     // site root's pkg/ directory. No absolute '/pkg' paths: those break under
     // a subpath deployment.
     const paths = [
-      "../../pkg/realmatter_wasm.js",
-      "../pkg/realmatter_wasm.js",
-      "./pkg/realmatter_wasm.js",
+      "../../pkg/realmatter_wasm.js?sim=4",
+      "../pkg/realmatter_wasm.js?sim=4",
+      "./pkg/realmatter_wasm.js?sim=4",
     ];
     let lastErr = null;
     for (const p of paths) {
@@ -221,6 +221,12 @@ export class WasmDirectAdapter {
       return new Uint8Array(mem.buffer, ptr, len);
     } catch { return null; }
   }
+  cycleGravity() { try { this.mod.cycle_gravity?.(); } catch (e) { console.warn(e); } }
+  cycleAir() { try { this.mod.cycle_air?.(); } catch (e) { console.warn(e); } }
+  cycleEdge() { try { this.mod.cycle_edge?.(); } catch (e) { console.warn(e); } }
+  toggleNewtonian() { try { this.mod.toggle_newtonian?.(); } catch (e) { console.warn(e); } }
+  toggleAmbient() { try { this.mod.toggle_ambient?.(); } catch (e) { console.warn(e); } }
+  simStatus() { try { return this.mod.sim_status?.() || ""; } catch { return ""; } }
   setViewMode(mode) {
     if (this.mod && typeof this.mod.set_view_mode === "function") {
       try { this.mod.set_view_mode(mode | 0); } catch (e) { console.warn(e); }

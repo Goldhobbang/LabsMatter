@@ -334,6 +334,14 @@ struct SimState {
     chemistry: realmatter_chemistry::ChemistryEngine,
     /// 0 material, 1 fancy, 2 heat, 3 pressure, 4 velocity.
     view: u8,
+    /// 0 down, 1 off, 2 toward center.
+    gravity: u8,
+    /// 0 on, 1 off, 2 pressure only (gases do not move).
+    air: u8,
+    /// 0 void (border deleted), 1 solid, 2 wrap.
+    edge: u8,
+    newton: bool,
+    ambient: bool,
 }
 
 fn make_chemistry(world: &World) -> realmatter_chemistry::ChemistryEngine {
@@ -398,6 +406,7 @@ fn rgba_for(cell: &Cell, x: i32, y: i32, mode: u8) -> (u8, u8, u8, u8) {
         13 => (179, 229, 252, 230),
         14 => (128, 222, 234, 180),
         15 => (66, 66, 66, 255),
+        16 => (255, 240, 80, 255),
         _ => (255, 0, 255, 255),
     };
     if cell.material != 0 && matches!(cell.material, 2 | 3 | 4 | 10 | 11 | 15) {
@@ -462,7 +471,17 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
     let registry: Arc<dyn MaterialRegistry> = Arc::new(StaticRegistry::builtin());
     let world = World::new(config, registry).map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
     let chemistry = make_chemistry(&world);
-    let mut state = SimState { world, render: Vec::new(), chemistry, view: 0 };
+    let mut state = SimState {
+        world,
+        render: Vec::new(),
+        chemistry,
+        view: 0,
+        gravity: 0,
+        air: 0,
+        edge: 1,
+        newton: false,
+        ambient: false,
+    };
     rebuild_render(&mut state);
     match global().lock() {
         Ok(mut g) => {
@@ -507,6 +526,11 @@ pub fn step(_dt: f64) {
                 h,
                 config.chunk_size,
             );
+            let gravity = state.gravity;
+            let air = state.air;
+            let edge = state.edge;
+            let newton = state.newton;
+            let ambient = state.ambient;
             let active = Some(&mask);
             let cells = state.world.cells_mut();
 
@@ -521,16 +545,19 @@ pub fn step(_dt: f64) {
 
             // 2. Physics forces.
             gas::update_pressure(cells, materials);
-            gas::diffuse(cells, w, h, materials, dt, active);
-            gas::apply_buoyancy(
-                cells,
-                w,
-                h,
-                materials,
-                dt,
-                realmatter_core::units::constants::GRAVITY,
-                active,
-            );
+            // Air off: no gas transport. Pressure-only: keep the field, skip motion.
+            if air == 0 {
+                gas::diffuse(cells, w, h, materials, dt, active);
+                gas::apply_buoyancy(
+                    cells,
+                    w,
+                    h,
+                    materials,
+                    dt,
+                    realmatter_core::units::constants::GRAVITY,
+                    active,
+                );
+            }
             fluid::apply_viscosity(cells, materials, dt);
             fluid::apply_pressure_gradient(cells, w, h, dt, active);
             fluid::apply_buoyancy(
@@ -543,6 +570,14 @@ pub fn step(_dt: f64) {
                 active,
             );
             heat::conduct(cells, w, h, materials, dt, active);
+            if ambient {
+                for cell in cells.iter_mut() {
+                    if cell.is_empty() || !cell.temperature.is_finite() {
+                        continue;
+                    }
+                    cell.temperature += (295.15 - cell.temperature) * 0.01;
+                }
+            }
             heat::phase_transitions(cells, materials);
             reaction::react_all(cells, w, h, materials, dt, active);
             transfer::transfer_energy(cells, w, h, materials, dt, active);
@@ -559,8 +594,27 @@ pub fn step(_dt: f64) {
             let density_of = |id: MaterialId| -> f32 {
                 materials.get(id as usize).map(|m| m.density).unwrap_or(0.0)
             };
-            realmatter_world::move_powder_step(cells, w, h, &state_of, &density_of, active);
-            realmatter_world::move_liquid_step(cells, w, h, &state_of, &density_of, active);
+            match gravity {
+                1 => {
+                    realmatter_world::move_liquid_flat(cells, w, h, &state_of, active);
+                }
+                2 => {
+                    realmatter_world::move_toward_center(cells, w, h, &state_of, active);
+                }
+                _ => {
+                    realmatter_world::move_powder_step(cells, w, h, &state_of, &density_of, active);
+                    realmatter_world::move_liquid_step(cells, w, h, &state_of, &density_of, active);
+                }
+            }
+            if newton {
+                apply_newtonian(cells, w as usize, h as usize, &state_of);
+            }
+            step_spark(cells, w as usize, h as usize);
+            match edge {
+                0 => clear_border(cells, w as usize, h as usize),
+                2 => wrap_border(cells, w as usize, h as usize, &state_of),
+                _ => {}
+            }
 
             // 4. Finalize + render refresh.
             state.world.finalize_tick();
@@ -568,6 +622,211 @@ pub fn step(_dt: f64) {
         },
         (),
     );
+}
+
+fn step_spark(cells: &mut [Cell], w: usize, h: usize) {
+    for cell in cells.iter_mut() {
+        if cell.material == 8 && cell.lifetime > 0.0 {
+            cell.lifetime = (cell.lifetime - 1.0).max(0.0);
+        }
+    }
+    let mut sparks = Vec::new();
+    for (i, cell) in cells.iter().enumerate() {
+        if cell.material == 16 {
+            sparks.push(i);
+        }
+    }
+    if sparks.is_empty() {
+        return;
+    }
+    let mut next = Vec::new();
+    for i in sparks {
+        let x = i % w;
+        let y = i / w;
+        for (dx, dy) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
+            let nx = x as isize + dx;
+            let ny = y as isize + dy;
+            if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
+                continue;
+            }
+            let ni = ny as usize * w + nx as usize;
+            // Fresh iron only. A conductor that just stopped sparking keeps a
+            // short lifetime so the pulse does not bounce back on the next frame.
+            if cells[ni].material == 8 && cells[ni].lifetime <= 0.0 {
+                next.push(ni);
+            }
+        }
+        cells[i].material = 8;
+        cells[i].temperature = 293.15;
+        cells[i].lifetime = 2.0;
+        cells[i].set_flag(realmatter_core::cell::cell_flags::FIXED, true);
+    }
+    for ni in next {
+        if cells[ni].material == 8 {
+            cells[ni].material = 16;
+            cells[ni].temperature = 900.0;
+            cells[ni].set_flag(realmatter_core::cell::cell_flags::FIXED, true);
+        }
+    }
+}
+
+fn apply_newtonian(cells: &mut [Cell], w: usize, h: usize, state_of: &dyn Fn(MaterialId) -> Option<MaterialState>) {
+    let mut pulls: Vec<(usize, i32, i32)> = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if !matches!(state_of(cells[i].material), Some(MaterialState::Powder)) {
+                continue;
+            }
+            let mut sx = 0i32;
+            let mut sy = 0i32;
+            for dy in -4i32..=4 {
+                for dx in -4i32..=4 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                        continue;
+                    }
+                    let ni = ny as usize * w + nx as usize;
+                    if cells[ni].is_empty() {
+                        continue;
+                    }
+                    sx += dx.signum();
+                    sy += dy.signum();
+                }
+            }
+            if sx != 0 || sy != 0 {
+                pulls.push((i, sx.signum(), sy.signum()));
+            }
+        }
+    }
+    for (i, dx, dy) in pulls {
+        let x = i % w;
+        let y = i / w;
+        let nx = x as i32 + dx;
+        let ny = y as i32 + dy;
+        if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+            continue;
+        }
+        let j = ny as usize * w + nx as usize;
+        if cells[j].is_empty() && !cells[i].is_empty() {
+            cells.swap(i, j);
+        }
+    }
+}
+
+fn clear_border(cells: &mut [Cell], w: usize, h: usize) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    for x in 0..w {
+        cells[x] = Cell::default();
+        cells[(h - 1) * w + x] = Cell::default();
+    }
+    for y in 0..h {
+        cells[y * w] = Cell::default();
+        cells[y * w + (w - 1)] = Cell::default();
+    }
+}
+
+fn wrap_border(cells: &mut [Cell], w: usize, h: usize, state_of: &dyn Fn(MaterialId) -> Option<MaterialState>) {
+    if w < 2 || h < 2 {
+        return;
+    }
+    let mobile = |id| {
+        matches!(
+            state_of(id),
+            Some(MaterialState::Powder | MaterialState::Liquid | MaterialState::Gas)
+        )
+    };
+    for x in 1..w - 1 {
+        let bot = (h - 1) * w + x;
+        let top = x;
+        if mobile(cells[bot].material) && cells[top].is_empty() {
+            cells.swap(bot, top);
+        }
+    }
+    for y in 1..h - 1 {
+        let right = y * w + (w - 1);
+        let left = y * w;
+        if mobile(cells[right].material) && cells[left].is_empty() {
+            cells.swap(right, left);
+        }
+    }
+}
+
+fn cycle(cur: u8, n: u8) -> u8 {
+    (cur + 1) % n
+}
+
+/// Gravity: 0 down, 1 off, 2 toward center.
+#[wasm_bindgen]
+pub fn set_gravity_mode(mode: u32) {
+    with_state(|s| s.gravity = (mode as u8) % 3, ());
+}
+
+/// Air: 0 on, 1 off, 2 pressure only.
+#[wasm_bindgen]
+pub fn set_air_mode(mode: u32) {
+    with_state(|s| s.air = (mode as u8) % 3, ());
+}
+
+/// Edge: 0 void, 1 solid, 2 wrap.
+#[wasm_bindgen]
+pub fn set_edge_mode(mode: u32) {
+    with_state(|s| s.edge = (mode as u8) % 3, ());
+}
+
+#[wasm_bindgen]
+pub fn set_newtonian(on: u32) {
+    with_state(|s| s.newton = on != 0, ());
+}
+
+#[wasm_bindgen]
+pub fn set_ambient_heat(on: u32) {
+    with_state(|s| s.ambient = on != 0, ());
+}
+
+#[wasm_bindgen]
+pub fn cycle_gravity() {
+    with_state(|s| s.gravity = cycle(s.gravity, 3), ());
+}
+#[wasm_bindgen]
+pub fn cycle_air() {
+    with_state(|s| s.air = cycle(s.air, 3), ());
+}
+#[wasm_bindgen]
+pub fn cycle_edge() {
+    with_state(|s| s.edge = cycle(s.edge, 3), ());
+}
+#[wasm_bindgen]
+pub fn toggle_newtonian() {
+    with_state(|s| s.newton = !s.newton, ());
+}
+#[wasm_bindgen]
+pub fn toggle_ambient() {
+    with_state(|s| s.ambient = !s.ambient, ());
+}
+
+/// Compact HUD string: gravity, air, edge, newton, ambient.
+#[wasm_bindgen]
+pub fn sim_status() -> String {
+    with_state(
+        |s| {
+            format!(
+                "grav {} air {} edge {} n{} u{}",
+                ["down", "off", "radial"][s.gravity as usize],
+                ["on", "off", "press"][s.air as usize],
+                ["void", "solid", "wrap"][s.edge as usize],
+                if s.newton { "+" } else { "-" },
+                if s.ambient { "+" } else { "-" },
+            )
+        },
+        "sim?".into(),
+    )
 }
 
 /// Set a cell's material. Returns true on success.
@@ -589,7 +848,7 @@ pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
             let solid = material_table()
                 .get(material as usize)
                 .is_some_and(|m| m.state == MaterialState::Solid);
-            if solid {
+            if solid || material == 16 {
                 cell.set_flag(realmatter_core::cell::cell_flags::FIXED, true);
             }
             match state.world.set(CellCoord::new(x, y), cell) {
@@ -632,6 +891,7 @@ fn initial_temperature(material: u16) -> f32 {
         12 => 400.0,
         // ice: below water's melting point.
         13 => 263.15,
+        16 => 900.0,
         _ => 293.15,
     }
 }

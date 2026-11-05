@@ -232,3 +232,110 @@ pub fn move_liquid_step(
     }
     stats
 }
+
+/// Liquids spread sideways and do not fall. Used when gravity is off.
+pub fn move_liquid_flat(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    state_of: &StateOf,
+    active: Option<&realmatter_core::chunk_mask::ActiveMask>,
+) -> MovementStats {
+    let mut stats = MovementStats::default();
+    let (w, h) = (width as usize, height as usize);
+    if cells.len() != w * h || w == 0 || h == 0 {
+        return stats;
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
+            if !is_mobile(&cells[i]) {
+                continue;
+            }
+            if !matches!(state_of(cells[i].material), Some(MaterialState::Liquid)) {
+                continue;
+            }
+            let mut moved = false;
+            for dx in [-1isize, 1] {
+                let nx = x as isize + dx;
+                if nx >= 0 && (nx as usize) < w {
+                    let j = y * w + nx as usize;
+                    if can_enter(&cells[j]) {
+                        try_move(cells, i, j, &mut stats);
+                        moved = true;
+                        break;
+                    }
+                }
+            }
+            if !moved {
+                stats.blocked += 1;
+            }
+        }
+    }
+    stats
+}
+
+/// Powders and liquids step one cell toward the world center.
+pub fn move_toward_center(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    state_of: &StateOf,
+    active: Option<&realmatter_core::chunk_mask::ActiveMask>,
+) -> MovementStats {
+    let mut stats = MovementStats::default();
+    let (w, h) = (width as usize, height as usize);
+    if cells.len() != w * h || w == 0 || h == 0 {
+        return stats;
+    }
+    let cx = (w as i32) / 2;
+    let cy = (h as i32) / 2;
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if let Some(m) = active {
+                if !m.cell_active(x, y) {
+                    continue;
+                }
+            }
+            if !is_mobile(&cells[i]) {
+                continue;
+            }
+            let mobile = matches!(
+                state_of(cells[i].material),
+                Some(MaterialState::Powder | MaterialState::Liquid)
+            );
+            if !mobile {
+                continue;
+            }
+            let dx = (cx - x as i32).signum();
+            let dy = (cy - y as i32).signum();
+            let order = if (cy - y as i32).abs() >= (cx - x as i32).abs() {
+                [(0, dy), (dx, 0)]
+            } else {
+                [(dx, 0), (0, dy)]
+            };
+            for (mx, my) in order {
+                if mx == 0 && my == 0 {
+                    continue;
+                }
+                let nx = x as i32 + mx;
+                let ny = y as i32 + my;
+                if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                    continue;
+                }
+                let j = ny as usize * w + nx as usize;
+                if can_enter(&cells[j]) {
+                    try_move(cells, i, j, &mut stats);
+                    break;
+                }
+            }
+        }
+    }
+    stats
+}
