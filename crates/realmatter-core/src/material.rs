@@ -30,6 +30,41 @@ pub struct MaterialProps {
     pub color: [f32; 4],
     pub flammable: bool,
     pub ignition_temp: f32,
+    /// Air-coupling properties (reference `Element` fields).
+    /// Fraction of local air velocity retained each tick (`AirLoss`).
+    #[serde(default = "default_air_loss")]
+    pub air_loss: f32,
+    /// How much particle velocity is injected into the air field (`AirDrag`).
+    #[serde(default)]
+    pub air_drag: f32,
+    /// How strongly the air field drags the particle (`Advection`).
+    #[serde(default)]
+    pub advection: f32,
+    /// Particle velocity decay per tick (`Loss`).
+    #[serde(default = "default_loss")]
+    pub loss: f32,
+    /// Random diffusion strength for gases (`Diffusion`).
+    #[serde(default)]
+    pub diffusion: f32,
+    /// Pressure added to the air field per tick (`HotAir`).
+    #[serde(default)]
+    pub hot_air: f32,
+    /// Conducts electricity (`PROP_CONDUCTS`).
+    #[serde(default)]
+    pub conducts: bool,
+    /// Reference element weight (heavier sinks through lighter).
+    #[serde(default = "default_weight")]
+    pub weight: f32,
+}
+
+fn default_air_loss() -> f32 {
+    1.0
+}
+fn default_loss() -> f32 {
+    1.0
+}
+fn default_weight() -> f32 {
+    50.0
 }
 
 pub trait MaterialRegistry: Send + Sync {
@@ -66,6 +101,14 @@ fn fallback_props() -> &'static MaterialProps {
         color: [0.8, 0.9, 1.0, 0.3],
         flammable: false,
         ignition_temp: f32::INFINITY,
+        air_loss: 1.0,
+        air_drag: 0.0,
+        advection: 0.0,
+        loss: 1.0,
+        diffusion: 0.0,
+        hot_air: 0.0,
+        conducts: false,
+        weight: 50.0,
     })
 }
 

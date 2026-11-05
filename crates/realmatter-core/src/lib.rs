@@ -12,6 +12,7 @@ pub mod material;
 pub mod math;
 pub mod particle;
 pub mod traits;
+pub mod tpt_elements;
 pub mod units;
 pub mod world_config;
 

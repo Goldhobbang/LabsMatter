@@ -1,3 +1,25 @@
+/**
+ * Simulation tools, mirroring the reference simtools ordering.
+ * 0 heat, 1 cool, 2 air (pressure), 3 vac, 4 PGRV, 5 NGRV, 6 mix, 7 cyclone,
+ * 8 wind (uses dx/dy as the drag direction).
+ * @param {number} kind
+ * @param {number} x
+ * @param {number} y
+ * @param {number} radius
+ * @param {number} dx
+ * @param {number} dy
+ */
+export function apply_tool(kind, x, y, radius, dx, dy) {
+    wasm.apply_tool(kind, x, y, radius, dx, dy);
+}
+
+/**
+ * Erase every decoration colour.
+ */
+export function clear_all_deco() {
+    wasm.clear_all_deco();
+}
+
 export function cycle_air() {
     wasm.cycle_air();
 }
@@ -8,6 +30,14 @@ export function cycle_edge() {
 
 export function cycle_gravity() {
     wasm.cycle_gravity();
+}
+
+/**
+ * @returns {boolean}
+ */
+export function deco_visible() {
+    const ret = wasm.deco_visible();
+    return ret !== 0;
 }
 
 /**
@@ -22,7 +52,7 @@ export function get_cell_material(x, y) {
 }
 
 /**
- * Pressure in pascals (0 if out of bounds).
+ * Air pressure at a pixel, from the persistent air field (0 if out of bounds).
  * @param {number} x
  * @param {number} y
  * @returns {number}
@@ -44,7 +74,7 @@ export function get_cell_temperature(x, y) {
 }
 
 /**
- * Horizontal velocity, m/s (0 if out of bounds).
+ * Air velocity x at a pixel, from the persistent air field.
  * @param {number} x
  * @param {number} y
  * @returns {number}
@@ -55,7 +85,7 @@ export function get_cell_vx(x, y) {
 }
 
 /**
- * Vertical velocity, m/s (0 if out of bounds). Positive is downward.
+ * Air velocity y at a pixel, from the persistent air field. Positive is downward.
  * @param {number} x
  * @param {number} y
  * @returns {number}
@@ -63,6 +93,16 @@ export function get_cell_vx(x, y) {
 export function get_cell_vy(x, y) {
     const ret = wasm.get_cell_vy(x, y);
     return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_deco(x, y) {
+    const ret = wasm.get_deco(x, y);
+    return ret >>> 0;
 }
 
 /**
@@ -172,6 +212,26 @@ export function set_ambient_heat(on) {
 export function set_cell(x, y, material) {
     const ret = wasm.set_cell(x, y, material);
     return ret !== 0;
+}
+
+/**
+ * Paint a decoration colour (ARGB) on a cell. `argb == 0` erases.
+ * @param {number} x
+ * @param {number} y
+ * @param {number} argb
+ * @returns {boolean}
+ */
+export function set_deco(x, y, argb) {
+    const ret = wasm.set_deco(x, y, argb);
+    return ret !== 0;
+}
+
+/**
+ * Show or hide the decoration layer without erasing it.
+ * @param {boolean} visible
+ */
+export function set_deco_visible(visible) {
+    wasm.set_deco_visible(visible);
 }
 
 /**
@@ -449,7 +509,7 @@ async function __wbg_init_once(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('realmatter_wasm_bg.wasm?sim=4', import.meta.url);
+        module_or_path = new URL('realmatter_wasm_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

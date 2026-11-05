@@ -6,7 +6,12 @@ Reference tree: The Powder Toy `2b7221a46d378589b4de7683f16d3ebc92be6bd9`.
 
 ## LabsMatter registry
 
-Selectable ids in the WASM material path and the palette:
+Selectable ids in the WASM material path and the palette include the 17
+legacy LabsMatter ids below plus 72 generated TPT-derived entries (ids 17–88).
+Those generated entries have generic movement, thermal, phase-transition,
+combustion, air-coupling, and conduction behavior from their material
+properties; they do not imply that every element-specific TPT update hook is
+implemented.
 
 | id | abbr | role | behavior beyond "sits there" |
 |---:|---|---|---|
@@ -28,7 +33,11 @@ Selectable ids in the WASM material path and the palette:
 | 15 | GUN | powder | falls, bursts when lit |
 | 16 | SPRK | energy | moves onto adjacent iron, then becomes iron |
 
-Everything else in the 195-file reference tree is **missing**. Electronics other than this spark-on-iron rule, portals, clones, life, pipes, and stickmen are not registered.
+The 72 generated entries are registered in Rust/WASM and the frontend palette,
+but their unique TPT behaviors are still incomplete. Electronics other than
+the current generic spark propagation, portals, clones, life, pipes, and
+stickmen do not yet have full behavior parity. The 195-file reference count is
+not a claim of 195 implemented elements.
 
 ## Engine modes (this batch)
 

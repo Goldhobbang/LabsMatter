@@ -1,4 +1,4 @@
-//! Material definition loading, validation, and restricted declarative extension format.
+﻿//! Material definition loading, validation, and restricted declarative extension format.
 //!
 //! Maps to `realmatter_core::material::{MaterialProps, MaterialState}` (2D).
 
@@ -214,5 +214,13 @@ pub fn to_material_props(def: &MaterialDef) -> MaterialProps {
         color: def.color,
         flammable: def.flammable,
         ignition_temp: def.ignition_temp,
+        air_loss: 1.0,
+        air_drag: 0.0,
+        advection: 0.0,
+        loss: 1.0,
+        diffusion: 0.0,
+        hot_air: 0.0,
+        conducts: false,
+        weight: def.density,
     }
 }

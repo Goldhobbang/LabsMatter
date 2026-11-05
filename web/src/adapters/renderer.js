@@ -70,26 +70,7 @@ export class Canvas2DRenderer extends RendererAdapter {
     const octx = this._rgbaCanvas.getContext("2d");
     octx.putImageData(img, 0, 0);
     ctx.drawImage(this._rgbaCanvas, offX, offY, gw * cell, gh * cell);
-    if (this.overlay.grid && cell >= 6) {
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      const startX = Math.max(0, Math.floor(-offX / cell));
-      const startY = Math.max(0, Math.floor(-offY / cell));
-      const endX = Math.min(gw, Math.ceil((w - offX) / cell));
-      const endY = Math.min(gh, Math.ceil((h - offY) / cell));
-      for (let x = startX; x <= endX; x++) {
-        const px = Math.round(offX + x * cell) + 0.5;
-        ctx.moveTo(px, offY + startY * cell);
-        ctx.lineTo(px, offY + endY * cell);
-      }
-      for (let y = startY; y <= endY; y++) {
-        const py = Math.round(offY + y * cell) + 0.5;
-        ctx.moveTo(offX + startX * cell, py);
-        ctx.lineTo(offX + endX * cell, py);
-      }
-      ctx.stroke();
-    }
+    drawGrid(ctx, this.overlay.grid, this.overlay.gridSize, cell, offX, offY, gw, gh, w, h);
     this.lastRenderMs = performance.now() - t0;
     const now = performance.now();
     this._fpsAcc += 1;
@@ -138,22 +119,7 @@ export class Canvas2DRenderer extends RendererAdapter {
       }
     }
 
-    if (this.overlay.grid && cell >= 3) {
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let x = startX; x <= endX; x++) {
-        const px = offX + x * cell;
-        ctx.moveTo(px, offY + startY * cell);
-        ctx.lineTo(px, offY + endY * cell);
-      }
-      for (let y = startY; y <= endY; y++) {
-        const py = offY + y * cell;
-        ctx.moveTo(offX + startX * cell, py);
-        ctx.lineTo(offX + endX * cell, py);
-      }
-      ctx.stroke();
-    }
+    drawGrid(ctx, this.overlay.grid, this.overlay.gridSize, cell, offX, offY, gw, gh, w, h);
 
     // HUD crosshair center
     ctx.strokeStyle = "rgba(79,195,247,0.25)";
@@ -175,6 +141,36 @@ export class Canvas2DRenderer extends RendererAdapter {
   getFps() { return this.fps; }
   getRenderMs() { return this.lastRenderMs; }
   dispose() { this.canvas = null; this.ctx = null; }
+}
+
+function drawGrid(ctx, enabled, gridCells, cell, offX, offY, gw, gh, viewW, viewH) {
+  const step = Math.max(1, Math.floor(gridCells || 8));
+  if (!enabled || cell * step < 4) return;
+  const spacing = step * cell;
+  const startX = Math.max(0, Math.ceil(-offX / spacing));
+  const startY = Math.max(0, Math.ceil(-offY / spacing));
+  const endX = Math.min(Math.floor(gw / step), Math.floor((viewW - offX) / spacing));
+  const endY = Math.min(Math.floor(gh / step), Math.floor((viewH - offY) / spacing));
+  if (startX > endX && startY > endY) return;
+
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  if (startX <= endX) {
+    for (let x = startX; x <= endX; x++) {
+      const px = Math.round(offX + x * spacing) + 0.5;
+      ctx.moveTo(px, Math.max(0, offY));
+      ctx.lineTo(px, Math.min(viewH, offY + gh * cell));
+    }
+  }
+  if (startY <= endY) {
+    for (let y = startY; y <= endY; y++) {
+      const py = Math.round(offY + y * spacing) + 0.5;
+      ctx.moveTo(Math.max(0, offX), py);
+      ctx.lineTo(Math.min(viewW, offX + gw * cell), py);
+    }
+  }
+  ctx.stroke();
 }
 
 function heatColor(k) {

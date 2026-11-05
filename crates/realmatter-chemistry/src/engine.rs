@@ -1,4 +1,4 @@
-//! Chemistry reaction evaluation engine.
+﻿//! Chemistry reaction evaluation engine.
 
 use crate::core;
 use crate::core::cell::Cell;
@@ -54,6 +54,14 @@ impl ChemistryEngine {
                 color: [0.8, 0.9, 1.0, 0.3],
                 flammable: false,
                 ignition_temp: f32::INFINITY,
+                air_loss: 1.0,
+                air_drag: 0.0,
+                advection: 0.0,
+                loss: 1.0,
+                diffusion: 0.0,
+                hot_air: 0.0,
+                conducts: false,
+                weight: 50.0,
             };
             max_id + 1
         ];

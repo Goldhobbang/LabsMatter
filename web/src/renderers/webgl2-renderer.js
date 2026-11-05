@@ -129,9 +129,8 @@ void main(){
   vec2 uv=(vUV-uOff)/max(uScale, vec2(1e-6));
   if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.) discard;
   vec4 c=texture(uT, uv);
-  // Write straight RGB. Blend is off for this blit; void stays the clear color
-  // via discard when alpha is empty.
-  if(c.a<0.004) discard;
+  // Transparent empty cells keep the clear color through blending, while the
+  // grid overlay below can still paint over them.
   o=c;
   if(uGrid>=1.0){
     vec2 cell=uv*uWorld;
@@ -162,7 +161,8 @@ void main(){
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uOff"), (camera.x || 0) / cssW, (camera.y || 0) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uScale"), (gw * cellPx) / cssW, (gh * cellPx) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uWorld"), gw, gh);
-    const gridSpacing = this.overlay.grid ? (this.overlay.gridSize || 8) : 0;
+    const gridSize = this.overlay.gridSize || 8;
+    const gridSpacing = this.overlay.grid && cellPx * gridSize >= 4 ? gridSize : 0;
     gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGrid"), gridSpacing);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);

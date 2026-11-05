@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/realmatter-core",
+    "crates/realmatter-tpt",
     "crates/realmatter-world",
     "crates/realmatter-physics",
     "crates/realmatter-chemistry",

@@ -26,7 +26,8 @@ use realmatter_world::World;
 use serde::{Deserialize, Serialize};
 
 pub const MAGIC: [u8; 4] = *b"RMT\0";
-pub const FORMAT_VERSION: u32 = 1;
+/// Version 2 adds the optional decoration layer (`SaveData::deco`).
+pub const FORMAT_VERSION: u32 = 2;
 pub const MIN_SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,6 +55,9 @@ pub struct SaveData {
     pub materials: Vec<MaterialProps>,
     pub chunks: Vec<(ChunkCoord, ChunkSnapshot)>,
     pub recovery: RecoveryMetadata,
+    /// Decoration layer, one ARGB colour per cell (0 = none). Absent in
+    /// version 1 saves, which decode with an empty layer.
+    pub deco: Option<Vec<u32>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,6 +123,7 @@ impl SaveData {
             },
             materials,
             chunks,
+            deco: None,
             recovery: RecoveryMetadata {
                 sequence,
                 saved_at_unix: 0,
@@ -184,6 +189,22 @@ pub fn encode(save: &SaveData) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("recovery serialize: {e}"))?;
     buf.extend_from_slice(&(rec_bytes.len() as u32).to_le_bytes());
     buf.extend_from_slice(&rec_bytes);
+
+    // Decoration layer (version 2+). Written only when non-empty so v1-style
+    // worlds stay compact.
+    let deco = save.deco.clone().unwrap_or_default();
+    let has_deco = deco.iter().any(|c| *c != 0);
+    if has_deco {
+        let deco_bytes = opts
+            .serialize(&deco)
+            .map_err(|e| format!("deco serialize: {e}"))?;
+        let payload = compress_bytes(&deco_bytes)?;
+        buf.push(1);
+        buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&payload);
+    } else {
+        buf.push(0);
+    }
 
     let crc = crc32(&buf);
     buf.extend_from_slice(&crc.to_le_bytes());
@@ -328,6 +349,29 @@ pub fn decode(bytes: &[u8]) -> Result<SaveData, String> {
         .map_err(|e| format!("recovery deserialize: {e}"))?;
     pos += rec_len;
 
+    // Decoration layer: present in version 2+ saves when non-empty.
+    let mut deco: Option<Vec<u32>> = None;
+    if version >= 2 && pos < data.len() {
+        let present = data[pos];
+        pos += 1;
+        if present == 1 {
+            if pos + 4 > data.len() {
+                return Err("truncated deco len".into());
+            }
+            let deco_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+            pos += 4;
+            if pos + deco_len > data.len() {
+                return Err("truncated deco payload".into());
+            }
+            let deco_bytes = decompress_bytes(&data[pos..pos + deco_len])?;
+            pos += deco_len;
+            let colors: Vec<u32> = opts
+                .deserialize(&deco_bytes)
+                .map_err(|e| format!("deco deserialize: {e}"))?;
+            deco = Some(colors);
+        }
+    }
+
     if pos + 4 > data.len() {
         return Err("truncated checksum".into());
     }
@@ -350,6 +394,7 @@ pub fn decode(bytes: &[u8]) -> Result<SaveData, String> {
         materials,
         chunks,
         recovery,
+        deco,
     })
 }
 

@@ -1,5 +1,6 @@
 // Material registry (data-driven, mirrors realmatter-core Material concept).
 // Colors are sRGB hex. Categories group the palette.
+import { GENERATED_MATERIALS } from "./materials.generated.js";
 
 export const CATEGORIES = [
   { id: "powders", label: "Powders", short: "PWD" },
@@ -29,6 +30,7 @@ export const MATERIALS = [
   { id: 14, abbr: "GLAS", name: "Glass", category: "solids", color: "#80deea", density: 2500, phase: "solid", temp: 293, conductivity: 1.0, heatCap: 840, melt: 1673, boil: null, desc: "Acid-resistant solid." },
   { id: 15, abbr: "GUN", name: "Gunpowder", category: "powders", color: "#424242", density: 1000, phase: "powder", temp: 293, conductivity: 0.2, heatCap: 1000, melt: null, boil: null, desc: "Ignites and bursts into nearby powder." },
   { id: 16, abbr: "SPRK", name: "Spark", category: "energy", color: "#fff050", density: 0, phase: "energy", temp: 900, conductivity: 0, heatCap: 0, melt: null, boil: null, desc: "Travels through adjacent iron, one cell per frame, then becomes iron." },
+  ...GENERATED_MATERIALS,
 ];
 
 export function findMaterial(id) {

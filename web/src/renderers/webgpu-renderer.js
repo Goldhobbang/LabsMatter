@@ -50,7 +50,8 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let c = textureSample(simTex, simSamp, uv);
   let show = select(false, c.a > 0.003, inside);
   let base = select(p.bg, vec4<f32>(c.rgb, 1.0), show);
-  let f = fract(cell);
+  let gridSpacing = max(p.grid, 1.0);
+  let f = fract(cell / gridSpacing);
   let edge = (f.x < 0.08) || (f.y < 0.08);
   let onGrid = select(false, edge, inside) && (p.grid > 0.5);
   let gridded = mix(base, vec4<f32>(0.82, 0.86, 0.9, 1.0), 0.35);
@@ -184,7 +185,8 @@ export class WebGPURenderer {
       // Pad to 64 bytes (16 floats).
       const padded = new Float32Array(16);
       padded.set(params.subarray(0, 12));
-      padded[12] = this.overlay.grid && cellPx >= 6 ? 1 : 0;
+      const gridSize = this.overlay.gridSize || 8;
+      padded[12] = this.overlay.grid && cellPx * gridSize >= 4 ? gridSize : 0;
       this.device.queue.writeBuffer(this.uniformBuf, 0, padded);
       const encoder = this.device.createCommandEncoder();
       const pass = encoder.beginRenderPass({

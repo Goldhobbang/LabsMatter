@@ -55,8 +55,19 @@ impl PersistEngine {
 
     /// Save full world state.
     pub fn save_full(&mut self, world: &mut World, label: Option<String>) -> Result<Vec<u8>> {
+        self.save_full_with_deco(world, label, None)
+    }
+
+    /// Save full world state including the decoration layer.
+    pub fn save_full_with_deco(
+        &mut self,
+        world: &mut World,
+        label: Option<String>,
+        deco: Option<Vec<u32>>,
+    ) -> Result<Vec<u8>> {
         self.sequence += 1;
-        let save = format::SaveData::from_world(world, label, self.sequence, false, 0);
+        let mut save = format::SaveData::from_world(world, label, self.sequence, false, 0);
+        save.deco = deco;
         format::encode(&save).map_err(|e| RealmatterError::Serialization(e))
     }
 
