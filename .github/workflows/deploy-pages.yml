@@ -1,0 +1,122 @@
+name: Deploy LabsMatter to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege required by the Pages deployment flow.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deploys at once; let an in-flight deploy finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build simulation + static site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build WASM module (release)
+        run: cargo build -p realmatter-wasm --target wasm32-unknown-unknown --release
+
+      - name: Install wasm-bindgen-cli (version pinned to Cargo.lock)
+        run: |
+          set -euo pipefail
+          # The CLI must match the wasm-bindgen crate version used to compile,
+          # otherwise the generated glue rejects the module.
+          VERSION="$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/, "", $3); print $3; exit}' Cargo.lock)"
+          echo "Detected wasm-bindgen version: ${VERSION}"
+          if [ -z "${VERSION}" ]; then echo "could not detect wasm-bindgen version"; exit 1; fi
+          TARBALL="wasm-bindgen-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          URL="https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${VERSION}/${TARBALL}"
+          if curl -fsSL --retry 3 --retry-delay 5 -o /tmp/wasm-bindgen.tar.gz "${URL}"; then
+            tar -xzf /tmp/wasm-bindgen.tar.gz -C /tmp
+            install -m 0755 "/tmp/wasm-bindgen-${VERSION}-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/wasm-bindgen
+          else
+            echo "prebuilt archive unavailable; falling back to cargo install"
+            cargo install wasm-bindgen-cli --version "${VERSION}" --locked
+          fi
+          wasm-bindgen --version
+
+      - name: Generate production bindings
+        run: |
+          set -euo pipefail
+          wasm-bindgen \
+            target/wasm32-unknown-unknown/release/realmatter_wasm.wasm \
+            --out-dir web/pkg \
+            --target web \
+            --no-typescript
+          ls -l web/pkg
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund --no-save
+          fi
+
+      - name: Build static frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          set -euo pipefail
+          test -f web/dist/index.html
+          test -f web/dist/pkg/realmatter_wasm.js
+          test -f web/dist/pkg/realmatter_wasm_bg.wasm
+          test -f web/dist/src/main.js
+          du -sh web/dist
+          find web/dist -name '*.wasm' -size -10k -print -quit | (! read -r _) || { echo "wasm payload too small"; exit 1; }
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

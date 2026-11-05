@@ -15,7 +15,8 @@ export class WasmSimulationAdapter {
     this.height = config.height || 256;
     try {
       if (typeof WebAssembly === "undefined") throw new Error("WebAssembly not supported");
-      const paths = ["./pkg/realmatter_wasm.js", "/pkg/realmatter_wasm.js", "../pkg/realmatter_wasm.js", "./web/pkg/realmatter_wasm.js"];
+      // Relative to this module (src/adapters/) so subpath deployments work.
+      const paths = ["../../pkg/realmatter_wasm.js", "../pkg/realmatter_wasm.js", "./pkg/realmatter_wasm.js"];
       for (const p of paths) {
         try {
           const mod = await import(/* @vite-ignore */ p);

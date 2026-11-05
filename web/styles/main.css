@@ -1,4 +1,4 @@
-/* REALMATTER UI — main stylesheet */
+/* LabsMatter UI — main stylesheet */
 :root {
   --bg: #0b0d12;
   --bg-2: #12151d;
@@ -40,6 +40,34 @@ a.skip-link:focus { left: 8px; top: 8px; }
 }
 .toolbar-group { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .toolbar-group--grow { flex: 1 1 auto; min-width: 120px; }
+
+/* Brand */
+.brand {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+  padding-right: 10px; margin-right: 2px; border-right: 1px solid var(--border);
+}
+.brand-mark {
+  width: 18px; height: 18px; border-radius: 5px; flex-shrink: 0;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+  box-shadow: 0 0 10px rgba(79, 195, 247, 0.45);
+}
+.brand-name {
+  font-size: 15px; font-weight: 650; letter-spacing: 0.2px; margin: 0;
+  background: linear-gradient(90deg, var(--text) 35%, var(--accent) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  white-space: nowrap;
+}
+@media (max-width: 620px) { .brand-name { display: none; } }
+
+/* Status bar about/credit */
+.statusbar-about { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.statusbar-about a { color: var(--accent); text-decoration: none; }
+.statusbar-about a:hover { text-decoration: underline; }
+@media (max-width: 720px) { .statusbar-about { display: none; } }
+
+/* Help dialog about block */
+.dialog-about { font-size: 12px; line-height: 1.55; margin: 12px 0 0; }
+.dialog-about a { color: var(--accent); }
 .btn {
   background: var(--panel); border: 1px solid var(--border); color: var(--text);
   padding: 6px 10px; border-radius: var(--radius); font-size: 13px; display: inline-flex; align-items: center; gap: 6px;

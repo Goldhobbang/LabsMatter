@@ -1,4 +1,8 @@
-# REALMATTER — Architecture Specification
+# LabsMatter — Architecture Specification
+
+> Historical note: this document was authored under the project's original
+> name, REALMATTER. Internal crate names still use the `realmatter-` prefix.
+> The product name is **LabsMatter**.
 
 **Version:** 0.1.0 (draft)
 **Owner:** A1 (Systems Architect)

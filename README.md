@@ -1,9 +1,11 @@
-# REALMATTER
+# LabsMatter
 
 A browser-based, offline-capable 2D falling-sand physics and chemistry sandbox.
-Rust simulation core compiled to WebAssembly, TypeScript/JavaScript front end,
+Rust simulation core compiled to WebAssembly, JavaScript front end,
 WebGPU → WebGL2 → Canvas2D rendering fallbacks. No external services, no paid
-APIs, no backend required.
+APIs, no backend, no accounts.
+
+**Live site: <https://goldhobbang.github.io/LabsMatter/>**
 
 ## Quick start
 
@@ -13,21 +15,39 @@ cargo build -p realmatter-wasm --target wasm32-unknown-unknown --release
 wasm-bindgen target/wasm32-unknown-unknown/release/realmatter_wasm.wasm \
   --out-dir web/pkg --target web --no-typescript
 
-# 2. Serve the web directory (any static server)
-npm --prefix web run serve      # python -m http.server 5173
-#   or: python -m http.server 5173 --directory web
+# 2. Build the static site (outputs web/dist)
+npm --prefix web run build
 
-# 3. Open http://localhost:5173/index.html
+# 3. Serve it (any static server)
+python -m http.server 5173 --directory web/dist
+#   or: python -m http.server 5173   (from inside web/)
 ```
 
-The console should report `Using WASM simulation (real module)` and the active
-renderer backend. There is no bundler and no install step for the front end.
+Open <http://localhost:5173/index.html>. The console should report
+`Using WASM simulation (real module)` and the active renderer backend.
+
+The front end has no runtime dependencies and no bundler; `npm run build`
+simply assembles `web/dist` from the static sources plus the generated WASM
+package.
 
 ### Requirements
 
 - Rust stable with the `wasm32-unknown-unknown` target
 - `wasm-bindgen-cli` matching the `wasm-bindgen` version in `Cargo.lock`
 - Python 3 or Node.js (any static file server)
+
+## Deployment
+
+`.github/workflows/deploy-pages.yml` builds the WASM module, generates
+bindings, runs the static build, and publishes `web/dist` to GitHub Pages on
+every push to `main` (and on manual `workflow_dispatch`).
+
+The site is served from the `/LabsMatter/` subpath. All asset and WASM URLs are
+resolved relative to the modules that load them, so the same build works at a
+project subpath, at a domain root, and on localhost without configuration.
+
+**One-time repository setting:** Settings → Pages → Build and deployment →
+Source: **GitHub Actions**.
 
 ## What works
 
@@ -54,10 +74,13 @@ wood, iron, lava, acid, salt, smoke, ice, glass, gunpowder.
 
 ## Architecture
 
+> Internal Rust crate and WASM package names remain `realmatter-*` for
+> compatibility with existing build tooling and save files. The product is
+> **LabsMatter**.
+
 ```
 crates/
-  realmatter-core      shared types: Cell, materials, coords, world config,
-                       active-chunk mask, module traits
+  realmatter-core      shared types: Cell, materials, coords, world config,                       active-chunk mask, module traits
   realmatter-world     World grid, deterministic movement, tick scheduler
   realmatter-physics   heat, gas, fluid, reactions, transfer, stability
   realmatter-chemistry reaction registry, kinetics, schema, engine

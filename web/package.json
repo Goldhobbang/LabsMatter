@@ -1,10 +1,11 @@
 {
-  "name": "realmatter-web",
-  "version": "0.1.0",
+  "name": "labsmatter-web",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "REALMATTER browser UI shell. Offline, no runtime dependencies, no build step.",
+  "description": "LabsMatter browser UI shell. Offline, no runtime dependencies, no bundler.",
   "scripts": {
+    "build": "node scripts/build.mjs",
     "dev": "npx --yes http-server . -p 5173 -c-1",
     "serve": "python -m http.server 5173"
   }

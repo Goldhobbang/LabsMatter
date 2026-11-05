@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="LabsMatter — physics and chemistry sandbox">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b0d12"/>
+      <stop offset="100%" stop-color="#12151d"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4fc3f7"/>
+      <stop offset="100%" stop-color="#7c4dff"/>
+    </linearGradient>
+    <pattern id="grain" width="24" height="24" patternUnits="userSpaceOnUse">
+      <rect width="24" height="24" fill="none"/>
+      <circle cx="6" cy="18" r="3" fill="#d9c27a" opacity="0.55"/>
+      <circle cx="18" cy="9" r="2.5" fill="#4fc3f7" opacity="0.55"/>
+      <circle cx="16" cy="21" r="2" fill="#ff3d00" opacity="0.5"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1200" height="630" fill="url(#grain)" opacity="0.35"/>
+  <rect x="0" y="596" width="1200" height="34" fill="#12151d"/>
+  <rect x="0" y="596" width="1200" height="1" fill="#2a3040"/>
+  <g transform="translate(96, 200)">
+    <rect x="0" y="0" width="56" height="56" rx="14" fill="url(#accent)"/>
+    <text x="80" y="44" font-family="Segoe UI, system-ui, sans-serif" font-size="72" font-weight="700" fill="#e6e9f0">LabsMatter</text>
+    <text x="2" y="118" font-family="Segoe UI, system-ui, sans-serif" font-size="30" fill="#8a93a6">Physics &amp; chemistry sandbox in your browser</text>
+    <text x="2" y="182" font-family="Cascadia Code, Consolas, monospace" font-size="21" fill="#4fc3f7">16 materials · heat · combustion · fluids · Rust + WebAssembly</text>
+    <text x="2" y="222" font-family="Cascadia Code, Consolas, monospace" font-size="21" fill="#69f0ae">offline · deterministic · no accounts</text>
+  </g>
+</svg>

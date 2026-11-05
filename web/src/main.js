@@ -77,7 +77,7 @@ async function boot() {
   onStateChange(getState());
 
   setAppState("ready", "");
-  log("info", "REALMATTER UI ready.");
+  log("info", "LabsMatter UI ready.");
   startLoop();
 }
 
@@ -234,7 +234,7 @@ function wireToolbar() {
       const url = URL.createObjectURL(new Blob([blob], { type: "application/octet-stream" }));
       const a = document.createElement("a");
       a.href = url;
-      a.download = "realmatter-world.rmt";
+      a.download = "labsmatter-world.rmt";
       document.body.appendChild(a);
       a.click();
       a.remove();

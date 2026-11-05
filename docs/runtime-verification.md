@@ -1,7 +1,7 @@
 # Runtime Verification Guidelines
 
 **Last updated:** M4 (`87f02f0` baseline → M4 commit)
-**Scope:** manual and scripted verification of the REALMATTER browser sandbox.
+**Scope:** manual and scripted verification of the LabsMatter browser sandbox.
 
 These are *guidelines for a human or scripted operator*. Per project protocol no
 automated test suites, fixtures, or mocks are added to the repository; the

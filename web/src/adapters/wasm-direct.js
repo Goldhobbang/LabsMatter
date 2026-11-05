@@ -15,12 +15,15 @@ export class WasmDirectAdapter {
     this.width = cfg.width || 256;
     this.height = cfg.height || 256;
     if (typeof WebAssembly === "undefined") throw new Error("WebAssembly not supported");
+    // Resolve the generated bindings relative to this module so the app works
+    // under any base path (e.g. GitHub Pages project sites at /LabsMatter/).
+    // `import.meta.url` is .../src/adapters/wasm-direct.js, so ../../pkg is the
+    // site root's pkg/ directory. No absolute '/pkg' paths: those break under
+    // a subpath deployment.
     const paths = [
       "../../pkg/realmatter_wasm.js",
-      "./pkg/realmatter_wasm.js",
-      "/pkg/realmatter_wasm.js",
       "../pkg/realmatter_wasm.js",
-      "./web/pkg/realmatter_wasm.js",
+      "./pkg/realmatter_wasm.js",
     ];
     let lastErr = null;
     for (const p of paths) {

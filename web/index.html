@@ -4,7 +4,21 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b0d12" />
-  <title>REALMATTER — Sandbox</title>
+  <title>LabsMatter — Physics &amp; Chemistry Sandbox</title>
+  <meta name="description" content="LabsMatter is an offline, browser-based 2D falling-sand physics and chemistry sandbox with sand, water, fire, heat and 16 materials, running on a Rust/WebAssembly simulation core." />
+  <meta name="application-name" content="LabsMatter" />
+  <meta name="author" content="LabsMatter contributors" />
+  <meta name="color-scheme" content="dark" />
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="LabsMatter" />
+  <meta property="og:title" content="LabsMatter — Physics &amp; Chemistry Sandbox" />
+  <meta property="og:description" content="An offline, browser-based 2D falling-sand physics and chemistry sandbox. Paint sand, water, fire and 16 materials, then watch heat, combustion and fluid flow emerge from a Rust/WebAssembly core." />
+  <meta property="og:url" content="https://goldhobbang.github.io/LabsMatter/" />
+  <meta property="og:image" content="https://goldhobbang.github.io/LabsMatter/og-image.svg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="LabsMatter — Physics &amp; Chemistry Sandbox" />
+  <meta name="twitter:description" content="Offline browser 2D physics and chemistry sandbox running on a Rust/WebAssembly core." />
   <link rel="stylesheet" href="./styles/main.css" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='%234fc3f7'/%3E%3C/svg%3E" />
 </head>
@@ -14,6 +28,10 @@
   <div id="app" class="app" data-state="loading">
     <!-- Top toolbar -->
     <header class="toolbar" role="toolbar" aria-label="Simulation controls">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <h1 class="brand-name">LabsMatter</h1>
+      </div>
       <div class="toolbar-group">
         <button id="btn-play" class="btn btn-primary" type="button" aria-pressed="false" aria-label="Play / Pause (Space)">
           <span class="icon" aria-hidden="true">▶</span><span class="label">Play</span>
@@ -126,6 +144,10 @@
     <footer class="statusbar" role="status" aria-live="polite">
       <span id="status-text">Ready.</span>
       <span class="statusbar-spacer"></span>
+      <span class="statusbar-about">
+        <a href="https://github.com/Goldhobbang/LabsMatter" target="_blank" rel="noopener noreferrer">LabsMatter</a>
+        — open-source physics &amp; chemistry sandbox
+      </span>
       <span id="status-coords">—</span>
     </footer>
   </div>
@@ -150,8 +172,7 @@
     <form method="dialog" class="dialog-body">
       <h2 id="help-title">Keyboard Shortcuts</h2>
       <table class="shortcuts">
-        <tr><td>Space</td><td>Play / Pause</td></tr>
-        <tr><td>.</td><td>Step one tick</td></tr>
+        <tr><td>Space</td><td>Play / Pause</td></tr>        <tr><td>.</td><td>Step one tick</td></tr>
         <tr><td>R</td><td>Reset world</td></tr>
         <tr><td>B / E / L / Q / F</td><td>Brush / Eraser / Line / Rect / Fill</td></tr>
         <tr><td>Ctrl+R</td><td>Reset world</td></tr>
@@ -162,6 +183,11 @@
         <tr><td>Esc</td><td>Cancel current stroke</td></tr>
         <tr><td>?</td><td>This help</td></tr>
       </table>
+      <p class="muted dialog-about">
+        <strong>LabsMatter</strong> — an offline, browser-based 2D physics and chemistry sandbox.
+        Simulation runs in Rust compiled to WebAssembly; no data leaves your device.
+        <a href="https://github.com/Goldhobbang/LabsMatter" target="_blank" rel="noopener noreferrer">Source on GitHub</a>.
+      </p>
       <div class="dialog-actions"><button class="btn" value="cancel">Close</button></div>
     </form>
   </dialog>
