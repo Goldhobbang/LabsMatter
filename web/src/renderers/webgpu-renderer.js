@@ -40,25 +40,21 @@ fn vs(@builtin(vertex_index) vi: u32) -> VSOut {
 fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   // Device-pixel coordinate -> world cell coordinate.
   let cell = (frag.xy - p.offPx) / (p.worldPx / p.worldCells);
-  if (cell.x < 0.0 || cell.y < 0.0 || cell.x >= p.worldCells.x || cell.y >= p.worldCells.y) {
-    return p.bg;
-  }
-  let uv = (floor(cell) + 0.5) / p.worldCells;
-  // texture_2d y=0 is the first row; our buffer is row-major y-outer.
-  let c = textureSample(simTex, simSamp, vec2<f32>(uv.x, uv.y));
-  var color: vec4<f32>;
-  if (c.a <= 0.003) {
-    color = p.bg;
-  } else {
-    color = vec4<f32>(c.rgb, 1.0);
-  }
-  if (p.grid > 0.5) {
-    let f = fract(cell);
-    if (f.x < 0.08 || f.y < 0.08) {
-      color = mix(color, vec4<f32>(0.82, 0.86, 0.9, 1.0), 0.35);
-    }
-  }
-  return color;
+  let inside = cell.x >= 0.0 && cell.y >= 0.0 && cell.x < p.worldCells.x && cell.y < p.worldCells.y;
+  // textureSample must run in uniform control flow. Branching on frag.xy
+  // before the sample makes Dawn reject the module on Windows, which leaves
+  // the canvas cleared (black) while the CPU particle count still rises.
+  let span = max(p.worldCells, vec2<f32>(1.0));
+  let clamped = clamp(floor(cell), vec2<f32>(0.0), span - vec2<f32>(1.0));
+  let uv = (clamped + vec2<f32>(0.5)) / span;
+  let c = textureSample(simTex, simSamp, uv);
+  let show = select(false, c.a > 0.003, inside);
+  let base = select(p.bg, vec4<f32>(c.rgb, 1.0), show);
+  let f = fract(cell);
+  let edge = (f.x < 0.08) || (f.y < 0.08);
+  let onGrid = select(false, edge, inside) && (p.grid > 0.5);
+  let gridded = mix(base, vec4<f32>(0.82, 0.86, 0.9, 1.0), 0.35);
+  return select(base, gridded, onGrid);
 }
 `;
 
@@ -90,18 +86,33 @@ export class WebGPURenderer {
     if (!adapter) throw new Error("No WebGPU adapter");
     this.device = await adapter.requestDevice();
     this.device.lost.then((info) => { this._lost = true; console.warn("WebGPU device lost:", info?.reason); });
-    this.canvas = canvas;
-    this.context = canvas.getContext("webgpu");
-    if (!this.context) throw new Error("WebGPU canvas context unavailable");
     this.format = navigator.gpu.getPreferredCanvasFormat();
-    this.context.configure({ device: this.device, format: this.format, alphaMode: "opaque" });
     const mod = this.device.createShaderModule({ code: WGSL });
+    if (typeof mod.getCompilationInfo === "function") {
+      const compiled = await mod.getCompilationInfo();
+      const errors = compiled.messages.filter((m) => m.type === "error");
+      if (errors.length) {
+        try { this.device.destroy(); } catch {}
+        this.device = null;
+        throw new Error(errors.map((m) => m.message).join("; "));
+      }
+    }
+    // Claim the canvas only after the shader is valid. A failed WebGPU
+    // context would block the WebGL2 fallback on the same canvas.
     this.pipeline = this.device.createRenderPipeline({
       layout: "auto",
       vertex: { module: mod, entryPoint: "vs" },
       fragment: { module: mod, entryPoint: "fs", targets: [{ format: this.format }] },
       primitive: { topology: "triangle-list" },
     });
+    this.canvas = canvas;
+    this.context = canvas.getContext("webgpu");
+    if (!this.context) {
+      try { this.device.destroy(); } catch {}
+      this.device = null;
+      throw new Error("WebGPU canvas context unavailable");
+    }
+    this.context.configure({ device: this.device, format: this.format, alphaMode: "opaque" });
     this.uniformBuf = this.device.createBuffer({
       size: 64,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -132,6 +143,7 @@ export class WebGPURenderer {
 
   resize(w, h) {
     if (!this.canvas || this._lost) return;
+    if (!(w > 1 && h > 1)) return;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.canvas.width = Math.max(1, Math.floor(w * this.dpr));
     this.canvas.height = Math.max(1, Math.floor(h * this.dpr));
@@ -149,9 +161,12 @@ export class WebGPURenderer {
     try {
       this._ensureTexture(gw, gh);
       const bytesPerRow = gw * 4;
+      const n = bytesPerRow * gh;
+      if (!this._upload || this._upload.length !== n) this._upload = new Uint8Array(n);
+      this._upload.set(buf.subarray(0, n));
       this.device.queue.writeTexture(
         { texture: this.simTex },
-        buf.subarray(0, gw * gh * 4),
+        this._upload,
         { bytesPerRow, rowsPerImage: gh },
         { width: gw, height: gh }
       );

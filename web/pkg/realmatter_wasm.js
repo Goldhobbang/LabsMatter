@@ -1,3 +1,15 @@
+export function cycle_air() {
+    wasm.cycle_air();
+}
+
+export function cycle_edge() {
+    wasm.cycle_edge();
+}
+
+export function cycle_gravity() {
+    wasm.cycle_gravity();
+}
+
 /**
  * Get a cell's material id (0 if out of bounds / uninitialized).
  * @param {number} x
@@ -10,6 +22,17 @@ export function get_cell_material(x, y) {
 }
 
 /**
+ * Pressure in pascals (0 if out of bounds).
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_pressure(x, y) {
+    const ret = wasm.get_cell_pressure(x, y);
+    return ret;
+}
+
+/**
  * Get a cell's temperature (Kelvin; 0.0 if out of bounds / uninitialized).
  * @param {number} x
  * @param {number} y
@@ -17,6 +40,28 @@ export function get_cell_material(x, y) {
  */
 export function get_cell_temperature(x, y) {
     const ret = wasm.get_cell_temperature(x, y);
+    return ret;
+}
+
+/**
+ * Horizontal velocity, m/s (0 if out of bounds).
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_vx(x, y) {
+    const ret = wasm.get_cell_vx(x, y);
+    return ret;
+}
+
+/**
+ * Vertical velocity, m/s (0 if out of bounds). Positive is downward.
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_vy(x, y) {
+    const ret = wasm.get_cell_vy(x, y);
     return ret;
 }
 
@@ -97,6 +142,21 @@ export function save_blob() {
 }
 
 /**
+ * Air: 0 on, 1 off, 2 pressure only.
+ * @param {number} mode
+ */
+export function set_air_mode(mode) {
+    wasm.set_air_mode(mode);
+}
+
+/**
+ * @param {number} on
+ */
+export function set_ambient_heat(on) {
+    wasm.set_ambient_heat(on);
+}
+
+/**
  * Set a cell's material. Returns true on success.
  *
  * New cells start at the material's characteristic temperature so thermal
@@ -112,6 +172,59 @@ export function save_blob() {
 export function set_cell(x, y, material) {
     const ret = wasm.set_cell(x, y, material);
     return ret !== 0;
+}
+
+/**
+ * Edge: 0 void, 1 solid, 2 wrap.
+ * @param {number} mode
+ */
+export function set_edge_mode(mode) {
+    wasm.set_edge_mode(mode);
+}
+
+/**
+ * Gravity: 0 down, 1 off, 2 toward center.
+ * @param {number} mode
+ */
+export function set_gravity_mode(mode) {
+    wasm.set_gravity_mode(mode);
+}
+
+/**
+ * @param {number} on
+ */
+export function set_newtonian(on) {
+    wasm.set_newtonian(on);
+}
+
+/**
+ * 0 material, 1 fancy (heat tint), 2 heat, 3 pressure, 4 velocity.
+ * Colors come from the live cell fields, not from invented values.
+ * @param {number} mode
+ */
+export function set_view_mode(mode) {
+    wasm.set_view_mode(mode);
+}
+
+/**
+ * Compact HUD string: gravity, air, edge, newton, ambient.
+ * @returns {string}
+ */
+export function sim_status() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        wasm.sim_status(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred1_0 = r0;
+        deferred1_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export3(deferred1_0, deferred1_1, 1);
+    }
 }
 
 /**
@@ -140,6 +253,14 @@ export function step(_dt) {
 export function tick_count() {
     const ret = wasm.tick_count();
     return BigInt.asUintN(64, ret);
+}
+
+export function toggle_ambient() {
+    wasm.toggle_ambient();
+}
+
+export function toggle_newtonian() {
+    wasm.toggle_newtonian();
 }
 
 /**
@@ -328,7 +449,7 @@ async function __wbg_init_once(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('realmatter_wasm_bg.wasm', import.meta.url);
+        module_or_path = new URL('realmatter_wasm_bg.wasm?sim=4', import.meta.url);
     }
     const imports = __wbg_get_imports();
 
