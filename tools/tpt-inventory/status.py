@@ -35,13 +35,13 @@ OUT = os.path.join(ROOT, "docs", "tpt-parity", "inventory")
 # Partial handlers: functional K5 implementations whose full reference parity is
 # not yet gameplay-verified. Kept separate from `Full` so nothing is overstated.
 BLOCKED = {
-    "STKM": "K6: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified",
-    "STKM2": "K6: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified",
-    "STK2": "K6: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified",
-    "FIGH": "K6: slot-aware head, target selection, element power, multi-fighter separation; brawling unverified",
-    "PIPE": "K6: HEAC flood, transport, PPIP triggers, single-pixel init; PIPE graphics emulation pending",
-    "PSTN": "K6: FRME row push, empty-space extension, tmp3 flags; full recursive stack pending",
-    "SOAP": "K6: mid-chain rewiring, pop, second-order constraints; boundary edge cases pending",
+    "STKM": "K7: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified",
+    "STKM2": "K7: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified",
+    "STK2": "K7: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified",
+    "FIGH": "K7: slot-aware head, target selection, element power, multi-fighter separation; brawling unverified",
+    "PIPE": "K7: HEAC flood, transport, PPIP triggers, single-pixel init, graphics; exact graphics emulation pending",
+    "PSTN": "K7: FRME row push, empty-space extension, tmp3 flags; full recursive stack pending",
+    "SOAP": "K7: mid-chain rewiring, pop, second-order constraints; boundary edge cases pending",
 }
 
 STATE_FLAGS = {

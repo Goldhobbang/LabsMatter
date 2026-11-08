@@ -29,12 +29,12 @@ flags (`update`/`create`/`graphics`/`transition`).
 
 | abbr | reason |
 |---|---|
-| STKM | K6: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified |
-| PIPE | K6: HEAC flood, transport, PPIP triggers, single-pixel init; PIPE graphics emulation pending |
-| STKM2 | K6: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified |
-| SOAP | K6: mid-chain rewiring, pop, second-order constraints; boundary edge cases pending |
-| FIGH | K6: slot-aware head, target selection, element power, multi-fighter separation; brawling unverified |
-| PSTN | K6: FRME row push, empty-space extension, tmp3 flags; full recursive stack pending |
+| STKM | K7: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified |
+| PIPE | K7: HEAC flood, transport, PPIP triggers, single-pixel init, graphics; exact graphics emulation pending |
+| STKM2 | K7: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified |
+| SOAP | K7: mid-chain rewiring, pop, second-order constraints; boundary edge cases pending |
+| FIGH | K7: slot-aware head, target selection, element power, multi-fighter separation; brawling unverified |
+| PSTN | K7: FRME row push, empty-space extension, tmp3 flags; full recursive stack pending |
 
 ## Unimplemented entries
 

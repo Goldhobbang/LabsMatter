@@ -1,6 +1,6 @@
 # A3 Status
 
-- Current task: K6 — reference fidelity completion
+- Current task: K7 — reference fidelity, electrical regression, special-particle completion
 - State: IMPLEMENTATION READY (gameplay verification delegated to Agent B)
 - Last updated: 2026-11-08
 - Branch: agent3/chemistry-elements
@@ -10,12 +10,14 @@
 - Notes:
   - SPRK rewritten as a faithful port (fire update, restore durations,
     switch/pump/latch/PPIP/EMP activation, sender/receiver conduction rules).
-  - PIPE/PPIP: HEAC flood, single-pixel init, PPIP pause/reverse triggers.
+  - PIPE/PPIP: HEAC flood, single-pixel init, PPIP pause/reverse triggers,
+    stored-particle graphics.
   - PSTN: reference direction, FRME row push, extension into empty space.
   - SOAP: mid-chain rewiring and lone-head splice.
   - STKM/STKM2: feet/legs, 2-cell jump, PRTI→PRTO teleport, element power.
   - FIGH: slot-aware head, torso targeting, DUST default power, separation.
+  - Graphics: PIPE/PPIP, LCRY, DEUT, BIZR, VIBR, SLCN element-specific rules.
   - Six elements remain Partial (full reference parity not gameplay-verified).
   - Builds + WASM pass; `list_unimpl` = 0.
-  - Report: communication/agents/A3/reports/T-K6-A3-20261108.md
-  - Playtest handoff: docs/tpt-parity/qa/K6-handoff.md
+  - Report: communication/agents/A3/reports/T-K7-A3-20261108.md
+  - Playtest handoff: docs/tpt-parity/qa/K7-handoff.md

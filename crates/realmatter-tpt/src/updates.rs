@@ -953,17 +953,54 @@ fn clone_create(sim: &mut Sim, i: usize, _x: i32, _y: i32, _t: i32, _v: i32) {
 }
 
 fn clone_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    // PCLN is powered by sparks (reference `PCLN::update`).
+    if sim.parts[i].t == pt::PCLN {
+        if sim.parts[i].life > 0 && sim.parts[i].life != 10 {
+            sim.parts[i].life -= 1;
+        }
+        for rx in -2..=2 {
+            for ry in -2..=2 {
+                if rx == 0 && ry == 0 {
+                    continue;
+                }
+                let nx = x + rx;
+                let ny = y + ry;
+                if !sim.in_bounds(nx, ny) {
+                    continue;
+                }
+                let r = sim.pmap[sim.idx(nx, ny)];
+                if r == 0 {
+                    continue;
+                }
+                let id = pmap_id(r) as usize;
+                let rt = pmap_type(r);
+                if rt == pt::SPRK && sim.parts[id].life > 0 && sim.parts[id].life < 4 {
+                    if sim.parts[id].ctype == pt::PSCN as i32 {
+                        sim.parts[i].life = 10;
+                    } else if sim.parts[id].ctype == pt::NSCN as i32 {
+                        sim.parts[i].life = 9;
+                    }
+                } else if rt == pt::PCLN {
+                    if sim.parts[i].life == 10 && sim.parts[id].life < 10 && sim.parts[id].life > 0 {
+                        sim.parts[i].life = 9;
+                    } else if sim.parts[i].life == 0 && sim.parts[id].life == 10 {
+                        sim.parts[i].life = 10;
+                    }
+                }
+            }
+        }
+    }
     let ct = sim.parts[i].ctype;
     if !(ct > 0 && (ct as usize) < crate::elements_generated::PT_NUM) {
         return 0;
     }
-    // PCLN clones that are powered use their ctype; unpowered clones do nothing.
-    if sim.parts[i].t == pt::PCLN {
-        let powered = element(sim.parts[i].t).properties & props::PROP_CONDUCTS != 0
-            && sim.parts[i].life != 0;
-        if !powered {
-            return 0;
-        }
+    // PCLN clones only when powered (life != 0); CLNE always clones.
+    if sim.parts[i].t == pt::PCLN && sim.parts[i].life == 0 {
+        return 0;
+    }
+    // PBCN clones only when powered.
+    if sim.parts[i].t == pt::PBCN && sim.parts[i].life == 0 {
+        return 0;
     }
     let mut spawn: Vec<(i32, i32)> = Vec::new();
     for_neighbours!(sim, x, y, rx, ry, nx, ny, {
