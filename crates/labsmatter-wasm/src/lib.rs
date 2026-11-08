@@ -22,10 +22,14 @@ use wasm_bindgen::prelude::*;
 thread_local! {
     static SIM: RefCell<Option<Sim>> = RefCell::new(None);
     static RENDER: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    /// Additive fire/glow buffer (RGBA8 per pixel). Zero outside emissive pixels.
+    static GLOW: RefCell<Vec<u8>> = RefCell::new(Vec::new());
     static WIDTH: RefCell<u32> = RefCell::new(0);
     static HEIGHT: RefCell<u32> = RefCell::new(0);
-    /// 0 material, 1 fancy (heat tint), 2 heat, 3 pressure, 4 velocity.
+    /// 0 normal, 1 fancy (glow), 2 heat, 3 pressure, 4 velocity, 5 gravity.
     static VIEW: RefCell<u8> = RefCell::new(0);
+    /// Whether the glow buffer is populated (fancy view).
+    static GLOW_ON: RefCell<bool> = RefCell::new(true);
     /// Human-readable result of the most recent load attempt (v2 or v1).
     static LOAD_REPORT: RefCell<String> = RefCell::new(String::new());
 }
@@ -62,17 +66,9 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
     WIDTH.with(|x| *x.borrow_mut() = w);
     HEIGHT.with(|y| *y.borrow_mut() = h);
     RENDER.with(|r| *r.borrow_mut() = vec![0u8; (w * h * 4) as usize]);
+    GLOW.with(|g| *g.borrow_mut() = vec![0u8; (w * h * 4) as usize]);
     rebuild_render();
     Ok(())
-}
-
-fn element_colour(t: u16) -> (u8, u8, u8) {
-    let c = element(t).colour;
-    (
-        ((c >> 16) & 0xFF) as u8,
-        ((c >> 8) & 0xFF) as u8,
-        (c & 0xFF) as u8,
-    )
 }
 
 fn heat_rgba(t: f32) -> (u8, u8, u8) {
@@ -112,107 +108,144 @@ fn wall_rgb(w: u8, powered: bool) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
+fn gravity_rgba(gx: f32, gy: f32) -> (u8, u8, u8) {
+    let m = (gx * gx + gy * gy).sqrt();
+    let k = (m / 4.0).clamp(0.0, 1.0);
+    ((40.0 + k * 215.0) as u8, (120.0 - k * 80.0) as u8, (200.0 - k * 120.0) as u8)
+}
+
 fn rebuild_render() {
     let view = VIEW.with(|v| *v.borrow());
+    let glow_on = GLOW_ON.with(|g| *g.borrow());
     SIM.with(|s| {
         let mut g = s.borrow_mut();
         let Some(sim) = g.as_mut() else { return };
         RENDER.with(|r| {
-            let mut buf = r.borrow_mut();
-            let n = sim.width * sim.height;
-            if buf.len() != n * 4 {
-                buf.resize(n * 4, 0);
-            }
-            let cells_x = sim.cells_x;
-            for y in 0..sim.height {
-                for x in 0..sim.width {
-                    let i = y * sim.width + x;
-                    let (rr, gg, bb, aa);
-                    let cx = x / CELL;
-                    let cy = y / CELL;
-                    let ci = cy * cells_x + cx;
-                    if view == 3 || view == 4 {
-                        // Field views are valid for empty pixels too.
-                        let (r, g, b) = if view == 3 {
-                            let p = sim.pv[ci];
-                            let k = ((p + 8.0) / 16.0).clamp(0.0, 1.0);
-                            (
-                                (40.0 + k * 200.0) as u8,
-                                (80.0 + (0.5 - (k - 0.5).abs()) * 120.0) as u8,
-                                (200.0 - k * 160.0) as u8,
-                            )
-                        } else {
-                            let (vx, vy) = (sim.vx[ci], sim.vy[ci]);
-                            let s = (vx * vx + vy * vy).sqrt();
-                            let k = (s / 4.0).clamp(0.0, 1.0);
-                            ((40.0 + k * 215.0) as u8, (180.0 - k * 100.0) as u8, 80)
-                        };
-                        rr = r;
-                        gg = g;
-                        bb = b;
-                        aa = 255;
-                    } else {
-                        // Walls are drawn per CELL underneath particles.
-                        let wall = sim.bmap[ci];
-                        let powered = sim.emap[ci] != 0;
-                        let (mut r, mut g, mut b, mut a) = match wall_rgb(wall, powered) {
-                            Some((wr, wg, wb)) => (wr, wg, wb, 255),
-                            None => (0, 0, 0, 0),
-                        };
-                        let packed = if sim.photons[i] != 0 {
-                            sim.photons[i]
-                        } else {
-                            sim.pmap[i]
-                        };
-                        let t = realmatter_tpt::pmap_type(packed);
-                        if t != 0 {
-                            let id = realmatter_tpt::pmap_id(packed) as usize;
-                            let part = sim.parts.get(id);
-                            let temp = part.map(|p| p.temp).unwrap_or(293.15);
-                            let (pr, pg, pb) = if view == 2 {
-                                heat_rgba(temp)
-                            } else if view == 1 && temp > 500.0 {
-                                // Fancy: tint hot particles toward the heat ramp.
-                                let (hr, hg, hb) = heat_rgba(temp);
-                                let k = ((temp - 500.0) / 1000.0).clamp(0.0, 0.75);
-                                let (er, eg, eb) = element_colour(t);
-                                (
-                                    blend(er, hr, k),
-                                    blend(eg, hg, k),
-                                    blend(eb, hb, k),
-                                )
-                            } else {
-                                element_colour(t)
+            GLOW.with(|gl| {
+                let mut buf = r.borrow_mut();
+                let mut glow = gl.borrow_mut();
+                let n = sim.width * sim.height;
+                if buf.len() != n * 4 {
+                    buf.resize(n * 4, 0);
+                }
+                if glow.len() != n * 4 {
+                    glow.resize(n * 4, 0);
+                }
+                let cells_x = sim.cells_x;
+                let fancy = view == 1;
+                for y in 0..sim.height {
+                    for x in 0..sim.width {
+                        let i = y * sim.width + x;
+                        let o = i * 4;
+                        let cx = x / CELL;
+                        let cy = y / CELL;
+                        let ci = cy * cells_x + cx;
+                        let (rr, gg, bb, aa, gr, gg2, gb, ga);
+                        if view >= 2 {
+                            // Field views are valid for empty pixels too.
+                            let (r, g_, b) = match view {
+                                2 => {
+                                    let packed = if sim.photons[i] != 0 {
+                                        sim.photons[i]
+                                    } else {
+                                        sim.pmap[i]
+                                    };
+                                    let id = realmatter_tpt::pmap_id(packed) as usize;
+                                    let temp = sim.parts.get(id).map(|p| p.temp).unwrap_or(293.15);
+                                    heat_rgba(temp)
+                                }
+                                3 => {
+                                    let p = sim.pv[ci];
+                                    let k = ((p + 8.0) / 16.0).clamp(0.0, 1.0);
+                                    (
+                                        (40.0 + k * 200.0) as u8,
+                                        (80.0 + (0.5 - (k - 0.5).abs()) * 120.0) as u8,
+                                        (200.0 - k * 160.0) as u8,
+                                    )
+                                }
+                                4 => {
+                                    let (vx, vy) = (sim.vx[ci], sim.vy[ci]);
+                                    let s = (vx * vx + vy * vy).sqrt();
+                                    let k = (s / 4.0).clamp(0.0, 1.0);
+                                    ((40.0 + k * 215.0) as u8, (180.0 - k * 100.0) as u8, 80)
+                                }
+                                _ => {
+                                    let f = sim.grav_force[ci];
+                                    gravity_rgba(f.0, f.1)
+                                }
                             };
-                            r = pr;
-                            g = pg;
-                            b = pb;
-                            a = 255;
-                            // Per-particle decoration colour (ARGB) overlay.
-                            if let Some(p) = part {
-                                let dc = p.dcolour;
-                                if dc != 0 {
-                                    let da = ((dc >> 24) & 0xFF) as f32 / 255.0;
-                                    let (dr, dg, db) = rgb(dc & 0x00FF_FFFF);
-                                    r = blend(r, dr, da);
-                                    g = blend(g, dg, da);
-                                    b = blend(b, db, da);
-                                    a = 255;
+                            rr = r;
+                            gg = g_;
+                            bb = b;
+                            aa = 255;
+                            gr = 0;
+                            gg2 = 0;
+                            gb = 0;
+                            ga = 0;
+                        } else {
+                            // Walls are drawn per CELL underneath particles.
+                            let wall = sim.bmap[ci];
+                            let powered = sim.emap[ci] != 0;
+                            let (mut r, mut g_, mut b, mut a) = match wall_rgb(wall, powered) {
+                                Some((wr, wg, wb)) => (wr, wg, wb, 255),
+                                None => (0, 0, 0, 0),
+                            };
+                            let mut wr_glow = (0u8, 0u8, 0u8, 0u8);
+                            if fancy && powered && wall != 0 {
+                                if let Some(def) =
+                                    realmatter_tpt::elements_generated::WALLS.get(wall as usize)
+                                {
+                                    if def.eglow != 0 {
+                                        let (er, eg, eb) = rgb(def.eglow);
+                                        wr_glow = (er, eg, eb, 180);
+                                    }
                                 }
                             }
+                            let packed = if sim.photons[i] != 0 {
+                                sim.photons[i]
+                            } else {
+                                sim.pmap[i]
+                            };
+                            let t = realmatter_tpt::pmap_type(packed);
+                            let mut part_glow = (0u8, 0u8, 0u8, 0u8);
+                            if t != 0 {
+                                let id = realmatter_tpt::pmap_id(packed) as usize;
+                                if let Some(part) = sim.parts.get(id) {
+                                    let gp = realmatter_tpt::graphics::for_particle(t, part);
+                                    r = gp.r;
+                                    g_ = gp.g;
+                                    b = gp.b;
+                                    a = gp.a;
+                                    if fancy && gp.has_glow() {
+                                        part_glow = (gp.fr, gp.fg, gp.fb, gp.fa);
+                                    }
+                                }
+                            }
+                            rr = r;
+                            gg = g_;
+                            bb = b;
+                            aa = a;
+                            // Prefer the particle glow; fall back to wall glow.
+                            (gr, gg2, gb, ga) = if part_glow.3 != 0 { part_glow } else { wr_glow };
                         }
-                        rr = r;
-                        gg = g;
-                        bb = b;
-                        aa = a;
+                        buf[o] = rr;
+                        buf[o + 1] = gg;
+                        buf[o + 2] = bb;
+                        buf[o + 3] = aa;
+                        if fancy && glow_on && ga != 0 {
+                            glow[o] = gr;
+                            glow[o + 1] = gg2;
+                            glow[o + 2] = gb;
+                            glow[o + 3] = ga;
+                        } else {
+                            glow[o] = 0;
+                            glow[o + 1] = 0;
+                            glow[o + 2] = 0;
+                            glow[o + 3] = 0;
+                        }
                     }
-                    let o = i * 4;
-                    buf[o] = rr;
-                    buf[o + 1] = gg;
-                    buf[o + 2] = bb;
-                    buf[o + 3] = aa;
                 }
-            }
+            });
         });
     });
 }
@@ -869,9 +902,32 @@ pub fn render_buffer_len() -> usize {
     RENDER.with(|r| r.borrow().len())
 }
 
+/// Pointer to the additive glow buffer (RGBA8 per pixel). Zero outside emissive
+/// pixels; populated in the fancy view.
+#[wasm_bindgen]
+pub fn glow_buffer_ptr() -> *const u8 {
+    GLOW.with(|g| g.borrow().as_ptr())
+}
+
+#[wasm_bindgen]
+pub fn glow_buffer_len() -> usize {
+    GLOW.with(|g| g.borrow().len())
+}
+
+#[wasm_bindgen]
+pub fn set_glow_enabled(on: bool) {
+    GLOW_ON.with(|g| *g.borrow_mut() = on);
+    rebuild_render();
+}
+
+#[wasm_bindgen]
+pub fn glow_enabled() -> bool {
+    GLOW_ON.with(|g| *g.borrow())
+}
+
 #[wasm_bindgen]
 pub fn set_view_mode(mode: u32) {
-    VIEW.with(|v| *v.borrow_mut() = mode.min(4) as u8);
+    VIEW.with(|v| *v.borrow_mut() = mode.min(5) as u8);
     rebuild_render();
 }
 
@@ -1350,6 +1406,7 @@ fn install_sim(sim: Sim) {
     WIDTH.with(|x| *x.borrow_mut() = w);
     HEIGHT.with(|y| *y.borrow_mut() = h);
     RENDER.with(|r| *r.borrow_mut() = vec![0u8; (w * h * 4) as usize]);
+    GLOW.with(|g| *g.borrow_mut() = vec![0u8; (w * h * 4) as usize]);
     rebuild_render();
 }
 

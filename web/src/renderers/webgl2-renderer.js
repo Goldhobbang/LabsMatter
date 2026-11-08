@@ -86,6 +86,9 @@ export class WebGL2Renderer {
     const w = this.canvas.width, h = this.canvas.height;
     if (w < 1 || h < 1) { this.lastRenderMs = performance.now()-t0; return; }
     gl.clearColor(0.02,0.03,0.06,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    // The previous frame left TEXTURE1 active for the glow bind; re-select the
+    // base unit before uploading the colour texture.
+    gl.activeTexture(gl.TEXTURE0);
     if (!this._rgbaTex) this._rgbaTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
@@ -103,6 +106,26 @@ export class WebGL2Renderer {
     this._upload.set(buf.subarray(0, n));
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._upload);
+    // Optional additive glow buffer (RGBA8, same dimensions). Uploaded to a
+    // second texture and box-blurred in the blit shader for a cheap bloom.
+    const glow = opts && opts.glow;
+    let glowOk = false;
+    if (glow && glow.length >= n) {
+      gl.activeTexture(gl.TEXTURE1);
+      if (!this._glowTex) this._glowTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this._glowTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      if (!this._glowUpload || this._glowUpload.length !== n) this._glowUpload = new Uint8Array(n);
+      this._glowUpload.set(glow.subarray(0, n));
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._glowUpload);
+      glowOk = true;
+      gl.activeTexture(gl.TEXTURE0);
+    }
     // Fullscreen textured quad via the instanced shader path is overkill;
     // use a minimal blit program created lazily.
     if (!this._blit) {
@@ -119,18 +142,28 @@ export class WebGL2Renderer {
       gl.shaderSource(fs, `#version 300 es
 precision mediump float;
 uniform sampler2D uT;
+uniform sampler2D uG;
 uniform vec2 uOff;
 uniform vec2 uScale;
 uniform vec2 uWorld;
+uniform vec2 uTexel;
 uniform float uGrid;
+uniform float uGlowStrength;
 in vec2 vUV;
 out vec4 o;
 void main(){
   vec2 uv=(vUV-uOff)/max(uScale, vec2(1e-6));
   if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.) discard;
   vec4 c=texture(uT, uv);
-  // Transparent empty cells keep the clear color through blending, while the
-  // grid overlay below can still paint over them.
+  // Cheap 4-neighbour box blur of the glow buffer (bloom). Always sampled so
+  // the branch stays uniform; strength 0 disables the effect for normal mode.
+  vec3 gl = texture(uG, uv).rgb;
+  gl += texture(uG, uv + vec2(uTexel.x, 0.0)).rgb;
+  gl += texture(uG, uv - vec2(uTexel.x, 0.0)).rgb;
+  gl += texture(uG, uv + vec2(0.0, uTexel.y)).rgb;
+  gl += texture(uG, uv - vec2(0.0, uTexel.y)).rgb;
+  gl *= 0.2;
+  c.rgb += gl * uGlowStrength;
   o=c;
   if(uGrid>=1.0){
     vec2 cell=uv*uWorld;
@@ -164,9 +197,15 @@ void main(){
     const gridSize = this.overlay.gridSize || 8;
     const gridSpacing = this.overlay.grid && cellPx * gridSize >= 4 ? gridSize : 0;
     gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGrid"), gridSpacing);
+    gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uTexel"), 1 / Math.max(1, gw), 1 / Math.max(1, gh));
+    const glowStrength = glowOk && opts && opts.glowStrength != null ? opts.glowStrength : (glowOk ? 1.0 : 0.0);
+    gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGlowStrength"), glowStrength);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);
     gl.uniform1i(gl.getUniformLocation(this._blit.pr, "uT"), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, glowOk ? this._glowTex : this._rgbaTex);
+    gl.uniform1i(gl.getUniformLocation(this._blit.pr, "uG"), 1);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     this.lastRenderMs = performance.now()-t0;
     const now=performance.now(); this._fpsAcc++; if (now-this._fpsT>=500){this.fps=this._fpsAcc*1000/(now-this._fpsT);this._fpsAcc=0;this._fpsT=now;}

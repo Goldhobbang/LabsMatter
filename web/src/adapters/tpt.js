@@ -283,12 +283,12 @@ export class TptAdapter {
     return false;
   }
 
-  readRenderBuffer() {
+  _readBuffer(ptrFn, lenFn) {
     if (!this.mod || !this.exports) return null;
     try {
-      if (typeof this.mod.render_buffer_ptr !== "function") return null;
-      const ptr = this.mod.render_buffer_ptr();
-      const len = typeof this.mod.render_buffer_len === "function" ? this.mod.render_buffer_len() : 0;
+      if (typeof this.mod[ptrFn] !== "function") return null;
+      const ptr = this.mod[ptrFn]();
+      const len = typeof this.mod[lenFn] === "function" ? this.mod[lenFn]() : 0;
       if (!ptr || len === 0) return null;
       // Re-fetch the memory view every frame: wasm memory growth detaches the
       // previous ArrayBuffer. Reusing a stale view renders a black frame.
@@ -297,6 +297,22 @@ export class TptAdapter {
       this.memory = mem;
       return new Uint8Array(mem.buffer, ptr, len);
     } catch { return null; }
+  }
+
+  readRenderBuffer() {
+    return this._readBuffer("render_buffer_ptr", "render_buffer_len");
+  }
+
+  /** Additive glow buffer (RGBA8 per pixel, zero outside emissive pixels). */
+  readGlowBuffer() {
+    return this._readBuffer("glow_buffer_ptr", "glow_buffer_len");
+  }
+
+  setGlowEnabled(on) {
+    if (this.mod && typeof this.mod.set_glow_enabled === "function") {
+      try { this.mod.set_glow_enabled(!!on); return true; } catch {}
+    }
+    return false;
   }
 
   // ---- Diagnostics ------------------------------------------------------

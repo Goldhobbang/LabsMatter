@@ -11,6 +11,7 @@ pub mod element_defaults;
 pub mod elements_generated;
 pub mod entity;
 pub mod gol;
+pub mod graphics;
 pub mod movement;
 pub mod particle;
 pub mod portal;

@@ -343,6 +343,32 @@ export function get_world_settings() {
 }
 
 /**
+ * @returns {number}
+ */
+export function glow_buffer_len() {
+    const ret = wasm.glow_buffer_len();
+    return ret >>> 0;
+}
+
+/**
+ * Pointer to the additive glow buffer (RGBA8 per pixel). Zero outside emissive
+ * pixels; populated in the fancy view.
+ * @returns {number}
+ */
+export function glow_buffer_ptr() {
+    const ret = wasm.glow_buffer_ptr();
+    return ret >>> 0;
+}
+
+/**
+ * @returns {boolean}
+ */
+export function glow_enabled() {
+    const ret = wasm.glow_enabled();
+    return ret !== 0;
+}
+
+/**
  * Initialize the simulation. `width`/`height` must be divisible by CELL (4).
  * @param {number} width
  * @param {number} height
@@ -529,6 +555,13 @@ export function set_edge_mode(mode) {
  */
 export function set_fighter_input(slot, comm) {
     wasm.set_fighter_input(slot, comm);
+}
+
+/**
+ * @param {boolean} on
+ */
+export function set_glow_enabled(on) {
+    wasm.set_glow_enabled(on);
 }
 
 /**

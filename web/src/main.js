@@ -35,7 +35,7 @@ let tickSamples = 0;
 let tickWindow = 0;
 let measuredTps = 0;
 const SHAPES = ["circle", "square", "triangle"];
-const VIEWS = ["Normal", "Fancy", "Heat", "Pressure", "Velocity"];
+const VIEWS = ["Normal", "Fancy", "Heat", "Pressure", "Velocity", "Gravity"];
 
 async function boot() {
   setAppState("loading", "Starting simulation…");
@@ -178,7 +178,15 @@ function loop(now) {
   try {
     const buf = sim.readRenderBuffer();
     const size = sim.getWorldSize();
-    if (buf && size.w > 0) renderer.renderRGBA(buf, size.w, size.h, s.camera, {});
+    if (buf && size.w > 0) {
+      // Fancy view publishes an additive glow buffer for bloom. Normal/field
+      // views pass no glow so the blit strength stays zero.
+      let glow = null;
+      if (s.view === 1 && typeof sim.readGlowBuffer === "function") {
+        try { glow = sim.readGlowBuffer(); } catch { glow = null; }
+      }
+      renderer.renderRGBA(buf, size.w, size.h, s.camera, glow ? { glow, glowStrength: 1.0 } : {});
+    }
   } catch (e) { console.warn(e); }
   drawOverlay();
   paintHud();

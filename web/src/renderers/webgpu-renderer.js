@@ -12,12 +12,15 @@ struct Params {
   worldCells: vec2<f32>,
   // background color
   bg: vec4<f32>,
+  glowStrength: f32,
   grid: f32,
+  glowTexel: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var simTex: texture_2d<f32>;
 @group(0) @binding(2) var simSamp: sampler;
+@group(0) @binding(3) var glowTex: texture_2d<f32>;
 
 struct VSOut {
   @builtin(position) pos: vec4<f32>,
@@ -49,7 +52,15 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let uv = (clamped + vec2<f32>(0.5)) / span;
   let c = textureSample(simTex, simSamp, uv);
   let show = select(false, c.a > 0.003, inside);
-  let base = select(p.bg, vec4<f32>(c.rgb, 1.0), show);
+  var base = select(p.bg, vec4<f32>(c.rgb, 1.0), show);
+  // Additive glow with a cheap 4-neighbour box blur (bloom).
+  var gl = textureSample(glowTex, simSamp, uv).rgb;
+  gl += textureSample(glowTex, simSamp, uv + vec2<f32>(p.glowTexel.x, 0.0)).rgb;
+  gl += textureSample(glowTex, simSamp, uv - vec2<f32>(p.glowTexel.x, 0.0)).rgb;
+  gl += textureSample(glowTex, simSamp, uv + vec2<f32>(0.0, p.glowTexel.y)).rgb;
+  gl += textureSample(glowTex, simSamp, uv - vec2<f32>(0.0, p.glowTexel.y)).rgb;
+  gl *= 0.2;
+  base = vec4<f32>(base.rgb + gl * p.glowStrength, base.a);
   let gridSpacing = max(p.grid, 1.0);
   let f = fract(cell / gridSpacing);
   let edge = (f.x < 0.08) || (f.y < 0.08);
@@ -69,6 +80,10 @@ export class WebGPURenderer {
     this.uniformBuf = null;
     this.sampler = null;
     this.simTex = null;
+    this.glowTex = null;
+    this._blackGlow = null;
+    this.glowW = 0;
+    this.glowH = 0;
     this.texW = 0;
     this.texH = 0;
     this.bindGroup = null;
@@ -123,6 +138,36 @@ export class WebGPURenderer {
     return true;
   }
 
+  _ensureBlackGlow() {
+    if (this._blackGlow) return;
+    this._blackGlow = this.device.createTexture({
+      size: { width: 1, height: 1 },
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.device.queue.writeTexture(
+      { texture: this._blackGlow },
+      new Uint8Array([0, 0, 0, 255]),
+      { bytesPerRow: 4 },
+      { width: 1, height: 1 }
+    );
+  }
+
+  _rebuildBindGroup() {
+    if (!this.simTex) return;
+    this._ensureBlackGlow();
+    const glowView = (this.glowTex || this._blackGlow).createView();
+    this.bindGroup = this.device.createBindGroup({
+      layout: this.pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuf } },
+        { binding: 1, resource: this.simTex.createView() },
+        { binding: 2, resource: this.sampler },
+        { binding: 3, resource: glowView },
+      ],
+    });
+  }
+
   _ensureTexture(gw, gh) {
     if (this.simTex && this.texW === gw && this.texH === gh) return;
     if (this.simTex) { try { this.simTex.destroy(); } catch {} }
@@ -132,14 +177,19 @@ export class WebGPURenderer {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     this.texW = gw; this.texH = gh;
-    this.bindGroup = this.device.createBindGroup({
-      layout: this.pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: this.uniformBuf } },
-        { binding: 1, resource: this.simTex.createView() },
-        { binding: 2, resource: this.sampler },
-      ],
+    this._rebuildBindGroup();
+  }
+
+  _ensureGlow(gw, gh) {
+    if (this.glowTex && this.glowW === gw && this.glowH === gh) return;
+    if (this.glowTex) { try { this.glowTex.destroy(); } catch {} }
+    this.glowTex = this.device.createTexture({
+      size: { width: Math.max(1, gw), height: Math.max(1, gh) },
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
+    this.glowW = gw; this.glowH = gh;
+    this._rebuildBindGroup();
   }
 
   resize(w, h) {
@@ -171,6 +221,21 @@ export class WebGPURenderer {
         { bytesPerRow, rowsPerImage: gh },
         { width: gw, height: gh }
       );
+      // Optional additive glow buffer.
+      const glow = opts && opts.glow;
+      let glowStrength = 0.0;
+      if (glow && glow.length >= n) {
+        this._ensureGlow(gw, gh);
+        if (!this._glowUpload || this._glowUpload.length !== n) this._glowUpload = new Uint8Array(n);
+        this._glowUpload.set(glow.subarray(0, n));
+        this.device.queue.writeTexture(
+          { texture: this.glowTex },
+          this._glowUpload,
+          { bytesPerRow, rowsPerImage: gh },
+          { width: gw, height: gh }
+        );
+        glowStrength = opts && opts.glowStrength != null ? opts.glowStrength : 1.0;
+      }
       const zoom = camera.zoom || 1;
       const cellPx = 4 * zoom;
       const offX = (camera.x || 0) * this.dpr;
@@ -186,7 +251,10 @@ export class WebGPURenderer {
       const padded = new Float32Array(16);
       padded.set(params.subarray(0, 12));
       const gridSize = this.overlay.gridSize || 8;
-      padded[12] = this.overlay.grid && cellPx * gridSize >= 4 ? gridSize : 0;
+      padded[12] = glowStrength;
+      padded[13] = this.overlay.grid && cellPx * gridSize >= 4 ? gridSize : 0;
+      padded[14] = 1 / Math.max(1, gw);
+      padded[15] = 1 / Math.max(1, gh);
       this.device.queue.writeBuffer(this.uniformBuf, 0, padded);
       const encoder = this.device.createCommandEncoder();
       const pass = encoder.beginRenderPass({
