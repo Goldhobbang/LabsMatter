@@ -16,6 +16,9 @@ const ENTRIES = [
   "styles",
   "src",
   "pkg",
+  // Experimental TPT-parity runtime. Optional: the production deploy does not
+  // require it, but when present it ships so `?engine=tpt` works from dist/.
+  "pkg-tpt",
   "og-image.svg",
 ];
 

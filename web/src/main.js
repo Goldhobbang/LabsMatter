@@ -1,8 +1,16 @@
-import { MATERIALS, CATEGORIES, searchMaterials, findMaterial } from "./materials.js";
+import * as ProdMat from "./materials.js";
+import * as TptMat from "./tpt-materials.js";
 import { getState, setState, subscribe, resetState } from "./state/store.js";
 import { WasmDirectAdapter } from "./adapters/wasm-direct.js";
+import { TptAdapter } from "./adapters/tpt.js";
 import { createRenderer } from "./renderers/renderer-factory.js";
 import { loadConfig, saveConfig, applyPreset, matchBinding, formatBinding, ACTION_LABELS } from "./shortcuts.js";
+
+// Runtime selection: production stays the default. `?engine=tpt` launches the
+// experimental TPT-parity runtime. No silent fallback — if TPT fails to load we
+// show the error on that runtime so failures are visible.
+const ENGINE = new URLSearchParams(location.search).get("engine") === "tpt" ? "tpt" : "prod";
+let matApi = ProdMat;
 
 const $ = (id) => document.getElementById(id);
 let sim = null;
@@ -65,10 +73,35 @@ async function boot() {
   wireKeys();
   subscribe(onState);
   onState(getState());
+  // Diagnostics handle for runtime selection and manual verification. Read-only
+  // accessors; the module keeps ownership of the live objects.
+  window.labsmatter = {
+    engine: ENGINE,
+    get sim() { return sim; },
+    get materials() { return matApi; },
+    get renderer() { return renderer; },
+  };
   setAppState("ready", "");
   lastFrame = performance.now();
   tickWindow = lastFrame;
   requestAnimationFrame(loop);
+}
+
+let toastEl = null;
+function notify(msg) {
+  console.warn(msg);
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.style.cssText =
+      "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#20242c;color:#e8ecf1;" +
+      "padding:8px 14px;border-radius:6px;font:13px system-ui,sans-serif;z-index:9999;opacity:.95;" +
+      "pointer-events:none;max-width:80vw;text-align:center";
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.style.opacity = ".95";
+  clearTimeout(toastEl._t);
+  toastEl._t = setTimeout(() => { toastEl.style.opacity = "0"; }, 3500);
 }
 
 function setAppState(state, msg) {
@@ -137,8 +170,8 @@ function onState(s) {
   $("btn-hud").classList.toggle("is-on", !!s.showHud);
   $("btn-preset").textContent = keys.preset === "legacy" ? "Legacy keys" : "Powder keys";
   $("brush-readout").textContent = `${s.brushRx}×${s.brushRy} ${s.shape[0]}`;
-  const pri = findMaterial(s.materialId);
-  const sec = findMaterial(s.secondaryId);
+  const pri = matApi.findMaterial(s.materialId);
+  const sec = matApi.findMaterial(s.secondaryId);
   $("primary-chip").style.background = pri.color;
   $("primary-chip").title = "Primary " + pri.abbr;
   $("secondary-chip").style.background = sec.color;
@@ -157,7 +190,7 @@ function onState(s) {
 function buildRail() {
   const row = $("cat-rail");
   row.innerHTML = "";
-  for (const c of CATEGORIES) {
+  for (const c of matApi.CATEGORIES) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "rail-btn";
@@ -172,7 +205,7 @@ function buildRail() {
 function buildPalette() {
   const s = getState();
   const list = $("material-list");
-  const items = searchMaterials(s.search, s.category);
+  const items = matApi.searchMaterials(s.search, s.category);
   list.innerHTML = "";
   for (const m of items) {
     const el = document.createElement("button");
@@ -200,7 +233,15 @@ function wireChrome() {
     e.target.value = "";
     if (!f) return;
     const ok = sim.loadBlob(new Uint8Array(await f.arrayBuffer()));
-    if (ok) { undoStack = []; redoStack = []; }
+    if (ok) {
+      undoStack = [];
+      redoStack = [];
+      notify("World loaded.");
+    } else {
+      notify(
+        `Load failed: this file is not a compatible ${ENGINE === "tpt" ? "TPT v2" : "production v1"} save. The world was not changed.`
+      );
+    }
   };
   $("btn-preset").onclick = () => {
     keys = applyPreset(keys.preset === "powder" ? "legacy" : "powder");
@@ -314,13 +355,13 @@ function dab(x, y, material, record) {
   const s = getState();
   for (const [cx, cy] of brushCells(x, y, s.brushRx, s.brushRy, s.shape)) {
     if (record) note(cx, cy);
-    sim.mod.set_cell(cx, cy, material);
+    sim.setCell(cx, cy, material);
   }
 }
 
 function commitShape(cells, material) {
   beginLog();
-  for (const [x, y] of cells) { note(x, y); sim.mod.set_cell(x, y, material); }
+  for (const [x, y] of cells) { note(x, y); sim.setCell(x, y, material); }
   endLog(material);
 }
 
@@ -399,7 +440,7 @@ function flood(x, y, material) {
     guard--;
     if (sim.getCellMaterial(cx, cy) !== target) continue;
     note(cx, cy);
-    sim.mod.set_cell(cx, cy, material);
+    sim.setCell(cx, cy, material);
     stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
   }
   endLog(material);
@@ -407,7 +448,8 @@ function flood(x, y, material) {
 
 function sample(c) {
   const id = sim.getCellMaterial(c.x, c.y);
-  setState({ materialId: id, category: findMaterial(id).category });
+  const mat = matApi.findMaterial(id);
+  setState({ materialId: id, category: mat.section || mat.category || "all" });
 }
 
 function beginLog() { strokeLog = new Map(); }
@@ -431,13 +473,13 @@ function endLog(material) {
 function undo() {
   const op = undoStack.pop();
   if (!op) return;
-  for (const c of op.before) sim.mod.set_cell(c.x, c.y, c.m);
+  for (const c of op.before) sim.setCell(c.x, c.y, c.m);
   redoStack.push(op);
 }
 function redo() {
   const op = redoStack.pop();
   if (!op) return;
-  for (const c of op.before) sim.mod.set_cell(c.x, c.y, op.material);
+  for (const c of op.before) sim.setCell(c.x, c.y, op.material);
   undoStack.push(op);
 }
 
@@ -466,7 +508,7 @@ function copySel(clear) {
   if (clear && selection) {
     beginLog();
     for (let y = selection.y0; y <= selection.y1; y++) {
-      for (let x = selection.x0; x <= selection.x1; x++) { note(x, y); sim.mod.set_cell(x, y, 0); }
+      for (let x = selection.x0; x <= selection.x1; x++) { note(x, y); sim.setCell(x, y, 0); }
     }
     endLog(0);
   }
@@ -496,7 +538,7 @@ function placeStamp(x, y, data) {
   beginLog();
   for (const c of data.cells) {
     note(x + c.dx, y + c.dy);
-    sim.mod.set_cell(x + c.dx, y + c.dy, c.m);
+    sim.setCell(x + c.dx, y + c.dy, c.m);
   }
   endLog(data.cells[0] ? data.cells[0].m : 0);
 }
@@ -563,7 +605,7 @@ function shot() {
 
 function saveWorld() {
   const blob = sim.saveBlob();
-  if (!blob || !blob.length) return;
+  if (!blob || !blob.length) { notify("Save failed: the current engine has no serializer."); return; }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([blob], { type: "application/octet-stream" }));
   a.download = "labsmatter-world.rmt";
@@ -765,10 +807,11 @@ function paintHud() {
   if (!s.showHud) return;
   const fps = renderer && renderer.getFps ? renderer.getFps() : 0;
   const d = sim.getDiagnostics ? sim.getDiagnostics() : {};
-  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  ${renderer?.backend || ""}`;
+  const engineTag = ENGINE === "tpt" ? "TPT" : "PROD";
+  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  ${renderer?.backend || ""}  ${engineTag}`;
   $("hud-parts").textContent = `${(d.particles || 0).toLocaleString()} pts  ${VIEWS[s.view] || ""}  ${sim.simStatus ? sim.simStatus() : ""}  grid ${s.grid ? s.gridSize : 0}`;
   if (!hover) { $("hud-cell").textContent = "—"; return; }
-  const m = findMaterial(sim.getCellMaterial(hover.x, hover.y));
+  const m = matApi.findMaterial(sim.getCellMaterial(hover.x, hover.y));
   const t = sim.getCellTemperature(hover.x, hover.y);
   const p = sim.getCellPressure(hover.x, hover.y);
   $("hud-cell").textContent = `${hover.x},${hover.y}  ${t.toFixed(0)}K  ${(p / 1000).toFixed(1)}kPa`;

@@ -25,6 +25,21 @@ impl Rng {
         self.s1 = sd;
     }
 
+    /// Current internal state `(s0, s1)`. Used by v2 persistence so a loaded
+    /// world continues the exact same random sequence.
+    #[inline]
+    pub fn state(&self) -> (u64, u64) {
+        (self.s0, self.s1)
+    }
+
+    /// Restore internal state from a save. `s0` must be non-zero to keep the
+    /// generator out of its degenerate all-zero orbit.
+    #[inline]
+    pub fn set_state(&mut self, s0: u64, s1: u64) {
+        self.s0 = if s0 == 0 { 1 } else { s0 };
+        self.s1 = if s1 == 0 { 1 } else { s1 };
+    }
+
     /// Raw 64-bit step (reference `next()`).
     #[inline]
     pub fn next(&mut self) -> u64 {

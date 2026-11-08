@@ -62,6 +62,14 @@ export class WasmDirectAdapter {
     if (this.mod && typeof this.mod.init === "function") { try { this.mod.init(this.width, this.height); return true; } catch {} }
     return false;
   }
+  // Unified paint entry used by the frontend for both runtimes. TPT walls use
+  // a palette id offset; the production engine has no wall layer, so a wall
+  // selection paints the closest solid (stone) instead of silently no-op'ing.
+  setCell(x, y, material) {
+    if (!this.mod || typeof this.mod.set_cell !== "function") return false;
+    try { return !!this.mod.set_cell(x, y, (material | 0)); } catch { return false; }
+  }
+
   paint(x, y, material, size = 1) {
     if (!this.mod || typeof this.mod.set_cell !== "function") return;
     const s = Math.max(1, size | 0);
