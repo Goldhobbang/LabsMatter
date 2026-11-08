@@ -1,0 +1,16 @@
+[package]
+name = "labsmatter-wasm"
+description = "WASM binding for the LabsMatter TPT-parity engine (realmatter-tpt)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+realmatter-tpt = { path = "../realmatter-tpt" }
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }

@@ -38,6 +38,23 @@ pub enum AirMode {
     NoUpdate = 4,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConvectionMode {
+    None = 0,
+    Legacy = 1,
+    Boussinesq = 2,
+}
+
+impl ConvectionMode {
+    pub fn from_u32(v: u32) -> Self {
+        match v {
+            1 => ConvectionMode::Legacy,
+            2 => ConvectionMode::Boussinesq,
+            _ => ConvectionMode::None,
+        }
+    }
+}
+
 impl AirMode {
     pub fn from_u32(v: u32) -> Self {
         match v {
@@ -89,12 +106,18 @@ pub struct AirField {
     pub vx: Vec<f32>,
     pub vy: Vec<f32>,
     pub pv: Vec<f32>,
+    /// Ambient heat field (Kelvin), mirroring the reference `hv`.
+    pub hv: Vec<f32>,
     ovx: Vec<f32>,
     ovy: Vec<f32>,
     opv: Vec<f32>,
+    ohv: Vec<f32>,
     /// 1 = this air cell blocks airflow (wall / solid structure).
     pub blockair: Vec<u8>,
     kernel: [f32; 9],
+    /// Ambient air temperature used for edges and convection.
+    pub ambient_air_temp: f32,
+    pub convection_mode: ConvectionMode,
 }
 
 impl AirField {
@@ -102,17 +125,22 @@ impl AirField {
         let cx = (width / CELL).max(1);
         let cy = (height / CELL).max(1);
         let n = cx * cy;
+        let ambient = 293.15f32;
         Self {
             cells_x: cx,
             cells_y: cy,
             vx: vec![0.0; n],
             vy: vec![0.0; n],
             pv: vec![0.0; n],
+            hv: vec![ambient; n],
             ovx: vec![0.0; n],
             ovy: vec![0.0; n],
             opv: vec![0.0; n],
+            ohv: vec![ambient; n],
             blockair: vec![0; n],
             kernel: make_kernel(),
+            ambient_air_temp: ambient,
+            convection_mode: ConvectionMode::Boussinesq,
         }
     }
 
@@ -146,6 +174,19 @@ impl AirField {
             .unwrap_or(0.0)
     }
 
+    #[inline]
+    pub fn hv_at(&self, x: i32, y: i32) -> f32 {
+        self.idx(x / CELL as i32, y / CELL as i32)
+            .map(|i| self.hv[i])
+            .unwrap_or(self.ambient_air_temp)
+    }
+
+    pub fn clear_ambient_heat(&mut self) {
+        let t = self.ambient_air_temp;
+        self.hv.iter_mut().for_each(|v| *v = t);
+        self.ohv.iter_mut().for_each(|v| *v = t);
+    }
+
     /// Recompute the air-blocking map from the particle grid. Fixed solids
     /// (walls, stone, glass, metal structures) block airflow; everything else
     /// is permeable. This is the LabsMatter mapping of the reference wall
@@ -172,6 +213,9 @@ impl AirField {
         self.vx.iter_mut().for_each(|v| *v = 0.0);
         self.vy.iter_mut().for_each(|v| *v = 0.0);
         self.pv.iter_mut().for_each(|v| *v = 0.0);
+        let t = self.ambient_air_temp;
+        self.hv.iter_mut().for_each(|v| *v = t);
+        self.ohv.iter_mut().for_each(|v| *v = t);
     }
 
     /// `Air::update_air`: one full pressure/velocity pass.
@@ -380,6 +424,98 @@ impl AirField {
         self.vx.copy_from_slice(&self.ovx);
         self.vy.copy_from_slice(&self.ovy);
         self.pv.copy_from_slice(&self.opv);
+    }
+
+    /// Ambient heat transport + air convection (port of `Air::update_airh`).
+    /// Updates `hv` and applies convection to `vx`/`vy` according to mode.
+    pub fn update_ambient_heat(&mut self, gravity: f32) {
+        let (cx, cy) = (self.cells_x, self.cells_y);
+        if cx < 3 || cy < 3 {
+            return;
+        }
+        let k = self.kernel;
+        let ambient = self.ambient_air_temp;
+        let conv = self.convection_mode;
+
+        // Edge clamping to ambient.
+        for i in 0..cy {
+            self.hv[i * cx] = ambient;
+            if cx > 1 { self.hv[i * cx + 1] = ambient; }
+            if cx > 2 { self.hv[i * cx + cx - 2] = ambient; }
+            if cx > 1 { self.hv[i * cx + cx - 1] = ambient; }
+        }
+        for i in 0..cx {
+            self.hv[i] = ambient;
+            if cy > 1 { self.hv[cx + i] = ambient; }
+            if cy > 2 { self.hv[(cy - 2) * cx + i] = ambient; }
+            if cy > 1 { self.hv[(cy - 1) * cx + i] = ambient; }
+        }
+
+        for y in 0..cy {
+            for x in 0..cx {
+                let idx = y * cx + x;
+                let mut dh = 0.0f32;
+                let mut dx = self.vx[idx];
+                let mut dy = self.vy[idx];
+                for j in -1i32..2 {
+                    for i in -1i32..2 {
+                        let f = k[(i + 1 + 3 * (j + 1)) as usize];
+                        let (ny, nx) = (y as i32 + j, x as i32 + i);
+                        let src = if ny > 0
+                            && ny < cy as i32 - 1
+                            && nx > 0
+                            && nx < cx as i32 - 1
+                            && self.blockair[(ny as usize) * cx + (nx as usize)] == 0
+                        {
+                            (ny as usize) * cx + (nx as usize)
+                        } else {
+                            idx
+                        };
+                        dh += self.hv[src] * f;
+                        // velocity already in dx/dy from field; keep
+                        let _ = (dx, dy);
+                    }
+                }
+                // Far-away temperature sampling (simplified: skip if blocked).
+                // Convection.
+                if x >= 2 && x < cx - 2 && y >= 2 && y < cy - 2 {
+                    // gravity field approximation: use vertical gravity
+                    let (gx, gy) = (0.0f32, gravity);
+                    match conv {
+                        ConvectionMode::Legacy => {
+                            let weight = ((self.hv[idx] - self.hv[idx.saturating_sub(1)]) * gx
+                                + (self.hv[idx] - self.hv[idx.saturating_sub(cx)]) * gy)
+                                / 5000.0;
+                            if weight > 0.0 && self.blockair[idx.saturating_sub(cx)] == 0 {
+                                dx += weight * gx;
+                                dy += weight * gy;
+                            }
+                        }
+                        ConvectionMode::Boussinesq => {
+                            let mut gx = gx;
+                            let mut gy = gy;
+                            let mag = (gx * gx + gy * gy).sqrt();
+                            if mag > 10.0 {
+                                gx /= 0.1 * mag;
+                                gy /= 0.1 * mag;
+                            }
+                            let mut weight = (self.hv[idx] - ambient) / 10000.0;
+                            if weight > 0.01 {
+                                weight = 0.01;
+                            }
+                            dx += weight * gx;
+                            dy += weight * gy;
+                        }
+                        ConvectionMode::None => {}
+                    }
+                }
+                dh = dh.clamp(0.0, 9999.0);
+                self.ohv[idx] = dh;
+                self.vx[idx] = dx.clamp(-256.0, 256.0);
+                self.vy[idx] = dy.clamp(-256.0, 256.0);
+            }
+        }
+        self.hv.copy_from_slice(&self.ohv);
     }
 
     /// Tool / particle write access.

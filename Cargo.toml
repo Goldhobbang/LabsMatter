@@ -10,6 +10,7 @@ members = [
     "crates/realmatter-ui",
     "crates/realmatter-persist",
     "crates/realmatter-wasm",
+    "crates/labsmatter-wasm",
 ]
 
 [workspace.package]

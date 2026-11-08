@@ -143,36 +143,49 @@ pub fn phase_transitions(cells: &mut [Cell], materials: &[MaterialProps]) {
             continue;
         }
         let m = material_or_default(materials, cell.material);
+        // Pressure-dependent melting point (Clausius-Clapeyron, simplified):
+        // higher pressure raises melting point slightly for most materials.
+        let pressure = if cell.pressure.is_finite() { cell.pressure } else { core::units::constants::ATM_PRESSURE };
+        let dp = pressure - core::units::constants::ATM_PRESSURE;
+        let melting_point = if m.melting_point.is_finite() {
+            m.melting_point + dp * 1e-4
+        } else {
+            m.melting_point
+        };
+        let boiling_point = if m.boiling_point.is_finite() {
+            m.boiling_point + dp * 1e-3
+        } else {
+            m.boiling_point
+        };
         // Melting: solid -> liquid
         if m.state == core::material::MaterialState::Solid
-            && m.melting_point.is_finite()
-            && cell.temperature >= m.melting_point
+            && melting_point.is_finite()
+            && cell.temperature >= melting_point
         {
-            cell.temperature = m.melting_point;
+            cell.temperature = melting_point;
             cell.set_flag(cell_flags::WET, true);
         }
         // Solidification: liquid -> solid
         if m.state == core::material::MaterialState::Liquid
-            && m.melting_point.is_finite()
-            && cell.temperature <= m.melting_point
+            && melting_point.is_finite()
+            && cell.temperature <= melting_point
         {
-            cell.temperature = m.melting_point;
+            cell.temperature = melting_point;
             cell.set_flag(cell_flags::WET, false);
         }
         // Boiling/Evaporation: liquid -> gas
         if m.state == core::material::MaterialState::Liquid
-            && m.boiling_point.is_finite()
-            && cell.temperature >= m.boiling_point
+            && boiling_point.is_finite()
+            && cell.temperature >= boiling_point
         {
-            cell.temperature = m.boiling_point;
-            // Mark for potential vaporization
+            cell.temperature = boiling_point;
         }
         // Condensation: gas -> liquid
         if m.state == core::material::MaterialState::Gas
-            && m.boiling_point.is_finite()
-            && cell.temperature <= m.boiling_point
+            && boiling_point.is_finite()
+            && cell.temperature <= boiling_point
         {
-            cell.temperature = m.boiling_point;
+            cell.temperature = boiling_point;
         }
     }
 }

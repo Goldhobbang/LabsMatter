@@ -125,6 +125,9 @@ pub fn sanitize(cells: &mut [Cell], materials: &[MaterialProps]) {
         if cell.pressure < 0.0 {
             cell.pressure = 0.0;
         }
+        if cell.pressure > 256.0 {
+            cell.pressure = 256.0;
+        }
         if cell.lifetime < 0.0 {
             cell.lifetime = 0.0;
         }

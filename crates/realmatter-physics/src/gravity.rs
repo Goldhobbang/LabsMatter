@@ -87,6 +87,41 @@ pub fn compute_field(
     solve_field(&mass, cx, cy)
 }
 
+/// Gravity mode vector (vertical/off/radial/custom), mirroring the reference
+/// `GetGravityField` base component (without Newtonian).
+pub fn gravity_vector(
+    mode: u8,
+    x: i32,
+    y: i32,
+    width: usize,
+    height: usize,
+    particle_grav: f32,
+    custom: (f32, f32),
+) -> (f32, f32) {
+    match mode {
+        1 => (0.0, 0.0), // off
+        2 => {
+            // radial toward center
+            let xcntr = (width / 2) as f32;
+            let ycntr = (height / 2) as f32;
+            let dx = x as f32 - xcntr;
+            let dy = y as f32 - ycntr;
+            if dx != 0.0 || dy != 0.0 {
+                let d = 0.01 - (dx * dx + dy * dy).sqrt();
+                if d != 0.0 {
+                    (particle_grav * (dx / d), particle_grav * (dy / d))
+                } else {
+                    (0.0, 0.0)
+                }
+            } else {
+                (0.0, 0.0)
+            }
+        }
+        3 => (particle_grav * custom.0, particle_grav * custom.1), // custom
+        _ => (0.0, particle_grav), // vertical (down)
+    }
+}
+
 /// Apply the field to mobile particles: velocity += force, then move one cell
 /// along the strongest component. Powders and liquids only.
 pub fn apply_field(

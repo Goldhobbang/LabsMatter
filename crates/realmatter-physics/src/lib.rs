@@ -4,6 +4,7 @@ pub use realmatter_core as core;
 
 pub mod approx;
 pub mod air;
+pub mod energy;
 pub mod fluid;
 pub mod gas;
 pub mod gravity;

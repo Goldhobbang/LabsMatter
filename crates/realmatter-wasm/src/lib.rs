@@ -126,6 +126,8 @@ struct SimState {
     edge: u8,
     newton: bool,
     ambient: bool,
+    /// Convection mode: 0 none, 1 legacy, 2 boussinesq.
+    convection: u8,
     /// Decoration layer: one ARGB colour per cell, 0 = none.
     deco: Vec<u32>,
     /// Decoration layer visibility toggle.
@@ -342,6 +344,7 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
         edge: 1,
         newton: false,
         ambient: false,
+        convection: 2,
         deco: vec![0; ww * wh],
         deco_visible: true,
     };
@@ -441,11 +444,20 @@ pub fn step(_dt: f64) {
             );
             heat::conduct(cells, w, h, materials, dt, active);
             if ambient {
-                for cell in cells.iter_mut() {
-                    if cell.is_empty() || !cell.temperature.is_finite() {
-                        continue;
+                state.air_field.convection_mode =
+                    realmatter_physics::air::ConvectionMode::from_u32(state.convection as u32);
+                state.air_field.update_ambient_heat(
+                    realmatter_core::units::constants::GRAVITY,
+                );
+                for y in 0..h as usize {
+                    for x in 0..w as usize {
+                        let i = y * w as usize + x;
+                        if cells[i].is_empty() || !cells[i].temperature.is_finite() {
+                            continue;
+                        }
+                        let target = state.air_field.hv_at(x as i32, y as i32);
+                        cells[i].temperature += (target - cells[i].temperature) * 0.01;
                     }
-                    cell.temperature += (295.15 - cell.temperature) * 0.01;
                 }
             }
             heat::phase_transitions(cells, materials);
@@ -706,6 +718,11 @@ pub fn set_ambient_heat(on: u32) {
 }
 
 #[wasm_bindgen]
+pub fn set_convection_mode(mode: u32) {
+    with_state(|s| s.convection = (mode as u8) % 3, ());
+}
+
+#[wasm_bindgen]
 pub fn cycle_gravity() {
     with_state(|s| s.gravity = cycle(s.gravity, 3), ());
 }
@@ -848,6 +865,14 @@ pub fn apply_tool(kind: u32, x: i32, y: i32, radius: u32, dx: f32, dy: f32) {
                         8 => state
                             .air_field
                             .add_velocity(px, py, dx * 0.02, dy * 0.02),
+                        9 => {
+                            state.air_field.ambient_air_temp =
+                                (state.air_field.ambient_air_temp - 5.0).max(0.0);
+                        }
+                        10 => {
+                            state.air_field.ambient_air_temp =
+                                (state.air_field.ambient_air_temp + 5.0).min(9999.0);
+                        }
                         _ => {}
                     }
                 }
