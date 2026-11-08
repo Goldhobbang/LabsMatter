@@ -13,7 +13,9 @@ use std::cell::RefCell;
 
 use realmatter_tpt::air::{AirMode, ConvectionMode};
 use realmatter_tpt::element::element;
+use realmatter_tpt::entity::{Entity, PlayerState};
 use realmatter_tpt::particle::Particle;
+use realmatter_tpt::portal::PortalPayload;
 use realmatter_tpt::sim::{EdgeMode, GravityMode, Sim, CELL, MAX_TEMP, MIN_TEMP};
 use wasm_bindgen::prelude::*;
 
@@ -390,6 +392,101 @@ pub fn tick_count() -> u64 {
     with_sim(|sim| sim.tick, 0)
 }
 
+// ---- Entity control (stickmen / fighters) --------------------------------
+
+fn player_entity(which: u32) -> Entity {
+    if which == 1 {
+        Entity::Player2
+    } else {
+        Entity::Player1
+    }
+}
+
+/// Spawn player `which` (0 = player 1, 1 = player 2) at a pixel.
+#[wasm_bindgen]
+pub fn spawn_stickman(which: u32, x: i32, y: i32) -> bool {
+    with_sim(|sim| sim.spawn_entity(player_entity(which), x, y).is_some(), false)
+}
+
+/// Despawn player `which`.
+#[wasm_bindgen]
+pub fn despawn_stickman(which: u32) -> bool {
+    let had = with_sim(|sim| sim.entity_head(player_entity(which)).is_some(), false);
+    if had {
+        with_sim(|sim| sim.despawn_entity(player_entity(which)), ());
+    }
+    had
+}
+
+/// Set command bits: `1` left, `2` right, `4` jump, `8` spawn element.
+#[wasm_bindgen]
+pub fn set_stickman_input(which: u32, comm: u32) {
+    with_sim(|sim| sim.set_entity_input(player_entity(which), comm as u8), ());
+}
+
+/// Set the element power spawned by the `SPAWN` command bit.
+#[wasm_bindgen]
+pub fn set_stickman_element(which: u32, t: u16) {
+    with_sim(
+        |sim| {
+            if let Some(st) = sim.player_state_mut(player_entity(which)) {
+                st.elem = t as i32;
+            }
+        },
+        (),
+    );
+}
+
+#[wasm_bindgen]
+pub fn stickman_alive(which: u32) -> bool {
+    with_sim(|sim| sim.entity_head(player_entity(which)).is_some(), false)
+}
+
+/// Spawn a fighter. Returns its slot, or -1 when the registry is full.
+#[wasm_bindgen]
+pub fn spawn_fighter(x: i32, y: i32) -> i32 {
+    with_sim(
+        |sim| match sim.spawn_fighter(x, y) {
+            Some((slot, _head)) => slot as i32,
+            None => -1,
+        },
+        -1,
+    )
+}
+
+#[wasm_bindgen]
+pub fn despawn_fighter(slot: u32) -> bool {
+    let slot = slot as usize;
+    let had = with_sim(|sim| sim.entity_head(Entity::Fighter(slot)).is_some(), false);
+    if had {
+        with_sim(|sim| sim.despawn_fighter(slot), ());
+    }
+    had
+}
+
+#[wasm_bindgen]
+pub fn fighter_count() -> u32 {
+    with_sim(|sim| sim.figh_count.max(0) as u32, 0)
+}
+
+#[wasm_bindgen]
+pub fn set_fighter_input(slot: u32, comm: u32) {
+    with_sim(|sim| sim.set_entity_input(Entity::Fighter(slot as usize), comm as u8), ());
+}
+
+/// Number of particles currently held in portal buffers.
+#[wasm_bindgen]
+pub fn portal_count() -> u32 {
+    with_sim(|sim| sim.portal.len() as u32, 0)
+}
+
+/// Number of wireless channels active this frame.
+#[wasm_bindgen]
+pub fn wireless_active() -> u32 {
+    with_sim(|sim| sim.wireless.active_count() as u32, 0)
+}
+
+
 #[wasm_bindgen]
 pub fn reset() -> bool {
     let w = world_width();
@@ -700,10 +797,82 @@ pub fn save_blob() -> Vec<u8> {
             }
             out.extend_from_slice(&sim.bmap);
             out.extend_from_slice(&sim.emap);
+
+            // --- format 3 additions -------------------------------------
+            put_u32(&mut out, sim.portal.len() as u32);
+            for (channel, direction, slot, p) in sim.portal.iter_nonempty() {
+                put_u16(&mut out, channel as u16);
+                out.push(direction as u8);
+                out.push(slot as u8);
+                put_u16(&mut out, p.t);
+                put_i32(&mut out, p.life);
+                put_i32(&mut out, p.ctype);
+                put_f32(&mut out, p.x);
+                put_f32(&mut out, p.y);
+                put_f32(&mut out, p.vx);
+                put_f32(&mut out, p.vy);
+                put_f32(&mut out, p.temp);
+                put_i32(&mut out, p.tmp);
+                put_i32(&mut out, p.tmp2);
+                put_i32(&mut out, p.tmp3);
+                put_i32(&mut out, p.tmp4);
+                put_u32(&mut out, p.flags);
+                put_u32(&mut out, p.dcolour);
+            }
+
+            let active: Vec<usize> = sim.wireless.iter_active().collect();
+            put_u32(&mut out, active.len() as u32);
+            for ch in active {
+                put_u16(&mut out, ch as u16);
+            }
+
+            put_player(&mut out, &sim.player);
+            put_player(&mut out, &sim.player2);
+            put_u32(&mut out, sim.fighters.len() as u32);
+            for f in &sim.fighters {
+                put_player(&mut out, f);
+            }
+            put_i32(&mut out, sim.figh_count);
             out
         },
         Vec::new(),
     )
+}
+
+fn put_player(out: &mut Vec<u8>, p: &PlayerState) {
+    out.push(p.comm);
+    out.push(p.pcomm);
+    put_i32(out, p.elem);
+    for v in p.legs {
+        put_f32(out, v);
+    }
+    for v in p.accs {
+        put_f32(out, v);
+    }
+    out.push(p.spwn);
+    put_u32(out, p.frames);
+    out.push(p.rocket_boots as u8);
+    out.push(p.fan as u8);
+    put_i32(out, p.spawn_id);
+}
+
+fn read_player(r: &mut Reader<'_>) -> Result<PlayerState, String> {
+    let mut p = PlayerState::default();
+    p.comm = r.u8()?;
+    p.pcomm = r.u8()?;
+    p.elem = r.i32()?;
+    for v in p.legs.iter_mut() {
+        *v = r.f32()?;
+    }
+    for v in p.accs.iter_mut() {
+        *v = r.f32()?;
+    }
+    p.spwn = r.u8()?;
+    p.frames = r.u32()?;
+    p.rocket_boots = r.u8()? != 0;
+    p.fan = r.u8()? != 0;
+    p.spawn_id = r.i32()?;
+    Ok(p)
 }
 
 fn install_sim(sim: Sim) {
@@ -734,7 +903,7 @@ pub fn load_blob(bytes: &[u8]) -> bool {
         match decode_blob(bytes) {
             Ok(sim) => {
                 install_sim(sim);
-                set_report("loaded v2 world");
+                set_report("loaded LabsMatter v2/v3 world");
                 true
             }
             Err(e) => {
@@ -878,7 +1047,7 @@ fn decode_blob(bytes: &[u8]) -> Result<Sim, String> {
         return Err("not a LabsMatter v2 blob (legacy/unknown magic); refusing to reinterpret".into());
     }
     let version = r.u16()?;
-    if version != FORMAT_VERSION {
+    if version != 2 && version != FORMAT_VERSION {
         return Err(format!("unsupported save version {version}"));
     }
     let width = r.u32()? as usize;
@@ -972,6 +1141,50 @@ fn decode_blob(bytes: &[u8]) -> Result<Sim, String> {
     let emap = r.take(n)?.to_vec();
     sim.bmap = bmap;
     sim.emap = emap;
+
+    if version >= 3 {
+        // Portal payloads.
+        let portal_count = r.u32()? as usize;
+        for _ in 0..portal_count {
+            let channel = r.u16()? as usize;
+            let direction = r.u8()? as usize;
+            let slot = r.u8()? as usize;
+            let payload = PortalPayload {
+                t: r.u16()?,
+                life: r.i32()?,
+                ctype: r.i32()?,
+                x: r.f32()?,
+                y: r.f32()?,
+                vx: r.f32()?,
+                vy: r.f32()?,
+                temp: r.f32()?,
+                tmp: r.i32()?,
+                tmp2: r.i32()?,
+                tmp3: r.i32()?,
+                tmp4: r.i32()?,
+                flags: r.u32()?,
+                dcolour: r.u32()?,
+            };
+            sim.portal.restore(channel, direction, slot, payload);
+        }
+        // Wireless: channels saved as active become active on the next tick.
+        let active_count = r.u32()? as usize;
+        for _ in 0..active_count {
+            let ch = r.u16()? as usize;
+            sim.wireless.activate_next(ch);
+        }
+        sim.wireless.advance();
+        // Entities.
+        sim.player = read_player(&mut r)?;
+        sim.player2 = read_player(&mut r)?;
+        let fighter_count = r.u32()? as usize;
+        sim.fighters.clear();
+        for _ in 0..fighter_count {
+            sim.fighters.push(read_player(&mut r)?);
+        }
+        sim.figh_count = r.i32()?;
+    }
+
     // Re-establish the edge-mode wall ring from the restored setting (reference
     // `SetEdgeMode` semantics), so a Solid save cannot lose its boundary.
     sim.apply_edge_mode();

@@ -11,12 +11,39 @@ export function cycle_gravity() {
 }
 
 /**
+ * @param {number} slot
+ * @returns {boolean}
+ */
+export function despawn_fighter(slot) {
+    const ret = wasm.despawn_fighter(slot);
+    return ret !== 0;
+}
+
+/**
+ * Despawn player `which`.
+ * @param {number} which
+ * @returns {boolean}
+ */
+export function despawn_stickman(which) {
+    const ret = wasm.despawn_stickman(which);
+    return ret !== 0;
+}
+
+/**
  * Number of particles of one PT id.
  * @param {number} t
  * @returns {number}
  */
 export function element_count(t) {
     const ret = wasm.element_count(t);
+    return ret >>> 0;
+}
+
+/**
+ * @returns {number}
+ */
+export function fighter_count() {
+    const ret = wasm.fighter_count();
     return ret >>> 0;
 }
 
@@ -159,6 +186,15 @@ export function particle_count() {
 }
 
 /**
+ * Number of particles currently held in portal buffers.
+ * @returns {number}
+ */
+export function portal_count() {
+    const ret = wasm.portal_count();
+    return ret >>> 0;
+}
+
+/**
  * @returns {number}
  */
 export function render_buffer_len() {
@@ -241,6 +277,14 @@ export function set_edge_mode(mode) {
 }
 
 /**
+ * @param {number} slot
+ * @param {number} comm
+ */
+export function set_fighter_input(slot, comm) {
+    wasm.set_fighter_input(slot, comm);
+}
+
+/**
  * @param {number} mode
  */
 export function set_gravity_mode(mode) {
@@ -259,6 +303,24 @@ export function set_heat_sim(on) {
  */
 export function set_newtonian(on) {
     wasm.set_newtonian(on);
+}
+
+/**
+ * Set the element power spawned by the `SPAWN` command bit.
+ * @param {number} which
+ * @param {number} t
+ */
+export function set_stickman_element(which, t) {
+    wasm.set_stickman_element(which, t);
+}
+
+/**
+ * Set command bits: `1` left, `2` right, `4` jump, `8` spawn element.
+ * @param {number} which
+ * @param {number} comm
+ */
+export function set_stickman_input(which, comm) {
+    wasm.set_stickman_input(which, comm);
 }
 
 /**
@@ -289,6 +351,29 @@ export function sim_status() {
 }
 
 /**
+ * Spawn a fighter. Returns its slot, or -1 when the registry is full.
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function spawn_fighter(x, y) {
+    const ret = wasm.spawn_fighter(x, y);
+    return ret;
+}
+
+/**
+ * Spawn player `which` (0 = player 1, 1 = player 2) at a pixel.
+ * @param {number} which
+ * @param {number} x
+ * @param {number} y
+ * @returns {boolean}
+ */
+export function spawn_stickman(which, x, y) {
+    const ret = wasm.spawn_stickman(which, x, y);
+    return ret !== 0;
+}
+
+/**
  * @param {number} _dt
  */
 export function step(_dt) {
@@ -307,6 +392,15 @@ export function step_sim_only(_dt) {
 }
 
 /**
+ * @param {number} which
+ * @returns {boolean}
+ */
+export function stickman_alive(which) {
+    const ret = wasm.stickman_alive(which);
+    return ret !== 0;
+}
+
+/**
  * @returns {bigint}
  */
 export function tick_count() {
@@ -320,6 +414,15 @@ export function toggle_ambient() {
 
 export function toggle_newtonian() {
     wasm.toggle_newtonian();
+}
+
+/**
+ * Number of wireless channels active this frame.
+ * @returns {number}
+ */
+export function wireless_active() {
+    const ret = wasm.wireless_active();
+    return ret >>> 0;
 }
 
 /**
