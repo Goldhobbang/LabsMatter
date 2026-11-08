@@ -1,23 +1,25 @@
 # A1 Status
 
-- Current task: K5 editing / rendering / tools / decoration / inspection
-- State: IMPLEMENTATION READY (gameplay acceptance delegated to Agent B)
+- Current task: K5 integration — Agent 3 merge + runtime routing verification
+- State: implementation ready; gameplay acceptance delegated to Agent B
 - Last updated: 2026-11-08
 - Branch: agent1/kernel
-- K4 base: dbe2d76214b681fdf03b647200ac3e1e949d7339
 - Worktrees: AICrew (agent1/kernel), AICrew-agent2 (agent2/physics),
   AICrew-agent3 (agent3/chemistry-elements)
 - Notes:
-  - Walls and decoration now render; energy particles render. Wall paint/erase
-    and powered `eglow` are visible.
-  - Decoration editor (per-particle dcolour) added, persisted in LMT2 v3.
-  - apply_tool covers 11 reference tools (HEAT/COOL/AIR/VAC/PGRV/NGRV/MIX/CYCL/
-    WIND/AMBP/AMBM); PGRV/NGRV await the A2 gravity-well solver.
-  - Inspection API: get_cell_info JSON + per-field getters, world settings,
-    entity head, decoration, render buffer (CPU-side).
-  - Fixed empty-pixel temperature/HEAT bugs (`pmap_id(0)==0`).
-  - Feature matrix: docs/tpt-parity/inventory/application-features.md.
+  - Runtime routing P1 (Agent B): NOT present in the integrated build.
+    `?engine=tpt` instantiates `TptAdapter` / `labsmatter-wasm`; `/` uses
+    `WasmDirectAdapter` / `realmatter-wasm`. Verified in a real browser via
+    `window.labsmatter.{requestedEngine,engine,adapter,wasmIdentity}` and the HUD
+    (active adapter, `MISMATCH` guard). See
+    `docs/tpt-parity/qa/runtime-routing-verification.md`.
+  - Agent 3 branch (d096999) merged: WIFI, PIPE/PPIP, PSTN, SOAP, STKM/STKM2,
+    FIGH. WASM rebuilt from merged source.
+  - Fighter slot indexing fixed: `Sim::fighter_head(slot)`; `entity_head` uses it.
+  - Loop mode now wraps energy particles (previously killed before `do_move`).
+  - Partials retained: PIPE HEAC/graphics, PSTN FRME, SOAP reconnect, STKM legs/
+    portal, FIGH powers/multi-fighter.
+  - K5 editing/rendering/tools/decoration/inspection from the earlier report
+    remain; see `docs/tpt-parity/inventory/application-features.md`.
   - Report: communication/agents/A1/reports/K5-A1-20261108.md
-  - Playtest handoff: docs/tpt-parity/qa/K5-handoff.md
-  - Agent 3 reconciled to K4 (no source diff); Agent 2 has no new physics.
-  - Agent B K3 code-level + live browser audits committed; P0/P1 reconciled.
+  - Handoff: docs/tpt-parity/qa/K5-handoff.md

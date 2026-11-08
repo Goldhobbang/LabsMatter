@@ -197,3 +197,41 @@ pixel and larger inspection APIs (called only on demand); the PIPE/PPIP and
 entity handlers add O(particles) work only for those elements. Simulate cost is
 otherwise unchanged except the render-buffer build now also samples walls and
 `dcolour`.
+
+---
+
+## 7. K5 integration addendum (Agent 3 merge + runtime routing proof)
+
+### Runtime routing (Agent B P1)
+Definitive browser evidence that `?engine=tpt` runs `labsmatter-wasm` through
+`TptAdapter` (and `/` runs `realmatter-wasm` through `WasmDirectAdapter`) is in
+[`runtime-routing-verification.md`](runtime-routing-verification.md). The HUD tag
+now comes from the active adapter and appends `MISMATCH` if it disagrees with the
+URL. `window.labsmatter` exposes `requestedEngine`, `engine`, `adapter`,
+`wasmIdentity`.
+
+### Agent 3 K5 merge
+`agent3/chemistry-elements` (d096999) was merged into `agent1/kernel`. It adds:
+WIFI channel/spark behaviour, PIPE/PPIP transport, PSTN flags/FRME, SOAP
+pop/links, STKM/STKM2 hazards + element powers, FIGH pursuit/combat. Only
+`docs/tpt-parity/qa/K5-handoff.md` conflicted; source merged cleanly. The WASM
+bundle was rebuilt from the merged source (`578 KB`), not reused.
+
+### Fighter indexing fix
+`entity_head(Entity::Fighter(slot))` previously returned the first FIGH particle.
+It now resolves by slot via `Sim::fighter_head(slot)` (slot stored in
+`parts[i].tmp`, matching `FIGH.cpp`). Verified: two fighters → distinct heads,
+60 ticks stable, despawning slot 0 leaves slot 1 alive.
+
+### Loop boundary fix
+Energy movement (`NEUT` and the generic `ELEC`/energy path) killed particles that
+stepped out of bounds before `do_move` could wrap them. In `EdgeMode::Loop` they
+now wrap; `Void` still kills. Verified: loop PHOT wraps to the top, void PHOT is
+removed; loop sand stays alive across the boundary (y 4..123 on a 128 world).
+
+### Element evidence (not acceptance)
+Node/WASM: WIFI `BTRY→METL→WIFI(tx)` raises `wireless_active` and fires the
+receiver wire (53 spark frames); portal stores/emits SAND; PIPE/PSTN/SOAP/STKM/
+FIGH smoke without panics. Known partials remain: PIPE HEAC/graphics, PSTN full
+FRME, SOAP mid-chain reconnect, STKM/STKM2 leg physics/portal, FIGH element
+powers/multi-fighter.

@@ -676,6 +676,23 @@ pub fn set_deco(x: i32, y: i32, argb: u32) -> bool {
     ok
 }
 
+/// Test/QA helper: set the velocity of the particle at `(x, y)`.
+/// Returns false when the pixel has no particle.
+#[wasm_bindgen]
+pub fn set_particle_velocity(x: i32, y: i32, vx: f32, vy: f32) -> bool {
+    with_sim(
+        |sim| match particle_at(sim, x, y) {
+            Some(i) => {
+                sim.parts[i].vx = if vx.is_finite() { vx } else { 0.0 };
+                sim.parts[i].vy = if vy.is_finite() { vy } else { 0.0 };
+                true
+            }
+            None => false,
+        },
+        false,
+    )
+}
+
 /// Decoration colour (ARGB) of the particle at `(x, y)`, or 0.
 #[wasm_bindgen]
 pub fn get_deco(x: i32, y: i32) -> u32 {

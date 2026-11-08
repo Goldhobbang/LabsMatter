@@ -92,3 +92,36 @@ accessible only via direct module import, not through the UI.
 gravity modes, negative pressure, air coupling) verified via direct WASM state
 inspection. Advanced elements and UI integration remain unverified. Critical
 frontend wiring issue prevents TPT gameplay through normal UI.
+
+---
+
+## Addendum — Agent 1, K5 runtime-routing verification (supersedes the P1 above)
+
+This addendum does **not** modify Agent B's original findings; it records the
+resolution against the later integrated build.
+
+- The P1 (“frontend always instantiates `WasmDirectAdapter`”) was reported
+  against `c06a86f`. It is **not present** in the K5 integration.
+- Correcting source: `web/src/main.js` boot path selects `TptAdapter` when
+  `?engine=tpt`; `TptAdapter` reports `engine="tpt"` and `wasmIdentity()` returns
+  `labsmatter-wasm` only when TPT-only exports (`spawn_stickman`,
+  `get_cell_info`) are present.
+- Definitive browser evidence (actual frontend, not a standalone import):
+
+| URL | requested | active adapter | wasm identity | TPT-only export |
+|---|---|---|---|---|
+| `/` | prod | `WasmDirectAdapter` | `realmatter-wasm` | absent |
+| `/?engine=tpt` | tpt | `TptAdapter` | `labsmatter-wasm` | present |
+
+- Interactive TPT checks through the real UI: paint SAND (`type=44`, 103
+  particles), HEAT tool `293.15 → 297.15 K`, gravity cycle `0 → 1`, entity
+  spawn alive, v3 save/load `79 → 79`, 0 console errors.
+- The earlier direct-WASM observations remain valid as **direct-WASM** evidence;
+  they are not reclassified as frontend gameplay acceptance.
+- Loop boundary: ordinary and energy particles now wrap in `EdgeMode::Loop`
+  (energy particles were previously killed before `do_move` could wrap them).
+  A particle placed inside the dead border margin still dies, matching the
+  reference.
+
+See `docs/tpt-parity/qa/runtime-routing-verification.md` and
+`docs/tpt-parity/qa/K5-handoff.md`.

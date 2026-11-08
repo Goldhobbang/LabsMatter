@@ -553,6 +553,20 @@ export function set_newtonian(on) {
 }
 
 /**
+ * Test/QA helper: set the velocity of the particle at `(x, y)`.
+ * Returns false when the pixel has no particle.
+ * @param {number} x
+ * @param {number} y
+ * @param {number} vx
+ * @param {number} vy
+ * @returns {boolean}
+ */
+export function set_particle_velocity(x, y, vx, vy) {
+    const ret = wasm.set_particle_velocity(x, y, vx, vy);
+    return ret !== 0;
+}
+
+/**
  * Set the element power spawned by the `SPAWN` command bit.
  * @param {number} which
  * @param {number} t
