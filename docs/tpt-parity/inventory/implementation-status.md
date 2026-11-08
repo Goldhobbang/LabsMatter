@@ -29,12 +29,12 @@ flags (`update`/`create`/`graphics`/`transition`).
 
 | abbr | reason |
 |---|---|
-| STKM | K5: hazards, leg phase, element power; full reference leg/portal physics unverified |
-| PIPE | K5: payload transport, direction, PRTI hand-off, PPIP triggers; auto-pattern HEAC flood/graphics pending |
-| STKM2 | K5: hazards, leg phase, element power; full reference leg/portal physics unverified |
-| SOAP | K5: links, pop, second-order constraints; full reference chain rewiring pending |
-| FIGH | K5: pursuit, melee, despawn; full reference fighter powers/AI unverified |
-| PSTN | K5: tmp3 flags + FRME push; full reference MoveStack recursion pending |
+| STKM | K6: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified |
+| PIPE | K6: HEAC flood, transport, PPIP triggers, single-pixel init; PIPE graphics emulation pending |
+| STKM2 | K6: feet/legs, jump, portal, hazards, element power; reference leg-particle solver unverified |
+| SOAP | K6: mid-chain rewiring, pop, second-order constraints; boundary edge cases pending |
+| FIGH | K6: slot-aware head, target selection, element power, multi-fighter separation; brawling unverified |
+| PSTN | K6: FRME row push, empty-space extension, tmp3 flags; full recursive stack pending |
 
 ## Unimplemented entries
 

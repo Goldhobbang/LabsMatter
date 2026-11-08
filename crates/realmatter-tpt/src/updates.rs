@@ -641,70 +641,266 @@ fn fuel_update(_sim: &mut Sim, _i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -
 // SPRK: electrical conduction
 // ---------------------------------------------------------------------------
 
-fn sprk_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
-    if sim.parts[i].life > 0 {
-        sim.parts[i].life -= 1;
-    } else {
-        // Spark finished: restore the element it was travelling through.
-        let ct = sim.parts[i].ctype;
-        if ct > 0 && (ct as usize) < crate::elements_generated::PT_NUM {
-            sim.part_change_type(i, x, y, ct as i16);
-        } else {
-            sim.part_change_type(i, x, y, pt::METL as i16);
+fn sprk_update(sim: &mut Sim, i: usize, x: i32, y: i32, surround_space: i32, nt: i32) -> i32 {
+    // Reference `SPRK::update` calls `Element_FIRE_update` every tick.
+    fire_update(sim, i, x, y, surround_space, nt);
+    if i >= sim.parts.len() || sim.parts[i].t == 0 {
+        return 1;
+    }
+    let ct = sim.parts[i].ctype;
+
+    if sim.parts[i].life <= 0 {
+        // Restore the conductor, with the reference's per-type durations.
+        if matches!(ct, c if c == pt::WATR as i32 || c == pt::SLTW as i32 || c == pt::PSCN as i32
+            || c == pt::NSCN as i32 || c == pt::ETRD as i32 || c == pt::INWR as i32)
+        {
+            sim.parts[i].temp = crate::sim::R_TEMP + 273.15;
+        }
+        let mut restore = ct;
+        if restore <= 0
+            || (restore as usize) >= crate::elements_generated::PT_NUM
+            || !element(restore as u16).enabled
+        {
+            restore = pt::METL as i32;
+        }
+        sim.parts[i].ctype = 0;
+        sim.parts[i].life = 4;
+        let mut life = 4;
+        if restore == pt::WATR as i32 {
+            life = 64;
+        } else if restore == pt::SLTW as i32 {
+            life = 54;
+        } else if restore == pt::SWCH as i32 {
+            life = 14;
+        } else if restore == pt::RSST as i32 {
+            sim.kill_part(i);
+            return 1;
+        }
+        if sim.part_change_type(i, x, y, restore as i16) {
+            sim.parts[i].life = life;
         }
         return 1;
     }
+
+    // ctype-specific behaviour while sparking.
+    if ct == pt::SPRK as i32 {
+        sim.kill_part(i);
+        return 1;
+    } else if ct == pt::NTCT as i32 || ct == pt::PTCT as i32 {
+        ntct_update(sim, i, x, y, surround_space, nt);
+    } else if ct == pt::NBLE as i32 {
+        if sim.parts[i].life <= 1 && (sim.parts[i].tmp & 0x1) == 0 {
+            sim.parts[i].life = sim.rng.between(50, 199);
+            sim.part_change_type(i, x, y, pt::PLSM as i16);
+            sim.parts[i].ctype = pt::NBLE as i32;
+            if sim.parts[i].temp > 5273.15 {
+                sim.parts[i].tmp |= 0x4;
+            }
+            sim.parts[i].temp = 3500.0;
+            if sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+                let vc = sim.cell_idx(x / CELL as i32, y / CELL as i32);
+                sim.pv[vc] += 1.0;
+            }
+        }
+    } else if ct == pt::TUNG as i32 {
+        if sim.parts[i].temp < 3595.0 {
+            sim.parts[i].temp += sim.rng.between(-4, 15) as f32;
+        }
+    }
+
     sim.emp_decor = (sim.emp_decor + 3).min(40);
 
-    // Electrify nearby conductors.
+    let life = sim.parts[i].life;
     let mut ignite: Vec<(usize, i32, i32)> = Vec::new();
-    let mut powered: Vec<(usize, i32, i32)> = Vec::new();
     for_neighbours!(sim, x, y, rx, ry, nx, ny, {
         let r = sim.pmap[sim.idx(nx, ny)];
         if r == 0 {
             continue;
         }
-        let rt = pmap_type(r);
         let id = pmap_id(r) as usize;
-        let def = element(rt);
-        if (def.properties & props::PROP_CONDUCTS) != 0
-            && sim.parts[id].life == 0
-            && rt != pt::SPRK
-            && !(rt == pt::INSL)
-        {
-            ignite.push((id, nx, ny));
-        } else if rt == pt::PSCN
-            || rt == pt::NSCN
-            || rt == pt::PTCT
-            || rt == pt::NTCT
-            || rt == pt::SWCH
-            || rt == pt::ETRD
-            || rt == pt::BTRY
-            || rt == pt::LCRY
-            || rt == pt::INWR
-            || rt == pt::TESC
-            || rt == pt::INST
-        {
-            powered.push((id, nx, ny));
+        let receiver = pmap_type(r);
+        let sender = ct;
+        let pavg = sim.parts_avg_type(id, i, pt::INSL);
+        let insu = pavg == pt::INSL || pavg == pt::RSSS;
+
+        // Pre-conduction activation of powered devices.
+        match receiver {
+            pt::SWCH => {
+                if !insu && life < 4 {
+                    if sender == pt::PSCN as i32 && sim.parts[id].life < 10 {
+                        sim.parts[id].life = 10;
+                    } else if sender == pt::NSCN as i32 {
+                        sim.parts[id].ctype = 0;
+                        sim.parts[id].life = 9;
+                    }
+                }
+                continue;
+            }
+            pt::SPRK => {
+                if !insu && life < 4 {
+                    if sim.parts[id].ctype == pt::SWCH as i32 && sender == pt::NSCN as i32 {
+                        sim.part_change_type(id, nx, ny, pt::SWCH as i16);
+                        sim.parts[id].ctype = 0;
+                        sim.parts[id].life = 9;
+                    } else if matches!(sim.parts[id].ctype, c if c == pt::NTCT as i32 || c == pt::PTCT as i32)
+                        && sender == pt::METL as i32
+                    {
+                        sim.parts[id].temp = 473.0;
+                    }
+                }
+                continue;
+            }
+            pt::PUMP | pt::GPMP | pt::HSWC | pt::PBCN => {
+                if life < 4 {
+                    if sender == pt::PSCN as i32 {
+                        sim.parts[id].life = 10;
+                    } else if sender == pt::NSCN as i32 && sim.parts[id].life >= 10 {
+                        sim.parts[id].life = 9;
+                    }
+                }
+                continue;
+            }
+            pt::LCRY => {
+                if rx.abs() < 2 && ry.abs() < 2 && life < 4 {
+                    if sender == pt::PSCN as i32 && sim.parts[id].tmp == 0 {
+                        sim.parts[id].tmp = 2;
+                    } else if sender == pt::NSCN as i32 && sim.parts[id].tmp == 3 {
+                        sim.parts[id].tmp = 1;
+                    }
+                }
+                continue;
+            }
+            pt::PPIP => {
+                if life == 3 && !insu {
+                    if sender == pt::NSCN as i32 {
+                        sim.parts[id].tmp |= PPIP_TRIGGER_OFF;
+                    } else if sender == pt::PSCN as i32 {
+                        sim.parts[id].tmp |= PPIP_TRIGGER_ON;
+                    } else if sender == pt::INST as i32 {
+                        sim.parts[id].tmp |= PPIP_TRIGGER_REVERSE;
+                    }
+                }
+                continue;
+            }
+            pt::NTCT | pt::PTCT | pt::INWR => {
+                if sender == pt::METL as i32 && !insu && life < 4 {
+                    sim.parts[id].temp = 473.0;
+                    if receiver == pt::NTCT || receiver == pt::PTCT {
+                        continue;
+                    }
+                }
+            }
+            pt::EMP => {
+                if sim.parts[id].life == 0 && life > 0 && life < 4 {
+                    sim.emp_decor += 3;
+                    if sim.emp_decor > 40 {
+                        sim.emp_decor = 40;
+                    }
+                    sim.parts[id].life = 220;
+                }
+                continue;
+            }
+            _ => {}
         }
-    });
-    for (id, nx, ny) in ignite {
-        let rt = sim.parts[id].t;
-        // INSL, RBDM, LRBD are not ignited by a spark touching them directly.
-        if rt == pt::INSL || rt == pt::RBDM || rt == pt::LRBD {
+
+        if insu {
             continue;
         }
-        if sim.rng.chance(1, 4) {
-            sim.part_change_type(id, nx, ny, pt::SPRK as i16);
-            sim.parts[id].life = 4;
-            sim.parts[id].ctype = rt as i32;
+        let conducts = (element(receiver).properties & props::PROP_CONDUCTS) != 0
+            || receiver == pt::INST
+            || receiver == pt::QRTZ;
+        if !conducts {
+            continue;
+        }
+        if rx.abs() + ry.abs() >= 4
+            && sender != pt::SWCH as i32
+            && receiver != pt::SWCH
+        {
+            continue;
+        }
+        // Sender/receiver-specific conduction rules.
+        let allow = if receiver as i32 == sender && receiver != pt::INST && receiver != pt::QRTZ {
+            true
+        } else {
+            match sender {
+                c if c == pt::INST as i32 => receiver == pt::NSCN,
+                c if c == pt::SWCH as i32 => !matches!(
+                    receiver,
+                    pt::PSCN | pt::NSCN | pt::WATR | pt::SLTW | pt::NTCT | pt::PTCT | pt::INWR
+                ),
+                c if c == pt::ETRD as i32 => matches!(
+                    receiver,
+                    pt::METL | pt::BMTL | pt::BRMT | pt::LRBD | pt::RBDM | pt::PSCN | pt::NSCN
+                ),
+                c if c == pt::NTCT as i32 => {
+                    receiver == pt::PSCN
+                        || (receiver == pt::NSCN && sim.parts[i].temp > 373.0)
+                }
+                c if c == pt::PTCT as i32 => {
+                    receiver == pt::PSCN
+                        || (receiver == pt::NSCN && sim.parts[i].temp < 373.0)
+                }
+                c if c == pt::INWR as i32 => {
+                    receiver == pt::NSCN || receiver == pt::PSCN
+                }
+                _ => match receiver {
+                    pt::QRTZ => {
+                        (matches!(sender, c if c == pt::NSCN as i32 || c == pt::METL as i32
+                            || c == pt::PSCN as i32 || c == pt::QRTZ as i32))
+                            && (sim.parts[id].temp < 173.15 || pv(sim, nx, ny) > 8.0)
+                    }
+                    pt::NTCT => {
+                        sender == pt::NSCN as i32
+                            || (sender == pt::PSCN as i32 && sim.parts[id].temp > 373.0)
+                    }
+                    pt::PTCT => {
+                        sender == pt::NSCN as i32
+                            || (sender == pt::PSCN as i32 && sim.parts[id].temp < 373.0)
+                    }
+                    pt::INWR => sender == pt::NSCN as i32 || sender == pt::PSCN as i32,
+                    pt::INST => sender == pt::PSCN as i32,
+                    pt::NBLE => (sim.parts[i].tmp & 0x1) == 0,
+                    pt::PSCN => sender != pt::NSCN as i32,
+                    _ => true,
+                },
+            }
+        };
+        if !allow {
+            continue;
+        }
+        if (receiver == pt::WATR || receiver == pt::SLTW || receiver == pt::RSST)
+            && sim.parts[id].life == 0
+            && life < 3
+        {
+            ignite.push((id, nx, ny));
+        } else if sim.parts[id].life == 0 && life < 4 {
+            ignite.push((id, nx, ny));
+        }
+    });
+
+    for (id, nx, ny) in ignite {
+        if id >= sim.parts.len() || sim.parts[id].t == 0 {
+            continue;
+        }
+        let receiver = sim.parts[id].t;
+        let life_set = match receiver {
+            pt::WATR => 6,
+            pt::SLTW => 5,
+            pt::RSST => 5,
+            _ => 4,
+        };
+        if sim.part_change_type(id, nx, ny, pt::SPRK as i16) {
+            sim.parts[id].life = life_set;
+            sim.parts[id].ctype = receiver as i32;
+            if matches!(
+                receiver,
+                pt::METL | pt::BMTL | pt::BRMT | pt::PSCN | pt::NSCN | pt::ETRD | pt::NBLE | pt::IRON
+            ) && sim.parts[id].temp + 10.0 < 673.0
+            {
+                sim.parts[id].temp += 10.0;
+            }
         }
     }
-    for (id, nx, ny) in powered {
-        // Powered materials switch on when sparked.
-        let _ = (id, nx, ny);
-    }
-    let _ = sim.pmap_at(x, y);
     0
 }
 
@@ -7873,6 +8069,33 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
     }
 }
 
+/// Reference `PPIP_flood_trigger` for `HEAC`: mark every pipe connected to
+/// this one as heat-conductive. The engine's `transition_phase` checks the
+/// `0x8` bit for pipe heat insulation, while the reference flag is `0x1`
+/// (`PFLAG_CAN_CONDUCT`); set both so the flood works end to end.
+fn pipe_flood_can_conduct(sim: &mut Sim, x0: i32, y0: i32) {
+    let mut stack = vec![(x0, y0)];
+    let mut seen = std::collections::HashSet::new();
+    while let Some((x, y)) = stack.pop() {
+        if !sim.in_bounds(x, y) || !seen.insert((x, y)) {
+            continue;
+        }
+        let r = sim.pmap_at(x, y);
+        if r == 0 {
+            continue;
+        }
+        let id = pmap_id(r) as usize;
+        let rt = pmap_type(r);
+        if rt != pt::PIPE && rt != pt::PPIP {
+            continue;
+        }
+        sim.parts[id].tmp |= PFLAG_CAN_CONDUCT | 0x8;
+        for (dx, dy) in PIPE_OFFSETS {
+            stack.push((x + dx, y + dy));
+        }
+    }
+}
+
 fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32 {
     // Sanitize stored type.
     if sim.parts[i].ctype != 0
@@ -7985,7 +8208,7 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32
                 }
             }
             if heat_pipe {
-                let _ = heat_pipe; // HEAC prop is handled by its own element
+                pipe_flood_can_conduct(sim, x, y);
             }
         } else {
             // Normal transport.
@@ -8097,6 +8320,23 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32
                         break;
                     }
                 }
+            }
+        } else if life == 5 {
+            // Reference: a pipe with no adjacent PIPE/PPIP is single-pixel.
+            let mut issingle = true;
+            for rx in -1..=1 {
+                for ry in -1..=1 {
+                    if rx == 0 && ry == 0 {
+                        continue;
+                    }
+                    let rt = sim.type_at(x + rx, y + ry);
+                    if rt == pt::PIPE || rt == pt::PPIP {
+                        issingle = false;
+                    }
+                }
+            }
+            if issingle {
+                sim.parts[i].tmp |= 0x100;
             }
         } else if life == 2 {
             sim.parts[i].tmp |= PFLAG_COLOR_RED;
@@ -8305,7 +8545,7 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
     let ret_tooshort = flags & 0x08 != 0;
 
     let mut state = 0; // 0 inactive, 1 extend, 2 retract
-    let mut axis = (0i32, 0i32);
+    let mut spark_off = (0i32, 0i32);
     for rx in -2..=2 {
         for ry in -2..=2 {
             if (rx == 0) == (ry == 0) {
@@ -8327,12 +8567,35 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                 } else {
                     state = 2;
                 }
+                spark_off = (rx.signum(), ry.signum());
+            }
+        }
+    }
+    if state == 0 {
+        return 0;
+    }
+    // Reference direction: toward an adjacent PSTN arm when present; a lone
+    // piston extends away from the activating spark.
+    let mut axis = (0i32, 0i32);
+    for rx in -1..=1 {
+        for ry in -1..=1 {
+            if (rx == 0) == (ry == 0) {
+                continue;
+            }
+            let r = sim.pmap_at(x + rx, y + ry);
+            if r != 0
+                && pmap_type(r) == pt::PSTN
+                && sim.parts[pmap_id(r) as usize].life == 0
+            {
                 axis = (rx.signum(), ry.signum());
             }
         }
     }
-    if state == 0 || (axis.0 == 0 && axis.1 == 0) {
-        return 0;
+    if axis.0 == 0 && axis.1 == 0 {
+        if spark_off.0 == 0 && spark_off.1 == 0 {
+            return 0;
+        }
+        axis = (-spark_off.0, -spark_off.1);
     }
     let (dx, dy) = axis;
     // Count the arm and find its far end.
@@ -8368,21 +8631,68 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
         if piston_count <= 0 {
             return 0;
         }
-        // FRME row in front is pushed as a unit first.
+        // FRME structure in front is pushed as a unit first. The reference
+        // `MoveStack` walks the whole frame row perpendicular to the piston
+        // axis (and the particles resting on it); we push the full contiguous
+        // row and abort on the first blocked cell when the obstacle flag is set.
         let fx = x + dx;
         let fy = y + dy;
         if sim.in_bounds(fx, fy) {
             let fr = sim.pmap_at(fx, fy);
             if fr != 0 && pmap_type(fr) == pt::FRME {
-                let moved_frame = sim.move_stack(fx, fy, dx, dy, max_size, piston_count);
-                if moved_frame == 0 && ext_obstacle {
-                    return 0;
+                // The row axis is perpendicular to the piston direction.
+                let (px, py) = if dx != 0 { (0, 1) } else { (1, 0) };
+                let mut row = vec![(fx, fy)];
+                for sign in [-1i32, 1i32] {
+                    let mut step = 1;
+                    loop {
+                        let tx = fx + px * sign * step;
+                        let ty = fy + py * sign * step;
+                        if !sim.in_bounds(tx, ty) {
+                            break;
+                        }
+                        let r = sim.pmap_at(tx, ty);
+                        if r == 0 || pmap_type(r) != pt::FRME {
+                            break;
+                        }
+                        row.push((tx, ty));
+                        step += 1;
+                    }
                 }
+                let mut any_moved = false;
+                for (tx, ty) in &row {
+                    let moved_frame = sim.move_stack(*tx, *ty, dx, dy, max_size, piston_count);
+                    if moved_frame > 0 {
+                        any_moved = true;
+                        // Particles resting on top of the frame move with it.
+                        let (sx, sy) = if dx != 0 { (0, -1) } else { (-1, 0) };
+                        let above_x = tx + sx;
+                        let above_y = ty + sy;
+                        if sim.pmap_at(above_x, above_y) != 0 {
+                            let moved_rest =
+                                sim.move_stack(above_x, above_y, dx, dy, max_size, piston_count);
+                            if moved_rest == 0 && ext_obstacle {
+                                return 0;
+                            }
+                        }
+                    } else if ext_obstacle {
+                        return 0;
+                    }
+                }
+                let _ = any_moved;
             }
         }
         let moved = sim.move_stack(x + dx, y + dy, dx, dy, max_size, piston_count);
         if moved > 0 {
             sim.extend_piston_arm(end_x, end_y, dx, dy, moved, 1);
+        } else if cell_free(sim, x + dx, y + dy) {
+            // Empty space ahead: reference `MoveStack` returns the free space
+            // and the piston creates new arm sections there.
+            let room = (arm_limit - arm).max(0);
+            let create = piston_count.min(room);
+            if create > 0 {
+                sim.extend_piston_arm(end_x, end_y, dx, dy, create, 1);
+            }
         } else if ext_obstacle {
             return 0;
         }
@@ -8528,6 +8838,65 @@ fn soap_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                 }
             }
         }
+        // Mid-chain reconnection (reference `ctype == 7` rewiring).
+        if sim.parts[i].ctype & 0x02 != 0 && sim.parts[i].life <= 0 {
+            for rx in -2..=2 {
+                for ry in -2..=2 {
+                    if rx == 0 && ry == 0 {
+                        continue;
+                    }
+                    let nx = x + rx;
+                    let ny = y + ry;
+                    if !sim.in_bounds(nx, ny) {
+                        continue;
+                    }
+                    let r = sim.pmap_at(nx, ny);
+                    if r == 0 {
+                        continue;
+                    }
+                    let id = pmap_id(r) as usize;
+                    if pmap_type(r) != pt::SOAP || id == i {
+                        continue;
+                    }
+                    let nctype = sim.parts[id].ctype;
+                    if nctype == 1 {
+                        // Neighbour is a lone bubble head: splice it in.
+                        let buf = sim.parts[i].tmp;
+                        sim.parts[i].tmp = id as i32;
+                        if buf >= 0
+                            && (buf as usize) < sim.parts.len()
+                            && sim.parts[buf as usize].t == pt::SOAP
+                        {
+                            sim.parts[buf as usize].tmp2 = id as i32;
+                        }
+                        sim.parts[id].tmp2 = i as i32;
+                        sim.parts[id].tmp = buf;
+                        sim.parts[id].ctype = 7;
+                    } else if nctype == 7
+                        && sim.parts[i].tmp != id as i32
+                        && sim.parts[i].tmp2 != id as i32
+                    {
+                        // Two chains meet: connect them end to end.
+                        let f = sim.parts[i].tmp;
+                        let b = sim.parts[id].tmp2;
+                        if f >= 0
+                            && (f as usize) < sim.parts.len()
+                            && sim.parts[f as usize].t == pt::SOAP
+                        {
+                            sim.parts[f as usize].tmp2 = b;
+                        }
+                        if b >= 0
+                            && (b as usize) < sim.parts.len()
+                            && sim.parts[b as usize].t == pt::SOAP
+                        {
+                            sim.parts[b as usize].tmp = f;
+                        }
+                        sim.parts[id].tmp2 = i as i32;
+                        sim.parts[i].tmp = id as i32;
+                    }
+                }
+            }
+        }
         sim.parts[i].vy = (sim.parts[i].vy - 0.1) * 0.5;
         sim.parts[i].vx *= 0.5;
     }
@@ -8642,6 +9011,137 @@ fn stickman_legs(st: &mut PlayerState, grounded: bool, moving: bool) {
     }
 }
 
+fn stickman_can_occupy(sim: &Sim, x: i32, y: i32) -> bool {
+    if !sim.in_bounds(x, y) {
+        return false;
+    }
+    if x < CELL as i32 || y < CELL as i32 {
+        return false;
+    }
+    if sim.wall_blocks(x, y, pt::STKM) {
+        return false;
+    }
+    match sim.pmap_at(x, y) {
+        0 => true,
+        r => {
+            let rt = pmap_type(r);
+            if matches!(rt, pt::STKM | pt::STKM2 | pt::FIGH) {
+                return false;
+            }
+            (element(rt).properties & props::TYPE_SOLID) == 0
+        }
+    }
+}
+
+fn stickman_feet_grounded(sim: &Sim, x: i32, y: i32) -> bool {
+    for fx in [x - 1, x, x + 1] {
+        if sim.wall_at(fx, y + 1) != 0 {
+            return true;
+        }
+        let t = sim.type_at(fx, y + 1);
+        if t != 0 {
+            let def = element(t);
+            if (def.properties & props::TYPE_SOLID) != 0 || def.weight > element(pt::STKM).weight {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn stickman_set_feet(st: &mut PlayerState, x: i32, y: i32, moving: bool) {
+    // Reference feet live in legs[4..6] and legs[12..14]; legs[2..4] is the
+    // torso anchor used by FIGH target selection.
+    st.legs[2] = x as f32;
+    st.legs[3] = y as f32;
+    let phase: f32 = if moving {
+        if ((st.frames / 4) & 1) == 1 {
+            1.0
+        } else {
+            -1.0
+        }
+    } else {
+        0.0
+    };
+    st.legs[4] = x as f32 - 1.0 + phase.max(0.0);
+    st.legs[5] = y as f32 + 1.0;
+    st.legs[12] = x as f32 + 1.0 + phase.min(0.0);
+    st.legs[13] = y as f32 + 1.0;
+}
+
+/// Reference stickman portal interaction: a head standing on `PRTI` emerges
+/// next to a `PRTO` on the same channel (approximation of the portal payload
+/// path used by `STKM_interact`).
+fn stickman_portal(sim: &Sim, x: i32, y: i32) -> Option<(i32, i32)> {
+    // Reference `STKM_interact` reacts to portals in the surrounding cells.
+    let mut prti: Option<usize> = None;
+    for rx in -1..=1 {
+        for ry in -1..=1 {
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap_at(nx, ny);
+            if r != 0 && pmap_type(r) == pt::PRTI {
+                prti = Some(pmap_id(r) as usize);
+            }
+        }
+    }
+    let prti = prti?;
+    let ch = portal_channel(sim, prti);
+    for (idx, p) in sim.parts.iter().enumerate() {
+        if p.t != pt::PRTO {
+            continue;
+        }
+        if portal_channel(sim, idx) != ch {
+            continue;
+        }
+        let px = (p.x + 0.5) as i32;
+        let py = (p.y + 0.5) as i32;
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let tx = px + dx;
+            let ty = py + dy;
+            if stickman_can_occupy(sim, tx, ty) {
+                return Some((tx, ty));
+            }
+        }
+    }
+    None
+}
+
+fn stickman_element_power(sim: &mut Sim, i: usize, x: i32, y: i32, comm: u8, elem: i32) -> bool {
+    if comm & ent_input::SPAWN == 0
+        || elem <= 0
+        || (elem as usize) >= crate::elements_generated::PT_NUM
+        || !element(elem as u16).enabled
+    {
+        return false;
+    }
+    let dx = if comm & ent_input::LEFT != 0 {
+        -1
+    } else if comm & ent_input::RIGHT != 0 {
+        1
+    } else {
+        0
+    };
+    let tx = x + dx;
+    let ty = y;
+    if sim.pmap_at(tx, ty) != 0 || sim.wall_blocks(tx, ty, pt::STKM) {
+        return false;
+    }
+    if let Some(np) = sim.create_part(tx, ty, elem as u16) {
+        let def = element(elem as u16);
+        if (def.properties & props::TYPE_ENERGY) != 0 {
+            sim.parts[np].vx = dx as f32 * 2.0;
+            sim.parts[np].vy = 0.0;
+        }
+        sim.parts[np].temp = sim.parts[i].temp;
+        return true;
+    }
+    false
+}
+
 fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     if i >= sim.parts.len() || sim.parts[i].t == 0 {
         return 0;
@@ -8668,13 +9168,51 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
             return 1;
         }
     }
+
+    // Portal teleport.
+    if let Some((tx, ty)) = stickman_portal(sim, x, y) {
+        sim.parts[i].x = tx as f32;
+        sim.parts[i].y = ty as f32;
+        return 0;
+    }
+
+    let comm = sim.player_state(which).map(|p| p.comm).unwrap_or(0);
+    let elem = sim.player_state(which).map(|p| p.elem).unwrap_or(0);
+    let mut comm_adj = comm;
+
+    // Element power (spawned here so energy particles get velocity).
+    if stickman_element_power(sim, i, x, y, comm, elem) {
+        comm_adj &= !ent_input::SPAWN;
+    }
+
+    // Jump: reference jump leaves the ground for a couple of cells.
+    if comm & ent_input::JUMP != 0 && stickman_feet_grounded(sim, x, y) {
+        let mut jumped = false;
+        for up in [2i32, 1] {
+            if stickman_can_occupy(sim, x, y - up) {
+                sim.parts[i].y = (y - up) as f32;
+                jumped = true;
+                break;
+            }
+        }
+        if jumped {
+            comm_adj &= !ent_input::JUMP;
+        }
+    }
+
+    if let Some(st) = sim.player_state_mut(which) {
+        st.pcomm = comm;
+        st.comm = comm_adj;
+    }
     let report = sim.step_entity_at(which, i);
     if report.died || i >= sim.parts.len() || sim.parts[i].t == 0 {
         return 1;
     }
-    let comm = sim.player_state(which).map(|p| p.comm).unwrap_or(0);
-    let moving = comm & (ent_input::LEFT | ent_input::RIGHT) != 0;
+    let moving = comm_adj & (ent_input::LEFT | ent_input::RIGHT) != 0;
+    let nx = (sim.parts[i].x + 0.5) as i32;
+    let ny = (sim.parts[i].y + 0.5) as i32;
     if let Some(st) = sim.player_state_mut(which) {
+        stickman_set_feet(st, nx, ny, moving);
         stickman_legs(st, report.grounded, moving);
     }
     0
@@ -8706,6 +9244,11 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
     }
     let slot = sim.parts[i].tmp.max(0) as usize;
     if slot >= crate::entity::MAX_FIGHTERS {
+        sim.kill_part(i);
+        return 1;
+    }
+    // Slot-aware index safety: only the head registered for this slot acts.
+    if sim.fighter_head(slot) != Some(i) {
         return 0;
     }
     let which = Entity::Fighter(slot);
@@ -8724,68 +9267,120 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
         }
     }
 
-    // Acquire the nearest stickman within a bounded radius.
-    let mut target: Option<(usize, i32, i32)> = None;
-    let mut best = 48 * 48;
-    for (idx, p) in sim.parts.iter().enumerate() {
-        if p.t == pt::STKM || p.t == pt::STKM2 {
-            let dx = p.x as i32 - x;
-            let dy = p.y as i32 - y;
-            let d = dx * dx + dy * dy;
-            if d < best {
-                best = d;
-                target = Some((idx, dx, dy));
-            }
-        }
+    // Reference target selection uses the players' torso anchor (legs[2]/[3]).
+    let p1_alive = sim.player.spwn != 0;
+    let p2_alive = sim.player2.spwn != 0;
+    let mut target: Option<(i32, i32)> = None;
+    if p1_alive && p2_alive {
+        let d1 = {
+            let dx = sim.player.legs[2] as i32 - x;
+            let dy = sim.player.legs[3] as i32 - y;
+            dx * dx + dy * dy
+        };
+        let d2 = {
+            let dx = sim.player2.legs[2] as i32 - x;
+            let dy = sim.player2.legs[3] as i32 - y;
+            dx * dx + dy * dy
+        };
+        let p = if d1 <= d2 { &sim.player } else { &sim.player2 };
+        target = Some((p.legs[2] as i32, p.legs[3] as i32));
+    } else if p1_alive {
+        target = Some((sim.player.legs[2] as i32, sim.player.legs[3] as i32));
+    } else if p2_alive {
+        target = Some((sim.player2.legs[2] as i32, sim.player2.legs[3] as i32));
     }
 
+    let elem = {
+        let e = sim.player_state(which).map(|p| p.elem).unwrap_or(0);
+        if e == 0 {
+            // Reference `Element_FIGH_Alloc` defaults the fighter power to DUST.
+            if let Some(st) = sim.player_state_mut(which) {
+                st.elem = pt::DUST as i32;
+            }
+            pt::DUST as i32
+        } else {
+            e
+        }
+    };
     let mut comm = 0u8;
-    if let Some((tid, dx, dy)) = target {
-        if dx.abs() <= 1 && dy.abs() <= 1 {
-            // Melee: damage the target on a short cadence.
-            if sim.tick % 4 == 0 && tid < sim.parts.len() && sim.parts[tid].t != 0 {
-                sim.parts[tid].life -= 1;
-                if sim.parts[tid].life < 0 {
-                    let killed = sim.parts[tid].t;
-                    sim.kill_part(tid);
-                    if killed == pt::STKM {
-                        if let Some(st) = sim.player_state_mut(Entity::Player1) {
-                            st.spwn = 0;
-                        }
-                    } else if killed == pt::STKM2 {
-                        if let Some(st) = sim.player_state_mut(Entity::Player2) {
-                            st.spwn = 0;
+    // `tmp2`: 0 = stay, 1 = seek (kept for parity with the reference field).
+    sim.parts[i].tmp2 = if target.is_some() { 1 } else { 0 };
+
+    if let Some((tx, ty)) = target {
+        let dx = tx - x;
+        let dy = ty - y;
+        let d2 = dx * dx + dy * dy;
+        if d2 < 600 {
+            // Reference: use the element power when it is deadly, radioactive,
+            // hot/cold, or a lightning/neutron power.
+            let valid = elem > 0 && (elem as usize) < crate::elements_generated::PT_NUM;
+            if valid {
+                let def = element(elem as u16);
+                let deadly = (def.properties & (props::PROP_DEADLY | props::PROP_RADIOACTIVE)) != 0;
+                let extreme = def.default_temp >= 323.0 || def.default_temp <= 243.0;
+                if elem == pt::LIGH as i32 || elem == pt::NEUT as i32 || deadly || extreme {
+                    comm |= ent_input::SPAWN;
+                }
+            }
+            // Fallback melee when no element power is configured.
+            if comm & ent_input::SPAWN == 0 {
+                for (idx, p) in sim.parts.iter().enumerate() {
+                    if p.t == pt::STKM || p.t == pt::STKM2 {
+                        let ddx = p.x as i32 - x;
+                        let ddy = p.y as i32 - y;
+                        if ddx.abs() <= 1 && ddy.abs() <= 1 && sim.tick % 4 == 0 {
+                            sim.parts[idx].life -= 1;
+                            if sim.parts[idx].life < 0 {
+                                let killed = sim.parts[idx].t;
+                                sim.kill_part(idx);
+                                if killed == pt::STKM {
+                                    if let Some(st) = sim.player_state_mut(Entity::Player1) {
+                                        st.spwn = 0;
+                                    }
+                                } else if killed == pt::STKM2 {
+                                    if let Some(st) = sim.player_state_mut(Entity::Player2) {
+                                        st.spwn = 0;
+                                    }
+                                }
+                            }
+                            break;
                         }
                     }
                 }
             }
-        } else {
-            if dx > 0 {
-                comm |= ent_input::RIGHT;
-            } else if dx < 0 {
-                comm |= ent_input::LEFT;
-            }
-            if dy < -1 {
-                comm |= ent_input::JUMP;
-            }
-        }
-    } else {
-        // Idle wander.
-        if (sim.parts[i].life + x) % 16 < 8 {
+        } else if dx > 0 {
             comm |= ent_input::RIGHT;
-        } else {
+        } else if dx < 0 {
             comm |= ent_input::LEFT;
         }
+        let _ = dy;
+    } else if (sim.parts[i].life + x) % 16 < 8 {
+        comm |= ent_input::RIGHT;
+    } else {
+        comm |= ent_input::LEFT;
     }
+
+    // Multi-fighter separation: nudge fighters that share a cell.
+    let r = sim.pmap_at(x, y);
+    if r != 0 && pmap_id(r) as usize != i && pmap_type(r) == pt::FIGH {
+        comm |= if (i & 1) == 0 {
+            ent_input::LEFT
+        } else {
+            ent_input::RIGHT
+        };
+    }
+
     if let Some(st) = sim.player_state_mut(which) {
         st.pcomm = st.comm;
         st.comm = comm;
     }
     sim.step_entity_at(which, i);
-    let comm = sim.player_state(which).map(|p| p.comm).unwrap_or(0);
     let moving = comm & (ent_input::LEFT | ent_input::RIGHT) != 0;
+    let nx = (sim.parts[i].x + 0.5) as i32;
+    let ny = (sim.parts[i].y + 0.5) as i32;
     if let Some(st) = sim.player_state_mut(which) {
         stickman_legs(st, true, moving);
+        stickman_set_feet(st, nx, ny, moving);
     }
     0
 }
