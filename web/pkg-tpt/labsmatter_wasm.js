@@ -1,7 +1,8 @@
 /**
- * Simulation tools, mirroring `realmatter-wasm`:
+ * Simulation tools, mirroring the reference `simtools`:
  * 0 heat, 1 cool, 2 air (pressure+), 3 vacuum, 4 PGRV, 5 NGRV, 6 mix,
- * 7 cyclone, 8 wind (dx/dy is the drag direction).
+ * 7 cyclone, 8 wind (dx/dy is the drag direction), 9 ambient-heat +,
+ * 10 ambient-heat -.
  * @param {number} kind
  * @param {number} x
  * @param {number} y
@@ -11,6 +12,13 @@
  */
 export function apply_tool(kind, x, y, radius, dx, dy) {
     wasm.apply_tool(kind, x, y, radius, dx, dy);
+}
+
+/**
+ * Erase decoration from every particle.
+ */
+export function clear_all_deco() {
+    wasm.clear_all_deco();
 }
 
 export function cycle_air() {
@@ -63,6 +71,92 @@ export function fighter_count() {
 }
 
 /**
+ * Ambient heat field (`hv`) at the CELL containing `(x, y)`.
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_ambient(x, y) {
+    const ret = wasm.get_cell_ambient(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_ctype(x, y) {
+    const ret = wasm.get_cell_ctype(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_dcolour(x, y) {
+    const ret = wasm.get_cell_dcolour(x, y);
+    return ret >>> 0;
+}
+
+/**
+ * Wall power / detector state (`emap`) for the CELL containing `(x, y)`.
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_emap(x, y) {
+    const ret = wasm.get_cell_emap(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_flags(x, y) {
+    const ret = wasm.get_cell_flags(x, y);
+    return ret >>> 0;
+}
+
+/**
+ * One-shot JSON snapshot of a pixel from authoritative simulation state.
+ * Used by QA/ the inspector; never synthesises values.
+ * @param {number} x
+ * @param {number} y
+ * @returns {string}
+ */
+export function get_cell_info(x, y) {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        wasm.get_cell_info(retptr, x, y);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred1_0 = r0;
+        deferred1_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_life(x, y) {
+    const ret = wasm.get_cell_life(x, y);
+    return ret;
+}
+
+/**
  * @param {number} x
  * @param {number} y
  * @returns {number}
@@ -88,8 +182,68 @@ export function get_cell_pressure(x, y) {
  * @param {number} y
  * @returns {number}
  */
+export function get_cell_px(x, y) {
+    const ret = wasm.get_cell_px(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_py(x, y) {
+    const ret = wasm.get_cell_py(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
 export function get_cell_temperature(x, y) {
     const ret = wasm.get_cell_temperature(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_tmp(x, y) {
+    const ret = wasm.get_cell_tmp(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_tmp2(x, y) {
+    const ret = wasm.get_cell_tmp2(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_tmp3(x, y) {
+    const ret = wasm.get_cell_tmp3(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_cell_tmp4(x, y) {
+    const ret = wasm.get_cell_tmp4(x, y);
     return ret;
 }
 
@@ -114,6 +268,48 @@ export function get_cell_vy(x, y) {
 }
 
 /**
+ * Decoration colour (ARGB) of the particle at `(x, y)`, or 0.
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_deco(x, y) {
+    const ret = wasm.get_deco(x, y);
+    return ret >>> 0;
+}
+
+/**
+ * Head particle index for an entity (0 = P1, 1 = P2, >=2 = fighter slot + 2).
+ * Returns -1 when the entity does not exist.
+ * @param {number} which
+ * @returns {number}
+ */
+export function get_entity_head(which) {
+    const ret = wasm.get_entity_head(which);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_gravity_x(x, y) {
+    const ret = wasm.get_gravity_x(x, y);
+    return ret;
+}
+
+/**
+ * @param {number} x
+ * @param {number} y
+ * @returns {number}
+ */
+export function get_gravity_y(x, y) {
+    const ret = wasm.get_gravity_y(x, y);
+    return ret;
+}
+
+/**
  * Wall id at `(x, y)` (0 = none).
  * @param {number} x
  * @param {number} y
@@ -122,6 +318,27 @@ export function get_cell_vy(x, y) {
 export function get_wall(x, y) {
     const ret = wasm.get_wall(x, y);
     return ret;
+}
+
+/**
+ * JSON snapshot of the runtime settings.
+ * @returns {string}
+ */
+export function get_world_settings() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        wasm.get_world_settings(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred1_0 = r0;
+        deferred1_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
+    }
 }
 
 /**
@@ -162,7 +379,7 @@ export function last_load_report() {
         return getStringFromWasm0(r0, r1);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export2(deferred1_0, deferred1_1, 1);
+        wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
     }
 }
 
@@ -244,7 +461,7 @@ export function save_blob() {
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var v1 = getArrayU8FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_export2(r0, r1 * 1, 1);
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
         return v1;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
@@ -282,6 +499,20 @@ export function set_cell(x, y, material) {
  */
 export function set_convection_mode(mode) {
     wasm.set_convection_mode(mode);
+}
+
+/**
+ * Paint a decoration colour (ARGB) on the particle at `(x, y)`.
+ * Returns false when the pixel has no particle (decoration is per-particle in
+ * the reference; there is no cell-level decal store).
+ * @param {number} x
+ * @param {number} y
+ * @param {number} argb
+ * @returns {boolean}
+ */
+export function set_deco(x, y, argb) {
+    const ret = wasm.set_deco(x, y, argb);
+    return ret !== 0;
 }
 
 /**
@@ -361,7 +592,7 @@ export function sim_status() {
         return getStringFromWasm0(r0, r1);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export2(deferred1_0, deferred1_1, 1);
+        wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
     }
 }
 
@@ -513,7 +744,7 @@ function passArray8ToWasm0(arg, malloc) {
 
 function takeFromExternrefTable0(idx) {
     const value = wasm.__wbindgen_externrefs.get(idx);
-    wasm.__wbindgen_export(idx);
+    wasm.__wbindgen_export2(idx);
     return value;
 }
 

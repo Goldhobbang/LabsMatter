@@ -83,6 +83,35 @@ fn heat_rgba(t: f32) -> (u8, u8, u8) {
     (r, g, b)
 }
 
+fn rgb(c: u32) -> (u8, u8, u8) {
+    (
+        ((c >> 16) & 0xFF) as u8,
+        ((c >> 8) & 0xFF) as u8,
+        (c & 0xFF) as u8,
+    )
+}
+
+#[inline]
+fn blend(base: u8, over: u8, t: f32) -> u8 {
+    (base as f32 * (1.0 - t) + over as f32 * t) as u8
+}
+
+/// Wall base colour / powered glow for wall id `w` (0 = no wall).
+fn wall_rgb(w: u8, powered: bool) -> Option<(u8, u8, u8)> {
+    if w == 0 {
+        return None;
+    }
+    let def = realmatter_tpt::elements_generated::WALLS.get(w as usize)?;
+    let (mut r, mut g, mut b) = rgb(def.colour);
+    if powered && def.eglow != 0 {
+        let (er, eg, eb) = rgb(def.eglow);
+        r = blend(r, er, 0.65);
+        g = blend(g, eg, 0.65);
+        b = blend(b, eb, 0.65);
+    }
+    Some((r, g, b))
+}
+
 fn rebuild_render() {
     let view = VIEW.with(|v| *v.borrow());
     SIM.with(|s| {
@@ -99,11 +128,11 @@ fn rebuild_render() {
                 for x in 0..sim.width {
                     let i = y * sim.width + x;
                     let (rr, gg, bb, aa);
+                    let cx = x / CELL;
+                    let cy = y / CELL;
+                    let ci = cy * cells_x + cx;
                     if view == 3 || view == 4 {
                         // Field views are valid for empty pixels too.
-                        let cx = x / CELL;
-                        let cy = y / CELL;
-                        let ci = cy * cells_x + cx;
                         let (r, g, b) = if view == 3 {
                             let p = sim.pv[ci];
                             let k = ((p + 8.0) / 16.0).clamp(0.0, 1.0);
@@ -123,37 +152,59 @@ fn rebuild_render() {
                         bb = b;
                         aa = 255;
                     } else {
+                        // Walls are drawn per CELL underneath particles.
+                        let wall = sim.bmap[ci];
+                        let powered = sim.emap[ci] != 0;
+                        let (mut r, mut g, mut b, mut a) = match wall_rgb(wall, powered) {
+                            Some((wr, wg, wb)) => (wr, wg, wb, 255),
+                            None => (0, 0, 0, 0),
+                        };
                         let packed = if sim.photons[i] != 0 {
                             sim.photons[i]
                         } else {
                             sim.pmap[i]
                         };
                         let t = realmatter_tpt::pmap_type(packed);
-                        if t == 0 {
-                            rr = 0;
-                            gg = 0;
-                            bb = 0;
-                            aa = 0;
-                        } else {
-                            if view == 2 {
-                                let id = realmatter_tpt::pmap_id(packed) as usize;
-                                let temp = if id < sim.parts.len() {
-                                    sim.parts[id].temp
-                                } else {
-                                    293.15
-                                };
-                                let (r, g, b) = heat_rgba(temp);
-                                rr = r;
-                                gg = g;
-                                bb = b;
+                        if t != 0 {
+                            let id = realmatter_tpt::pmap_id(packed) as usize;
+                            let part = sim.parts.get(id);
+                            let temp = part.map(|p| p.temp).unwrap_or(293.15);
+                            let (pr, pg, pb) = if view == 2 {
+                                heat_rgba(temp)
+                            } else if view == 1 && temp > 500.0 {
+                                // Fancy: tint hot particles toward the heat ramp.
+                                let (hr, hg, hb) = heat_rgba(temp);
+                                let k = ((temp - 500.0) / 1000.0).clamp(0.0, 0.75);
+                                let (er, eg, eb) = element_colour(t);
+                                (
+                                    blend(er, hr, k),
+                                    blend(eg, hg, k),
+                                    blend(eb, hb, k),
+                                )
                             } else {
-                                let (r, g, b) = element_colour(t);
-                                rr = r;
-                                gg = g;
-                                bb = b;
+                                element_colour(t)
+                            };
+                            r = pr;
+                            g = pg;
+                            b = pb;
+                            a = 255;
+                            // Per-particle decoration colour (ARGB) overlay.
+                            if let Some(p) = part {
+                                let dc = p.dcolour;
+                                if dc != 0 {
+                                    let da = ((dc >> 24) & 0xFF) as f32 / 255.0;
+                                    let (dr, dg, db) = rgb(dc & 0x00FF_FFFF);
+                                    r = blend(r, dr, da);
+                                    g = blend(g, dg, da);
+                                    b = blend(b, db, da);
+                                    a = 255;
+                                }
                             }
-                            aa = 255;
                         }
+                        rr = r;
+                        gg = g;
+                        bb = b;
+                        aa = a;
                     }
                     let o = i * 4;
                     buf[o] = rr;
@@ -285,6 +336,9 @@ pub fn get_cell_temperature(x: i32, y: i32) -> f32 {
             } else {
                 sim.pmap[cell]
             };
+            if r == 0 {
+                return 0.0; // empty pixel
+            }
             let id = realmatter_tpt::pmap_id(r) as usize;
             if id < sim.parts.len() {
                 sim.parts[id].temp
@@ -308,6 +362,26 @@ pub fn get_cell_pressure(x: i32, y: i32) -> f32 {
             let cy = y / CELL as i32;
             if sim.in_cell_bounds(cx, cy) {
                 sim.pv[sim.cell_idx(cx, cy)]
+            } else {
+                0.0
+            }
+        },
+        0.0,
+    )
+}
+
+/// Ambient heat field (`hv`) at the CELL containing `(x, y)`.
+#[wasm_bindgen]
+pub fn get_cell_ambient(x: i32, y: i32) -> f32 {
+    with_sim(
+        |sim| {
+            if !sim.in_bounds(x, y) {
+                return 0.0;
+            }
+            let cx = x / CELL as i32;
+            let cy = y / CELL as i32;
+            if sim.in_cell_bounds(cx, cy) {
+                sim.hv[sim.cell_idx(cx, cy)]
             } else {
                 0.0
             }
@@ -352,6 +426,274 @@ pub fn get_cell_vy(x: i32, y: i32) -> f32 {
         },
         0.0,
     )
+}
+
+// ---- Particle inspection (QA / HUD) -------------------------------------
+
+/// Particle slot occupying pixel `(x, y)`, if any (ordinary or energy layer).
+fn particle_at(sim: &Sim, x: i32, y: i32) -> Option<usize> {
+    if !sim.in_bounds(x, y) {
+        return None;
+    }
+    let cell = sim.idx(x, y);
+    let packed = if sim.photons[cell] != 0 {
+        sim.photons[cell]
+    } else {
+        sim.pmap[cell]
+    };
+    if packed == 0 {
+        return None;
+    }
+    let id = realmatter_tpt::pmap_id(packed) as usize;
+    if id < sim.parts.len() && sim.parts[id].t != 0 {
+        Some(id)
+    } else {
+        None
+    }
+}
+
+macro_rules! particle_i32_getter {
+    ($name:ident, $field:ident, $ty:ty) => {
+        #[wasm_bindgen]
+        pub fn $name(x: i32, y: i32) -> $ty {
+            with_sim(
+                |sim| particle_at(sim, x, y).map(|i| sim.parts[i].$field).unwrap_or(0 as $ty),
+                0 as $ty,
+            )
+        }
+    };
+}
+
+particle_i32_getter!(get_cell_life, life, i32);
+particle_i32_getter!(get_cell_ctype, ctype, i32);
+particle_i32_getter!(get_cell_tmp, tmp, i32);
+particle_i32_getter!(get_cell_tmp2, tmp2, i32);
+particle_i32_getter!(get_cell_tmp3, tmp3, i32);
+particle_i32_getter!(get_cell_tmp4, tmp4, i32);
+particle_i32_getter!(get_cell_flags, flags, u32);
+particle_i32_getter!(get_cell_dcolour, dcolour, u32);
+
+#[wasm_bindgen]
+pub fn get_cell_px(x: i32, y: i32) -> f32 {
+    with_sim(
+        |sim| particle_at(sim, x, y).map(|i| sim.parts[i].x).unwrap_or(-1.0),
+        -1.0,
+    )
+}
+
+#[wasm_bindgen]
+pub fn get_cell_py(x: i32, y: i32) -> f32 {
+    with_sim(
+        |sim| particle_at(sim, x, y).map(|i| sim.parts[i].y).unwrap_or(-1.0),
+        -1.0,
+    )
+}
+
+/// Wall power / detector state (`emap`) for the CELL containing `(x, y)`.
+#[wasm_bindgen]
+pub fn get_cell_emap(x: i32, y: i32) -> u8 {
+    with_sim(
+        |sim| {
+            if !sim.in_bounds(x, y) {
+                return 0;
+            }
+            let cx = x / CELL as i32;
+            let cy = y / CELL as i32;
+            if sim.in_cell_bounds(cx, cy) {
+                sim.emap[sim.cell_idx(cx, cy)]
+            } else {
+                0
+            }
+        },
+        0,
+    )
+}
+
+#[wasm_bindgen]
+pub fn get_gravity_x(x: i32, y: i32) -> f32 {
+    with_sim(
+        |sim| {
+            let cx = x / CELL as i32;
+            let cy = y / CELL as i32;
+            if sim.in_cell_bounds(cx, cy) {
+                sim.grav_force[sim.cell_idx(cx, cy)].0
+            } else {
+                0.0
+            }
+        },
+        0.0,
+    )
+}
+
+#[wasm_bindgen]
+pub fn get_gravity_y(x: i32, y: i32) -> f32 {
+    with_sim(
+        |sim| {
+            let cx = x / CELL as i32;
+            let cy = y / CELL as i32;
+            if sim.in_cell_bounds(cx, cy) {
+                sim.grav_force[sim.cell_idx(cx, cy)].1
+            } else {
+                0.0
+            }
+        },
+        0.0,
+    )
+}
+
+/// One-shot JSON snapshot of a pixel from authoritative simulation state.
+/// Used by QA/ the inspector; never synthesises values.
+#[wasm_bindgen]
+pub fn get_cell_info(x: i32, y: i32) -> String {
+    with_sim(
+        |sim| {
+            if !sim.in_bounds(x, y) {
+                return "{\"valid\":false}".to_string();
+            }
+            let cell = sim.idx(x, y);
+            let cx = x / CELL as i32;
+            let cy = y / CELL as i32;
+            let ci = if sim.in_cell_bounds(cx, cy) {
+                sim.cell_idx(cx, cy)
+            } else {
+                0
+            };
+            let packed = if sim.photons[cell] != 0 {
+                sim.photons[cell]
+            } else {
+                sim.pmap[cell]
+            };
+            let t = realmatter_tpt::pmap_type(packed);
+            let id = realmatter_tpt::pmap_id(packed) as usize;
+            let has = t != 0 && id < sim.parts.len() && sim.parts[id].t != 0;
+            let wall = if sim.in_cell_bounds(cx, cy) {
+                sim.bmap[ci]
+            } else {
+                0
+            };
+            let emap = if sim.in_cell_bounds(cx, cy) {
+                sim.emap[ci]
+            } else {
+                0
+            };
+            let pv = if sim.in_cell_bounds(cx, cy) { sim.pv[ci] } else { 0.0 };
+            let avx = if sim.in_cell_bounds(cx, cy) { sim.vx[ci] } else { 0.0 };
+            let avy = if sim.in_cell_bounds(cx, cy) { sim.vy[ci] } else { 0.0 };
+            let ambient = if sim.in_cell_bounds(cx, cy) { sim.hv[ci] } else { 0.0 };
+            let g = if sim.in_cell_bounds(cx, cy) {
+                sim.grav_force[ci]
+            } else {
+                (0.0, 0.0)
+            };
+            if has {
+                let p = &sim.parts[id];
+                format!(
+                    "{{\"valid\":true,\"x\":{x},\"y\":{y},\"type\":{t},\"px\":{},\"py\":{},\"temp\":{},\"vx\":{},\"vy\":{},\"life\":{},\"ctype\":{},\"tmp\":{},\"tmp2\":{},\"tmp3\":{},\"tmp4\":{},\"flags\":{},\"dcolour\":{},\"wall\":{wall},\"emap\":{emap},\"pressure\":{pv},\"air_vx\":{avx},\"air_vy\":{avy},\"ambient\":{ambient},\"grav_x\":{},\"grav_y\":{}}}",
+                    p.x, p.y, p.temp, p.vx, p.vy, p.life, p.ctype, p.tmp, p.tmp2, p.tmp3, p.tmp4,
+                    p.flags, p.dcolour, g.0, g.1
+                )
+            } else {
+                format!(
+                    "{{\"valid\":true,\"x\":{x},\"y\":{y},\"type\":0,\"wall\":{wall},\"emap\":{emap},\"pressure\":{pv},\"air_vx\":{avx},\"air_vy\":{avy},\"ambient\":{ambient},\"grav_x\":{},\"grav_y\":{}}}",
+                    g.0, g.1
+                )
+            }
+        },
+        "{\"valid\":false}".into(),
+    )
+}
+
+/// JSON snapshot of the runtime settings.
+#[wasm_bindgen]
+pub fn get_world_settings() -> String {
+    with_sim(
+        |sim| {
+            format!(
+                "{{\"width\":{},\"height\":{},\"cells_x\":{},\"cells_y\":{},\"tick\":{},\"gravity\":{},\"air\":{},\"edge\":{},\"heat_sim\":{},\"ambient_heat\":{},\"newtonian\":{},\"convection\":{},\"ambient_temp\":{},\"edge_pressure\":{}}}",
+                sim.width,
+                sim.height,
+                sim.cells_x,
+                sim.cells_y,
+                sim.tick,
+                sim.settings.gravity_mode as u8,
+                sim.settings.air_mode as u8,
+                sim.settings.edge_mode as u8,
+                sim.settings.heat_sim,
+                sim.settings.ambient_heat,
+                sim.settings.newtonian_gravity,
+                sim.settings.convection_mode as u8,
+                sim.settings.ambient_air_temp,
+                sim.settings.edge_pressure
+            )
+        },
+        "{}".into(),
+    )
+}
+
+/// Head particle index for an entity (0 = P1, 1 = P2, >=2 = fighter slot + 2).
+/// Returns -1 when the entity does not exist.
+#[wasm_bindgen]
+pub fn get_entity_head(which: u32) -> i32 {
+    with_sim(
+        |sim| {
+            let e = if which == 1 {
+                Entity::Player2
+            } else {
+                Entity::Player1
+            };
+            match sim.entity_head(e) {
+                Some(h) => h as i32,
+                None => -1,
+            }
+        },
+        -1,
+    )
+}
+
+// ---- Decoration ----------------------------------------------------------
+
+/// Paint a decoration colour (ARGB) on the particle at `(x, y)`.
+/// Returns false when the pixel has no particle (decoration is per-particle in
+/// the reference; there is no cell-level decal store).
+#[wasm_bindgen]
+pub fn set_deco(x: i32, y: i32, argb: u32) -> bool {
+    let ok = with_sim(
+        |sim| match particle_at(sim, x, y) {
+            Some(i) => {
+                sim.parts[i].dcolour = argb;
+                true
+            }
+            None => false,
+        },
+        false,
+    );
+    if ok {
+        rebuild_render();
+    }
+    ok
+}
+
+/// Decoration colour (ARGB) of the particle at `(x, y)`, or 0.
+#[wasm_bindgen]
+pub fn get_deco(x: i32, y: i32) -> u32 {
+    with_sim(
+        |sim| particle_at(sim, x, y).map(|i| sim.parts[i].dcolour).unwrap_or(0),
+        0,
+    )
+}
+
+/// Erase decoration from every particle.
+#[wasm_bindgen]
+pub fn clear_all_deco() {
+    with_sim(
+        |sim| {
+            for p in sim.parts.iter_mut() {
+                p.dcolour = 0;
+            }
+        },
+        (),
+    );
+    rebuild_render();
 }
 
 /// Live particle count (alive slots, ordinary + energy).
@@ -515,24 +857,29 @@ pub fn set_view_mode(mode: u32) {
 
 // ---- Simulation tools (reference simtools ordering) ----------------------
 
-fn apply_heat_at(sim: &mut Sim, x: i32, y: i32, delta: f32) {
+/// Reference `HEAT`/`COOL`: only the targeted particle's temperature changes.
+/// (Empty cells are the domain of AMBP/AMBM, which edit the ambient field.)
+fn apply_heat_particle(sim: &mut Sim, x: i32, y: i32, delta: f32) {
     let cell = sim.idx(x, y);
     let r = if sim.photons[cell] != 0 {
         sim.photons[cell]
     } else {
         sim.pmap[cell]
     };
+    if r == 0 {
+        return; // empty pixel: HEAT/COOL do nothing (ambient tools handle this)
+    }
     let id = realmatter_tpt::pmap_id(r) as usize;
     if id < sim.parts.len() && sim.parts[id].t != 0 {
         let t = sim.parts[id].temp + delta;
         sim.parts[id].temp = t.clamp(MIN_TEMP, MAX_TEMP);
-    } else {
-        let cx = x / CELL as i32;
-        let cy = y / CELL as i32;
-        if sim.in_cell_bounds(cx, cy) {
-            let i = sim.cell_idx(cx, cy);
-            sim.hv[i] = (sim.hv[i] + delta).clamp(MIN_TEMP, MAX_TEMP);
-        }
+    }
+}
+
+fn ambient_heat_at(sim: &mut Sim, cx: i32, cy: i32, delta: f32) {
+    if sim.in_cell_bounds(cx, cy) {
+        let i = sim.cell_idx(cx, cy);
+        sim.hv[i] = (sim.hv[i] + delta).clamp(MIN_TEMP, MAX_TEMP);
     }
 }
 
@@ -556,9 +903,10 @@ fn mix_air_at(sim: &mut Sim, cx: i32, cy: i32) {
     sim.vy[idx] = sim.vy[idx] * 0.5 + dvy;
 }
 
-/// Simulation tools, mirroring `realmatter-wasm`:
+/// Simulation tools, mirroring the reference `simtools`:
 /// 0 heat, 1 cool, 2 air (pressure+), 3 vacuum, 4 PGRV, 5 NGRV, 6 mix,
-/// 7 cyclone, 8 wind (dx/dy is the drag direction).
+/// 7 cyclone, 8 wind (dx/dy is the drag direction), 9 ambient-heat +,
+/// 10 ambient-heat -.
 #[wasm_bindgen]
 pub fn apply_tool(kind: u32, x: i32, y: i32, radius: u32, dx: f32, dy: f32) {
     with_sim(
@@ -577,15 +925,32 @@ pub fn apply_tool(kind: u32, x: i32, y: i32, radius: u32, dx: f32, dy: f32) {
                     let cx = px / CELL as i32;
                     let cy = py / CELL as i32;
                     match kind {
-                        0 => apply_heat_at(sim, px, py, 20.0),
-                        1 => apply_heat_at(sim, px, py, -20.0),
-                        2 => sim.add_pressure(cx, cy, 0.6),
-                        3 => sim.add_pressure(cx, cy, -0.6),
-                        4 => sim.add_pressure(cx, cy, 0.05),
-                        5 => sim.add_pressure(cx, cy, -0.05),
+                        // HEAT / COOL: particle temperature (reference `strength*2`).
+                        0 => apply_heat_particle(sim, px, py, 4.0),
+                        1 => apply_heat_particle(sim, px, py, -4.0),
+                        // AIR / VAC: air pressure (reference `strength*0.05`).
+                        2 => sim.add_pressure(cx, cy, 0.1),
+                        3 => sim.add_pressure(cx, cy, -0.1),
+                        // PGRV / NGRV: reference edits the gravity-well mass grid.
+                        // Best-effort until the A2 gravity-well solver exists.
+                        4 => {
+                            if sim.in_cell_bounds(cx, cy) {
+                                let i = sim.cell_idx(cx, cy);
+                                sim.grav_mass[i] += 5.0;
+                            }
+                        }
+                        5 => {
+                            if sim.in_cell_bounds(cx, cy) {
+                                let i = sim.cell_idx(cx, cy);
+                                sim.grav_mass[i] -= 5.0;
+                            }
+                        }
                         6 => mix_air_at(sim, cx, cy),
                         7 => sim.add_air_velocity(cx, cy, -dy * 0.02, dx * 0.02),
                         8 => sim.add_air_velocity(cx, cy, dx * 0.02, dy * 0.02),
+                        // AMBP / AMBM: ambient air temperature (reference `strength*2`).
+                        9 => ambient_heat_at(sim, cx, cy, 4.0),
+                        10 => ambient_heat_at(sim, cx, cy, -4.0),
                         _ => {}
                     }
                 }

@@ -89,3 +89,6 @@ button { cursor: pointer; }
 /* Experimental TPT simulation-tool panel (bottom-left, hidden until TPT loads). */
 .tool-panel { top: auto; bottom: 6px; left: 6px; right: auto; }
 .tool-panel .tb.is-active { border-color: var(--hot); color: #fff; }
+
+/* Decoration colour input in the TPT tool panel. */
+#deco-color { width: 26px; height: 20px; padding: 0; border: 1px solid #333; background: #0c0c0c; }
