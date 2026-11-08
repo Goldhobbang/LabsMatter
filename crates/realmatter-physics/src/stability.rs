@@ -119,9 +119,6 @@ pub fn sanitize(cells: &mut [Cell], materials: &[MaterialProps]) {
         cell.temperature = cell.temperature.clamp(0.0, 4000.0);
         if !cell.vx.is_finite() { cell.vx = 0.0; }
         if !cell.vy.is_finite() { cell.vy = 0.0; }
-        if !cell.pressure.is_finite() {
-            cell.pressure = core::units::constants::ATM_PRESSURE;
-        }
         // Pressure: preserve signed values (vacuum/suction). Only sanitize non-finite.
         // Do not clamp magnitude here; thermodynamic pressure (Pa) and gauge pressure
         // have different ranges. Magnitude clamping belongs to the air-field layer.

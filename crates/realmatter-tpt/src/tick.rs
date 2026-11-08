@@ -21,6 +21,10 @@ pub struct Neighbourhood {
 impl Sim {
     /// `BeforeSim`.
     pub fn before_sim(&mut self) {
+        // 0. Numerical guard: clamp non-finite particle/field state before it
+        //    can propagate through the air solver or pmap rebuild. No-op for
+        //    healthy state (see `Sim::sanitize`).
+        self.sanitize();
         // 1. Air.
         self.update_air();
         // 2. Ambient heat.

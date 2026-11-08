@@ -1,3 +1,18 @@
+/**
+ * Simulation tools, mirroring `realmatter-wasm`:
+ * 0 heat, 1 cool, 2 air (pressure+), 3 vacuum, 4 PGRV, 5 NGRV, 6 mix,
+ * 7 cyclone, 8 wind (dx/dy is the drag direction).
+ * @param {number} kind
+ * @param {number} x
+ * @param {number} y
+ * @param {number} radius
+ * @param {number} dx
+ * @param {number} dy
+ */
+export function apply_tool(kind, x, y, radius, dx, dy) {
+    wasm.apply_tool(kind, x, y, radius, dx, dy);
+}
+
 export function cycle_air() {
     wasm.cycle_air();
 }

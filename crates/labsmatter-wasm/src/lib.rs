@@ -513,6 +513,89 @@ pub fn set_view_mode(mode: u32) {
     rebuild_render();
 }
 
+// ---- Simulation tools (reference simtools ordering) ----------------------
+
+fn apply_heat_at(sim: &mut Sim, x: i32, y: i32, delta: f32) {
+    let cell = sim.idx(x, y);
+    let r = if sim.photons[cell] != 0 {
+        sim.photons[cell]
+    } else {
+        sim.pmap[cell]
+    };
+    let id = realmatter_tpt::pmap_id(r) as usize;
+    if id < sim.parts.len() && sim.parts[id].t != 0 {
+        let t = sim.parts[id].temp + delta;
+        sim.parts[id].temp = t.clamp(MIN_TEMP, MAX_TEMP);
+    } else {
+        let cx = x / CELL as i32;
+        let cy = y / CELL as i32;
+        if sim.in_cell_bounds(cx, cy) {
+            let i = sim.cell_idx(cx, cy);
+            sim.hv[i] = (sim.hv[i] + delta).clamp(MIN_TEMP, MAX_TEMP);
+        }
+    }
+}
+
+fn mix_air_at(sim: &mut Sim, cx: i32, cy: i32) {
+    if !sim.in_cell_bounds(cx, cy) {
+        return;
+    }
+    let idx = sim.cell_idx(cx, cy);
+    let mut dvx = 0.0;
+    let mut dvy = 0.0;
+    for (dx, dy, wt) in [(-1i32, 0i32, 0.25f32), (1, 0, 0.25), (0, -1, 0.25), (0, 1, 0.25)] {
+        let ncx = cx + dx;
+        let ncy = cy + dy;
+        if sim.in_cell_bounds(ncx, ncy) {
+            let ni = sim.cell_idx(ncx, ncy);
+            dvx += sim.vx[ni] * wt;
+            dvy += sim.vy[ni] * wt;
+        }
+    }
+    sim.vx[idx] = sim.vx[idx] * 0.5 + dvx;
+    sim.vy[idx] = sim.vy[idx] * 0.5 + dvy;
+}
+
+/// Simulation tools, mirroring `realmatter-wasm`:
+/// 0 heat, 1 cool, 2 air (pressure+), 3 vacuum, 4 PGRV, 5 NGRV, 6 mix,
+/// 7 cyclone, 8 wind (dx/dy is the drag direction).
+#[wasm_bindgen]
+pub fn apply_tool(kind: u32, x: i32, y: i32, radius: u32, dx: f32, dy: f32) {
+    with_sim(
+        |sim| {
+            let r = radius.max(1) as i32;
+            for oy in -r..=r {
+                for ox in -r..=r {
+                    if ox * ox + oy * oy > r * r {
+                        continue;
+                    }
+                    let px = x + ox;
+                    let py = y + oy;
+                    if !sim.in_bounds(px, py) {
+                        continue;
+                    }
+                    let cx = px / CELL as i32;
+                    let cy = py / CELL as i32;
+                    match kind {
+                        0 => apply_heat_at(sim, px, py, 20.0),
+                        1 => apply_heat_at(sim, px, py, -20.0),
+                        2 => sim.add_pressure(cx, cy, 0.6),
+                        3 => sim.add_pressure(cx, cy, -0.6),
+                        4 => sim.add_pressure(cx, cy, 0.05),
+                        5 => sim.add_pressure(cx, cy, -0.05),
+                        6 => mix_air_at(sim, cx, cy),
+                        7 => sim.add_air_velocity(cx, cy, -dy * 0.02, dx * 0.02),
+                        8 => sim.add_air_velocity(cx, cy, dx * 0.02, dy * 0.02),
+                        _ => {}
+                    }
+                }
+            }
+        },
+        (),
+    );
+    rebuild_render();
+}
+
 // ---- Runtime settings ----------------------------------------------------
 
 #[wasm_bindgen]

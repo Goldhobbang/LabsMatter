@@ -746,6 +746,59 @@ impl Sim {
         self.refresh_air_block_maps();
     }
 
+    /// Numerical stabilisation pass (Agent 1 world infrastructure).
+    ///
+    /// The reference relies on `restrict_flt` at every transition site; a missed
+    /// site or an element-supplied NaN can otherwise poison positions, the air
+    /// fields, and (via pmap rebuild) neighbouring cells. This clamps only
+    /// non-finite / out-of-range values and is a no-op for healthy state.
+    pub fn sanitize(&mut self) {
+        let ambient = self.settings.ambient_air_temp;
+        for p in self.parts.iter_mut() {
+            if p.t == 0 {
+                continue;
+            }
+            if !p.x.is_finite() {
+                p.x = 0.5;
+            }
+            if !p.y.is_finite() {
+                p.y = 0.5;
+            }
+            if !p.vx.is_finite() {
+                p.vx = 0.0;
+            }
+            if !p.vy.is_finite() {
+                p.vy = 0.0;
+            }
+            if !p.temp.is_finite() {
+                p.temp = ambient;
+            }
+            p.temp = p.temp.clamp(MIN_TEMP, MAX_TEMP);
+            p.vx = p.vx.clamp(-MAX_VELOCITY, MAX_VELOCITY);
+            p.vy = p.vy.clamp(-MAX_VELOCITY, MAX_VELOCITY);
+        }
+        for v in self.pv.iter_mut() {
+            if !v.is_finite() {
+                *v = 0.0;
+            }
+        }
+        for v in self.vx.iter_mut() {
+            if !v.is_finite() {
+                *v = 0.0;
+            }
+        }
+        for v in self.vy.iter_mut() {
+            if !v.is_finite() {
+                *v = 0.0;
+            }
+        }
+        for v in self.hv.iter_mut() {
+            if !v.is_finite() {
+                *v = ambient;
+            }
+        }
+    }
+
     /// True when wall `w` blocks particles of element `t` from being in the
     /// cell at all (the reference's per-particle wall kill test).
     pub fn wall_kills(&self, w: u8, t: u16) -> bool {
