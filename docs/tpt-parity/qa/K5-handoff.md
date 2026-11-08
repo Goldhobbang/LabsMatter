@@ -78,6 +78,18 @@ Browser (Chrome headless, WebGL2):
 - AMB+ via UI changed ambient at the painted cell.
 - v3 save→load preserved particle count; production panels hidden.
 
+## 3a. Agent B K3 findings reconciliation
+
+- **P1 “frontend not wired to TPT”** (reported against `c06a86f`): **fixed**. The
+  current `main.js` selects `TptAdapter` when `?engine=tpt` (verified in browser:
+  the loaded module exposes TPT-only exports, HUD shows `TPT`).
+- **P2 “Loop edge may not wrap”**: placing a particle inside the outer 4-px
+  margin (`y=254` in a 128-tall test) is expected to die — the reference kills
+  particles in the border margin. Loop wrapping applies to the drawable area;
+  A1 verification shows 200 sand particles stay alive and wrap (y range 4..123).
+  No core defect found.
+- **P2 Newtonian gravity weak / water spreading**: Agent 2 physics dependencies.
+
 ## 4. NOT verified / limitations
 
 - Glow/fire bloom not rendered; air display sub-modes simplified.

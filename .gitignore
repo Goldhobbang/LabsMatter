@@ -34,3 +34,5 @@ diag-*.mjs
 # Local verification scripts (not committed)
 _*_check.mjs
 *_check.mjs
+_k5_*.mjs
+_k4_*.mjs
