@@ -73,3 +73,5 @@ Run: `cd web; python -m http.server 5173` then open
 `http://localhost:5173/?engine=tpt`.
 - **K5 handoff (walls/decoration rendering, tools, inspection API):**
   [`K5-handoff.md`](K5-handoff.md)
+- **K7 handoff (graphics, glow/bloom, gravity view, full-state editing, inspection):**
+  [`K7-handoff.md`](K7-handoff.md)
