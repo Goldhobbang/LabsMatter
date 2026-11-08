@@ -630,7 +630,8 @@ pub fn get_world_settings() -> String {
     )
 }
 
-/// Head particle index for an entity (0 = P1, 1 = P2, >=2 = fighter slot + 2).
+/// Head particle index for an entity.
+/// `which`: 0 = player 1, 1 = player 2, `2 + slot` = fighter `slot`.
 /// Returns -1 when the entity does not exist.
 #[wasm_bindgen]
 pub fn get_entity_head(which: u32) -> i32 {
@@ -638,6 +639,8 @@ pub fn get_entity_head(which: u32) -> i32 {
         |sim| {
             let e = if which == 1 {
                 Entity::Player2
+            } else if which >= 2 {
+                Entity::Fighter((which - 2) as usize)
             } else {
                 Entity::Player1
             };

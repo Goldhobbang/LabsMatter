@@ -111,15 +111,30 @@ impl Sim {
         }
     }
 
-    /// Head particle id for a player slot. Unlike the reference we do not keep a
-    /// pointer, so the head is located by scanning for the unique live particle
-    /// of that type. The `create_allowed` callback guarantees uniqueness.
+    /// Head particle id for an entity. Players are found by their unique live
+    /// particle type (`create_allowed` guarantees uniqueness). Fighters are
+    /// disambiguated by slot, stored in `parts[i].tmp` (reference `FIGH.cpp`
+    /// indexes `fighters[parts[i].tmp]`). Scanning by `tmp` is also robust across
+    /// `recalc()` compaction because `tmp` survives reindexing.
     pub fn entity_head(&self, which: Entity) -> Option<usize> {
-        let t = Self::player_type(which);
+        match which {
+            Entity::Fighter(slot) => self.fighter_head(slot),
+            _ => {
+                let t = Self::player_type(which);
+                self.parts
+                    .iter()
+                    .position(|p| p.t == t && p.life > -1)
+                    .filter(|&i| self.parts[i].t == t)
+            }
+        }
+    }
+
+    /// Particle index of fighter `slot`'s head, or `None` if it does not exist.
+    pub fn fighter_head(&self, slot: usize) -> Option<usize> {
+        let slot = slot as i32;
         self.parts
             .iter()
-            .position(|p| p.t == t && p.life > -1)
-            .filter(|&i| self.parts[i].t == t)
+            .position(|p| p.t == pt::FIGH && p.tmp == slot)
     }
 
     /// Spawn a player/fighter head at `(x, y)`. Returns the particle index.

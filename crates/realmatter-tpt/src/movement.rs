@@ -669,11 +669,16 @@ impl Sim {
                 self.kill_part(i);
                 return;
             }
-            if !self.in_bounds(nx, ny) {
+            if !self.in_bounds(nx, ny) && self.settings.edge_mode != crate::sim::EdgeMode::Loop {
                 self.kill_part(i);
                 return;
             }
             if self.do_move(i, x, y, nx as f32, ny as f32) == 0 {
+                // In loop mode `do_move` wraps the target, so the stale `nx/ny`
+                // must not be used for a pmap lookup.
+                if !self.in_bounds(nx, ny) {
+                    return;
+                }
                 let r = self.pmap[self.idx(nx, ny)];
                 let rt = pmap_type(r);
                 if rt == pt::GLAS && self.rng.chance(1, 10) {
@@ -692,7 +697,7 @@ impl Sim {
                 return;
             }
         }
-        if !self.in_bounds(nx, ny) {
+        if !self.in_bounds(nx, ny) && self.settings.edge_mode != crate::sim::EdgeMode::Loop {
             self.kill_part(i);
             return;
         }

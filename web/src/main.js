@@ -94,11 +94,19 @@ async function boot() {
   // Diagnostics handle for runtime selection and manual verification. Read-only
   // accessors; the module keeps ownership of the live objects.
   window.labsmatter = {
-    engine: ENGINE,
+    requestedEngine: ENGINE,
+    get engine() { return (sim && sim.engine) || "none"; },
+    get adapter() { return sim ? sim.constructor.name : "none"; },
+    get wasmIdentity() { return sim && sim.wasmIdentity ? sim.wasmIdentity() : "none"; },
     get sim() { return sim; },
     get materials() { return matApi; },
     get renderer() { return renderer; },
   };
+  if (window.labsmatter.engine !== ENGINE) {
+    console.error(
+      `[labsmatter] engine mismatch: requested "${ENGINE}" but active adapter is "${window.labsmatter.engine}" (${window.labsmatter.wasmIdentity}).`
+    );
+  }
   setAppState("ready", "");
   lastFrame = performance.now();
   tickWindow = lastFrame;
@@ -1108,8 +1116,12 @@ function paintHud() {
   if (!s.showHud) return;
   const fps = renderer && renderer.getFps ? renderer.getFps() : 0;
   const d = sim.getDiagnostics ? sim.getDiagnostics() : {};
-  const engineTag = ENGINE === "tpt" ? "TPT" : "PROD";
-  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  ${renderer?.backend || ""}  ${engineTag}`;
+  // Tag reflects the ACTUAL adapter, never the requested URL alone.
+  const activeEngine = (sim && sim.engine) || "none";
+  const engineTag =
+    activeEngine === "tpt" ? "TPT" : activeEngine === "prod" ? "PROD" : "?";
+  const mismatch = activeEngine !== ENGINE ? " MISMATCH" : "";
+  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  ${renderer?.backend || ""}  ${engineTag}${mismatch}`;
   $("hud-parts").textContent = `${(d.particles || 0).toLocaleString()} pts  ${VIEWS[s.view] || ""}  ${sim.simStatus ? sim.simStatus() : ""}  grid ${s.grid ? s.gridSize : 0}`;
   if (!hover) { $("hud-cell").textContent = "—"; return; }
   const m = matApi.findMaterial(sim.getCellMaterial(hover.x, hover.y));

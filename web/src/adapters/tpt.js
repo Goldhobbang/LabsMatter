@@ -79,6 +79,16 @@ export class TptAdapter {
 
   isReady() { return this.ready; }
 
+  /** Stable identity for diagnostics: which Rust/WASM module is live. */
+  wasmIdentity() {
+    if (!this.mod) return "none";
+    // TPT-only exports prove this is labsmatter-wasm, not realmatter-wasm.
+    if (typeof this.mod.spawn_stickman === "function" && typeof this.mod.get_cell_info === "function") {
+      return "labsmatter-wasm";
+    }
+    return "unknown";
+  }
+
   step(dt = 1 / 60) {
     if (!this.mod || typeof this.mod.step !== "function") return;
     const t0 = performance.now();

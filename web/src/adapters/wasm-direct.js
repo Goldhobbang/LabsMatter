@@ -10,7 +10,11 @@ export class WasmDirectAdapter {
     this.ready = false;
     this.width = 256;
     this.height = 256;
+    this.engine = "prod";
   }
+
+  /** Stable identity for diagnostics: which Rust/WASM module is live. */
+  wasmIdentity() { return "realmatter-wasm"; }
   async init(cfg = {}) {
     this.width = cfg.width || 256;
     this.height = cfg.height || 256;
