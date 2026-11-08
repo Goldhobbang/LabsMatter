@@ -279,7 +279,8 @@ export function get_deco(x, y) {
 }
 
 /**
- * Head particle index for an entity (0 = P1, 1 = P2, >=2 = fighter slot + 2).
+ * Head particle index for an entity.
+ * `which`: 0 = player 1, 1 = player 2, `2 + slot` = fighter `slot`.
  * Returns -1 when the entity does not exist.
  * @param {number} which
  * @returns {number}
@@ -549,6 +550,20 @@ export function set_heat_sim(on) {
  */
 export function set_newtonian(on) {
     wasm.set_newtonian(on);
+}
+
+/**
+ * Test/QA helper: set the velocity of the particle at `(x, y)`.
+ * Returns false when the pixel has no particle.
+ * @param {number} x
+ * @param {number} y
+ * @param {number} vx
+ * @param {number} vy
+ * @returns {boolean}
+ */
+export function set_particle_velocity(x, y, vx, vy) {
+    const ret = wasm.set_particle_velocity(x, y, vx, vy);
+    return ret !== 0;
 }
 
 /**
