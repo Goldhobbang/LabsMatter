@@ -12,8 +12,11 @@ use crate::air::{
 };
 use crate::element::element;
 use crate::elements_generated::{props, PT_NUM};
+use crate::entity::PlayerState;
 use crate::particle::Particle;
+use crate::portal::PortalStore;
 use crate::rng::Rng;
+use crate::wireless::WirelessStore;
 
 pub const CELL: usize = 4;
 pub const ISTP: f32 = CELL as f32 / 2.0;
@@ -161,6 +164,20 @@ pub struct Sim {
     pub colour: Vec<u32>,
     /// Kill reason counters (diagnostics).
     pub kill_stats: [u32; 8],
+
+    // --- shared-world state owned by the world layer (Agent 1) -----------
+    /// Persistent portal payloads (`Simulation::portalp`).
+    pub portal: PortalStore,
+    /// Persistent wireless channel state (`Simulation::wireless`).
+    pub wireless: WirelessStore,
+    /// Player 1 stickman state (`Simulation::player`).
+    pub player: PlayerState,
+    /// Player 2 stickman state (`Simulation::player2`).
+    pub player2: PlayerState,
+    /// Fighter registry (`Simulation::fighters[]`).
+    pub fighters: Vec<PlayerState>,
+    /// Live fighter count (`Simulation::fighcount`).
+    pub figh_count: i32,
 }
 
 impl Sim {
@@ -205,6 +222,12 @@ impl Sim {
             grav_mask: vec![u32::MAX; n],
             colour: vec![0; width * height],
             kill_stats: [0; 8],
+            portal: PortalStore::new(),
+            wireless: WirelessStore::new(),
+            player: PlayerState::default(),
+            player2: PlayerState::default(),
+            fighters: Vec::new(),
+            figh_count: 0,
         };
         sim.init_can_move();
         sim.clear_air();

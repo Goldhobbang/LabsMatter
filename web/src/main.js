@@ -49,12 +49,28 @@ async function boot() {
     return;
   }
   try {
-    const wd = new WasmDirectAdapter();
-    await wd.init();
-    sim = wd;
-    sim.setViewMode(getState().view || 0);
+    if (ENGINE === "tpt") {
+      matApi = TptMat;
+      const wd = new TptAdapter();
+      await wd.init();
+      sim = wd;
+      // Switch palette state into the TPT id space before the rail/palette
+      // render (PT element ids differ from the legacy palette ids).
+      setState({
+        category: TptMat.DEFAULT_CATEGORY,
+        materialId: TptMat.DEFAULT_MATERIAL_ID,
+        secondaryId: 0,
+        view: getState().view || 0,
+      });
+      sim.setViewMode(getState().view || 0);
+    } else {
+      const wd = new WasmDirectAdapter();
+      await wd.init();
+      sim = wd;
+      sim.setViewMode(getState().view || 0);
+    }
   } catch (e) {
-    setAppState("error", "WASM failed: " + (e?.message || e));
+    setAppState("error", (ENGINE === "tpt" ? "TPT runtime failed: " : "WASM failed: ") + (e?.message || e));
     return;
   }
   const resizeViewport = () => {
