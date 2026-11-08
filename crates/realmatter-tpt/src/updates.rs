@@ -641,6 +641,37 @@ fn fuel_update(_sim: &mut Sim, _i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -
 // SPRK: electrical conduction
 // ---------------------------------------------------------------------------
 
+/// Reference `Simulation::FloodINST`: spark every connected `INST` cell.
+/// We use a 4-connected flood (the reference scanline adds special handling for
+/// 1-px wire crossings; the observable result — the whole wire sparks — matches).
+fn flood_inst(sim: &mut Sim, sx: i32, sy: i32) {
+    let mut stack = vec![(sx, sy)];
+    let mut seen = std::collections::HashSet::new();
+    while let Some((x, y)) = stack.pop() {
+        if !sim.in_bounds(x, y) || !seen.insert((x, y)) {
+            continue;
+        }
+        let r = sim.pmap_at(x, y);
+        if r == 0 {
+            continue;
+        }
+        let id = pmap_id(r) as usize;
+        let rt = pmap_type(r);
+        let sparkable = rt == pt::INST && sim.parts[id].life == 0;
+        let already = rt == pt::SPRK && sim.parts[id].ctype == pt::INST as i32;
+        if !sparkable && !already {
+            continue;
+        }
+        if sparkable && sim.part_change_type(id, x, y, pt::SPRK as i16) {
+            sim.parts[id].life = 4;
+            sim.parts[id].ctype = pt::INST as i32;
+        }
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            stack.push((x + dx, y + dy));
+        }
+    }
+}
+
 fn sprk_update(sim: &mut Sim, i: usize, x: i32, y: i32, surround_space: i32, nt: i32) -> i32 {
     // Reference `SPRK::update` calls `Element_FIRE_update` every tick.
     fire_update(sim, i, x, y, surround_space, nt);
@@ -866,6 +897,12 @@ fn sprk_update(sim: &mut Sim, i: usize, x: i32, y: i32, surround_space: i32, nt:
             }
         };
         if !allow {
+            continue;
+        }
+        if receiver == pt::INST {
+            // Reference `Simulation::FloodINST`: spark the whole instant-wire
+            // network, not just the adjacent cell.
+            flood_inst(sim, nx, ny);
             continue;
         }
         if (receiver == pt::WATR || receiver == pt::SLTW || receiver == pt::RSST)
@@ -8533,6 +8570,71 @@ fn cray_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 // Reference `PSTN.cpp`: temperature sets how many cells the arm moves per
 // frame, `tmp3` bit flags control obstacle/limit behaviour, and a leading
 // `FRME` row is displaced with the same stack operation.
+/// Discover the connected `FRME` component (4-connected) containing `(sx, sy)`.
+fn frme_component(sim: &Sim, sx: i32, sy: i32) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![(sx, sy)];
+    while let Some((x, y)) = stack.pop() {
+        if !sim.in_bounds(x, y) || !seen.insert((x, y)) {
+            continue;
+        }
+        let r = sim.pmap_at(x, y);
+        if r == 0 || pmap_type(r) != pt::FRME {
+            continue;
+        }
+        out.push((x, y));
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            stack.push((x + dx, y + dy));
+        }
+    }
+    out
+}
+
+/// Rigidly displace an entire connected `FRME` component by `amount` cells in
+/// `(dx, dy)`. Validates every destination first (all-or-nothing), then moves
+/// cells front-first through the shared `move_stack` so no cell is overwritten.
+/// Returns true when the component moved.
+fn push_frme_component(
+    sim: &mut Sim,
+    sx: i32,
+    sy: i32,
+    dx: i32,
+    dy: i32,
+    amount: i32,
+) -> bool {
+    if amount <= 0 {
+        return false;
+    }
+    let comp = frme_component(sim, sx, sy);
+    if comp.is_empty() {
+        return false;
+    }
+    let set: std::collections::HashSet<(i32, i32)> = comp.iter().copied().collect();
+    // Validate every destination.
+    for &(x, y) in &comp {
+        let tx = x + dx * amount;
+        let ty = y + dy * amount;
+        if !sim.in_bounds(tx, ty) {
+            return false;
+        }
+        if sim.wall_at(tx, ty) != 0 {
+            return false;
+        }
+        let r = sim.pmap_at(tx, ty);
+        if r != 0 && !(pmap_type(r) == pt::FRME && set.contains(&(tx, ty))) {
+            return false;
+        }
+    }
+    // Move front-first (largest projection along the direction).
+    let mut order = comp;
+    order.sort_by_key(|&(x, y)| -(x * dx + y * dy));
+    for &(x, y) in &order {
+        sim.move_stack(x, y, dx, dy, 2, amount);
+    }
+    true
+}
+
 fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
     if sim.parts[i].life != 0 {
         return 0;

@@ -194,6 +194,133 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
             out.g = ((hue + 2.094).sin().mul_add(127.0, 128.0) as i32).clamp(0, 255) as u8;
             out.b = ((hue + 4.188).sin().mul_add(127.0, 128.0) as i32).clamp(0, 255) as u8;
         }
+        // PIPE / PPIP: emulate the stored particle's colour, otherwise show the
+        // reference colour state (red/green/blue) or the base pipe colour.
+        pt::PIPE | pt::PPIP => {
+            use crate::elements_generated::PT_NUM;
+            let ct = p.ctype;
+            if ct > 0 && (ct as usize) < PT_NUM && element(ct as u16).enabled {
+                let (r, g, b) = rgb(element(ct as u16).colour);
+                out.r = r;
+                out.g = g;
+                out.b = b;
+                out.mode = pmode::FLAT;
+            } else {
+                match p.tmp & 0x000C_0000 {
+                    0x0004_0000 => {
+                        out.r = 50;
+                        out.g = 1;
+                        out.b = 1;
+                    }
+                    0x0008_0000 => {
+                        out.r = 1;
+                        out.g = 50;
+                        out.b = 1;
+                    }
+                    0x000C_0000 => {
+                        out.r = 1;
+                        out.g = 1;
+                        out.b = 50;
+                    }
+                    _ => {
+                        out.r = 68;
+                        out.g = 68;
+                        out.b = 68;
+                    }
+                }
+                if t == pt::PPIP {
+                    out.r = out.r.saturating_add(20);
+                    out.b = out.b.saturating_add(34);
+                }
+                if p.tmp & 0x0002_0000 != 0 {
+                    out.a = 128; // initializing
+                }
+            }
+            if t == pt::PPIP && p.tmp & 0x0200_0000 != 0 {
+                out.mode = pmode::FLAT | pmode::BLEND;
+                out.a = 150; // paused
+            }
+        }
+        // LCRY: brightness tracks the charge level (reference `tmp2`).
+        pt::LCRY => {
+            let q = p.tmp2.clamp(0, 10) as u8;
+            let v = 0x50u16.saturating_add((q as u16) * 10) as u8;
+            out.r = v;
+            out.g = v;
+            out.b = v;
+        }
+        // DEUT: life tints toward blue and glows at high compression.
+        pt::DEUT => {
+            let l = p.life.clamp(0, 255) as u8;
+            out.r = out.r.saturating_add(l);
+            out.g = out.g.saturating_add(l / 2);
+            out.b = out.b.saturating_add(l);
+            if p.life >= 240 {
+                out.mode = pmode::FLAT | pmode::GLOW | firemode::ADD;
+                out.fr = 255;
+                out.fg = 255;
+                out.fb = 255;
+                out.fa = 60;
+            }
+        }
+        // BIZR: wavelength bitmask decoded to RGB (reference graphics).
+        pt::BIZR | pt::BIZRG | pt::BIZRS => {
+            let wl = p.ctype & 0x3FFF_FFFF;
+            if wl != 0 {
+                let (mut r, mut g, mut b) = (0i32, 0i32, 0i32);
+                for x in 0..12 {
+                    r += (wl >> (x + 18)) & 1;
+                    b += (wl >> x) & 1;
+                }
+                for x in 0..12 {
+                    g += (wl >> (x + 9)) & 1;
+                }
+                let scale = 624 / (r + g + b + 1);
+                out.r = (r * scale).clamp(0, 255) as u8;
+                out.g = (g * scale).clamp(0, 255) as u8;
+                out.b = (b * scale).clamp(0, 255) as u8;
+            }
+        }
+        // VIBR/BVBR: energy gradient (reference graphics).
+        pt::VIBR | pt::BVBR => {
+            let gradient = (p.tmp / 10).clamp(0, 100) as u8;
+            out.r = out.r.saturating_add(gradient.saturating_mul(2));
+            out.g = out.g.saturating_add(gradient.saturating_mul(2).min(175));
+            out.b = out.b.saturating_add(gradient.saturating_mul(2));
+            if p.life != 0 || p.tmp >= 1000 {
+                out.mode = pmode::FLAT | pmode::GLOW | firemode::ADD;
+                out.fr = 255;
+                out.fg = 160;
+                out.fb = 255;
+                out.fa = 90;
+            }
+        }
+        // SLCN: sparkle colour table (reference `SLCN_COLOUR[16]`).
+        pt::SLCN => {
+            const SLCN: [(u8, u8, u8); 16] = [
+                (0x5A, 0x66, 0x79),
+                (0x68, 0x78, 0xA1),
+                (0xAB, 0xBF, 0xDD),
+                (0x83, 0x84, 0x90),
+                (0xBC, 0xCD, 0xDF),
+                (0x82, 0xA0, 0xD2),
+                (0x5B, 0x66, 0x80),
+                (0x23, 0x2C, 0x3B),
+                (0x48, 0x50, 0x67),
+                (0x8B, 0x9A, 0xB6),
+                (0xAD, 0xB1, 0xC1),
+                (0xC3, 0xC6, 0xD1),
+                (0x85, 0x94, 0xAD),
+                (0x26, 0x2F, 0x47),
+                (0xA9, 0xAE, 0xBC),
+                (0xC2, 0xE1, 0xF7),
+            ];
+            let idx = ((p.tmp >> 12) & 15) as usize;
+            let (r, g, b) = SLCN[idx];
+            out.r = r;
+            out.g = g;
+            out.b = b;
+        }
         _ => {}
     }
 }
