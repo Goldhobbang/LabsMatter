@@ -6,20 +6,17 @@ Dispatch tables: `crates/realmatter-tpt/src/updates.rs`.
 |---|---:|
 | Live reference elements | 195 |
 | Elements with a reference `Update` callback | 132 |
-| Dedicated Rust handlers in `update_fn` | 123 |
-| Blocked (missing subsystem) | 9 |
+| Dedicated Rust handlers in `update_fn` | 126 |
+| Blocked (missing subsystem) | 6 |
 | Internal-only (no Update) | 63 |
 
 ## Blocked entries
 
 | abbr | reason |
 |---|---|
-| STKM | requires player controller (`Simulation::player`) |
-| PIPE | full flow requires `portalp` payload channel storage |
-| PRTI | uses a thread-local portal channel (not part of the saved world) |
-| PRTO | uses a thread-local portal channel (not part of the saved world) |
-| WIFI | wireless channel state lives outside `Sim`; transient only |
-| STKM2 | requires player controller (`Simulation::player2`) |
-| SOAP | bubble/link physics simplified without particle-index links |
-| FIGH | requires fighter registry (`Simulation::fighters[]`) |
-| PSTN | simplified piston; full `MoveStack`/`FRME` interaction pending |
+| STKM | shared locomotion implemented; reference legs/element-power reactions pending Agent 3 |
+| PIPE | full payload flow across pipe segments pending Agent 3 |
+| STKM2 | shared locomotion implemented; reference legs/element-power reactions pending Agent 3 |
+| SOAP | links implemented; full bubble pop/detach semantics pending Agent 3 |
+| FIGH | shared locomotion implemented; fighter combat/AI pending Agent 3 |
+| PSTN | uses shared MoveStack; FRME recursion and tmp3 flags pending Agent 3 |

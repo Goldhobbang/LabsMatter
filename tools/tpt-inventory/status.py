@@ -25,18 +25,17 @@ DATA = os.path.join(ROOT, "docs", "tpt-parity", "data", "tpt-reference.json")
 UPDATES = os.path.join(ROOT, "crates", "realmatter-tpt", "src", "updates.rs")
 OUT = os.path.join(ROOT, "docs", "tpt-parity", "inventory")
 
-# Elements whose handlers are limited by missing engine subsystems.
+# Elements whose handlers are still limited by missing engine subsystems.
+# As of the K3 integration, portal/wireless/entity/piston/soap storage is part
+# of `Sim`; the entries below are the remaining partial implementations.
 BLOCKED = {
-    "STKM": "requires player controller (`Simulation::player`)",
-    "STKM2": "requires player controller (`Simulation::player2`)",
-    "STK2": "requires player controller (`Simulation::player2`)",
-    "FIGH": "requires fighter registry (`Simulation::fighters[]`)",
-    "WIFI": "wireless channel state lives outside `Sim`; transient only",
-    "PIPE": "full flow requires `portalp` payload channel storage",
-    "PRTI": "uses a thread-local portal channel (not part of the saved world)",
-    "PRTO": "uses a thread-local portal channel (not part of the saved world)",
-    "PSTN": "simplified piston; full `MoveStack`/`FRME` interaction pending",
-    "SOAP": "bubble/link physics simplified without particle-index links",
+    "STKM": "shared locomotion implemented; reference legs/element-power reactions pending Agent 3",
+    "STKM2": "shared locomotion implemented; reference legs/element-power reactions pending Agent 3",
+    "STK2": "shared locomotion implemented; reference legs/element-power reactions pending Agent 3",
+    "FIGH": "shared locomotion implemented; fighter combat/AI pending Agent 3",
+    "PIPE": "full payload flow across pipe segments pending Agent 3",
+    "PSTN": "uses shared MoveStack; FRME recursion and tmp3 flags pending Agent 3",
+    "SOAP": "links implemented; full bubble pop/detach semantics pending Agent 3",
 }
 
 STATE_FLAGS = {

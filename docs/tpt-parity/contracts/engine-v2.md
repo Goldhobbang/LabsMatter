@@ -257,3 +257,155 @@ Frontend adapter (`tpt.js`) maps frontend material ids ↔ PT ids via
 - No silent reinterpretation of material ids: frontend palette ids and PT ids
   are distinct spaces connected only by the adapter's explicit table.
 - A1 owns integration; A2/A3 implement against this contract.
+
+---
+
+## 12. Addendum 2.1 — Shared transport, portal, wireless and entity state
+
+**Status:** published by A1 for A3 (element handlers) and A2 (physics).
+**Implemented in:** `realmatter-tpt::{portal, wireless, entity, transport}`.
+
+The reference stores these subsystems inside `Simulation`. They are now part
+of `realmatter_tpt::sim::Sim` and are serialised in save format `LMT2` v3.
+
+### 12.1 Ownership
+
+| Subsystem | Storage | Owner of storage | Owner of element behaviour |
+|---|---|---|---|
+| Portal payloads | `Sim.portal: PortalStore` | A1 | A3 (`PRTI`/`PRTO`/`PIPE`) |
+| Wireless channels | `Sim.wireless: WirelessStore` | A1 | A3 (`WIFI`) |
+| Stickman/fighters | `Sim.player`, `Sim.player2`, `Sim.fighters` | A1 | A3 (`STKM`/`STKM2`/`FIGH`) |
+| Piston stacks | methods on `Sim` | A1 | A3 (`PSTN`) |
+| Soap links | `Particle.tmp`/`tmp2` + `Sim` helpers | A1 (helpers) | A3 (`SOAP`) |
+
+A3 must not allocate its own authoritative buffers (thread-locals are
+forbidden). All state that affects gameplay after save/load must live on `Sim`.
+
+### 12.2 Portal API (`Sim.portal`)
+
+```rust
+pub const PORTAL_CHANNELS: usize = 101;   // int(MAX_TEMP-73)/100 + 2
+pub const PORTAL_DIRECTIONS: usize = 8;
+pub const PORTAL_SLOTS: usize = 80;
+
+impl PortalStore {
+    /// First free slot for a direction; false when the direction is full.
+    pub fn store(&mut self, channel: usize, direction: usize, p: PortalPayload) -> bool;
+    /// First stored payload in a direction (does not remove it).
+    pub fn peek(&self, channel: usize, direction: usize) -> Option<PortalPayload>;
+    /// Remove and return the first stored payload in a direction.
+    pub fn take(&mut self, channel: usize, direction: usize) -> Option<PortalPayload>;
+    pub fn iter_nonempty(&self) -> impl Iterator<Item = (usize, usize, usize, PortalPayload)>;
+    pub fn restore(&mut self, channel: usize, direction: usize, slot: usize, p: PortalPayload);
+    pub fn len(&self) -> usize;
+}
+
+impl PortalPayload {
+    pub fn from_particle(p: &Particle) -> Self;
+    pub fn apply_to(&self, p: &mut Particle, keep_velocity_if_zero: bool);
+}
+```
+
+`PortalPayload` captures every `Particle` field that affects the re-emitted
+particle. `apply_to(..., true)` preserves the destination velocity when the
+stored velocity is zero (reference PRTO behaviour for PIPE-sourced particles).
+
+### 12.3 Wireless API (`Sim.wireless`)
+
+```rust
+impl WirelessStore {
+    pub fn is_active(&self, channel: usize) -> bool;      // wireless[ch][0]
+    pub fn activate_next(&mut self, channel: usize);       // wireless[ch][1] = 1
+    pub fn note_spark(&mut self, channel: usize) -> bool;  // returns "new event"
+    pub fn advance(&mut self);                              // AfterSim promotion
+    pub fn active_count(&self) -> usize;
+}
+```
+
+`Sim::after_sim()` calls `wireless.advance()` exactly once per tick. A3 only
+calls `is_active` / `activate_next` from `WIFI`.
+
+### 12.4 Entity API (`Sim` + `entity`)
+
+```rust
+pub enum Entity { Player1, Player2, Fighter(usize) }
+pub const MAX_FIGHTERS: usize = 100;
+pub struct PlayerState { comm, pcomm, elem, legs, accs, spwn, frames, rocket_boots, fan, spawn_id }
+
+impl Sim {
+    pub fn spawn_entity(&mut self, which: Entity, x: i32, y: i32) -> Option<usize>;
+    pub fn despawn_entity(&mut self, which: Entity);
+    pub fn set_entity_input(&mut self, which: Entity, comm: u8);
+    pub fn player_state(&self, which: Entity) -> Option<&PlayerState>;
+    pub fn player_state_mut(&mut self, which: Entity) -> Option<&mut PlayerState>;
+    pub fn entity_head(&self, which: Entity) -> Option<usize>;
+    pub fn step_entity(&mut self, which: Entity) -> StepReport;
+    pub fn step_entity_at(&mut self, which: Entity, head: usize) -> StepReport;
+    pub fn spawn_fighter(&mut self, x: i32, y: i32) -> Option<(usize, usize)>;
+    pub fn despawn_fighter(&mut self, slot: usize);
+}
+```
+
+Input bits: `0x01` left, `0x02` right, `0x04` jump, `0x08` spawn element.
+`step_entity_at` performs tile-based locomotion through `can_move`/walls and
+never teleports through solids. A3 adds reference-specific reactions (legs,
+element power, portal interaction) in `STKM`/`STKM2`/`FIGH`.
+
+**Index stability:** `Sim::recalc()` compacts `parts` once per tick, so a head
+index obtained in one tick is not valid in the next. Re-resolve with
+`entity_head` (or use the update callback's `i` within a tick).
+
+WASM exports: `spawn_stickman(which,x,y)`, `despawn_stickman(which)`,
+`set_stickman_input(which,comm)`, `set_stickman_element(which,t)`,
+`stickman_alive(which)`, `spawn_fighter(x,y)`, `despawn_fighter(slot)`,
+`fighter_count()`, `set_fighter_input(slot,comm)`.
+
+### 12.5 Piston transport API (`Sim`)
+
+```rust
+impl Sim {
+    pub fn can_move_stack(&self, x, y, dx, dy, max_size, amount) -> StackProbe;
+    pub fn move_stack(&mut self, x, y, dx, dy, max_size, amount) -> i32;
+    pub fn extend_piston_arm(&mut self, x, y, dx, dy, count, life) -> i32;
+    pub fn retract_piston_arm(&mut self, x, y, dx, dy, count) -> i32;
+}
+```
+
+`move_stack` never deletes obstructing particles: it returns `0` and leaves the
+world unchanged when there is no room. A3 drives these from `PSTN`.
+
+### 12.6 Soap link API (`Sim`)
+
+```rust
+impl Sim {
+    pub fn soap_attach(&mut self, i1: usize, i2: usize);
+    pub fn soap_detach(&mut self, i: usize);
+    pub fn soap_link_step(&mut self, i: usize, j: usize, stiffness: f32);
+    pub fn soap_constraint(dx: f32, dy: f32) -> f32; // 9/(d²+9)-0.5
+}
+```
+
+Links are stored in `Particle.tmp` (front mate) / `tmp2` (back mate) with
+`ctype` bits `0x02`/`0x04`, matching the reference. They serialise with the
+particle list. A2 supplies any bulk fluid coupling; A3 drives attach/detach and
+the per-frame constraint solve from `SOAP`.
+
+### 12.7 Persistence (`LMT2` v3)
+
+Format version 3 appends, after `emap`:
+
+```
+u32 portal_count, then per payload:
+  u16 channel, u8 direction, u8 slot,
+  u16 t, i32 life, i32 ctype, f32 x/y/vx/vy/temp,
+  i32 tmp/tmp2/tmp3/tmp4, u32 flags, u32 dcolour
+u32 active_wireless_count, then u16 channel * n
+PlayerState player
+PlayerState player2
+u32 fighter_count, then PlayerState * n
+i32 figh_count
+```
+
+Format 2 blobs remain readable (the new sections default to empty). The loader
+re-installs the edge-mode wall ring after restore.
+

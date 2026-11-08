@@ -137,3 +137,68 @@ Palette ids: PT element ids are used directly; walls are addressed as
 `WALL_ID_BASE + wallId` (1000 + wall id) and routed to `paint_wall`.
 `window.labsmatter` exposes `{ engine, sim, materials, renderer }` for
 diagnostics only.
+
+---
+
+## K3 update
+
+### Boundary semantics (`Sim::apply_edge_mode`)
+Mirrors `Simulation::SetEdgeMode`:
+- `Solid` installs `WL_WALL` (8) on the outer CELL ring; particles are blocked
+  before the off-screen kill test, so no unintended loss.
+- `Void` leaves the ring empty; particles leaving the drawable area are removed.
+- `Loop` leaves the ring empty; `do_move`/`plan_move` wrap via `remainder_p`.
+Called from `set_edge_mode`, `cycle_edge`, and after v2/v3 load.
+
+### Stability
+`Sim::sanitize()` runs at the start of `BeforeSim` and clamps non-finite
+positions/velocities/temperatures and air fields. It is a no-op for healthy
+state.
+
+### Persistence
+- Native format is now **v3** (`LMT2`): adds portal payload, wireless channels,
+  and player/fighter entity state on top of v2 (particles, walls, fields,
+  settings, RNG). v2 blobs still load.
+- Legacy **v1** (`RMT\0`, optional `ZLIB`) imports through an explicit
+  id → abbreviation → PT-id mapping. Mismatched magic is rejected without
+  touching the world; the reason is returned by `last_load_report()`.
+
+### Sim tools
+`labsmatter-wasm::apply_tool` mirrors `realmatter-wasm` (heat/cool/pressure/
+vacuum/PGRV/NGRV/mix/cyclone/wind), using `Sim::add_pressure` /
+`add_air_velocity` and particle-temperature edits. No physics solver lives in
+the adapter.
+
+### Agent 3 integration record
+The integrated dispatcher is `crates/realmatter-tpt/src/updates.rs`
+(blob `c6a528c37c1b36d326702554a344e87342372c83`, 7817 lines at commit
+`952cc42`). This is the version with 132/132 reference `Update` callbacks.
+The `agent3/chemistry-elements` worktree at `779f6f6` holds an older 2900-line
+baseline plus an uncommitted `sim.rs` experiment (`flood_tmp`, IGNT life) whose
+functionality already exists in the integrated tree (local `flood_tmp` in
+`updates.rs`, `IGNT` default added to `apply_defaults`). No overwrite occurred.
+
+### Advanced infrastructure (entity/portal/wireless/piston/soap)
+
+`entity.rs`, `portal.rs`, `transport.rs`, and `wireless.rs` are wired into
+`Sim` and covered by save format v3. Verified in the built WASM bundle:
+
+- **Boundary modes** (128×128, 200-cell sand block, 260 steps):
+  Solid 200→200 (`wall(0,0)=8`), Void 200→0, Loop 200→200.
+- **Portal persistence**: PRTI absorbs a SAND payload (portal_count=1), the world
+  is saved and re-loaded into a fresh 32×32 world, portal_count is still 1 and
+  `last_load_report()` reports success.
+- **Entity persistence**: a spawned stickman walks right, survives save/load.
+- **Piston**: a sparked PSTN extends its arm (1→3 PSTN particles).
+- **Stickman**: spawn + `set_stickman_input(RIGHT)` moves the head 33→42 px over
+  10 ticks without teleporting through a brick floor.
+
+The earlier `infra_check` panic was a harness bug: the example kept a raw
+particle index across `Sim::recalc()`, which compacts the particle list once per
+tick. The engine is index-correct within a tick; external callers must re-resolve
+with `Sim::entity_head`. The temporary harness was removed.
+
+Residual element-specific work (Agent 3): full `PIPE` payload flow, `PSTN`
+`FRME` recursion and `tmp3` flags, `SOAP` pop/detach edge cases, and the
+reference `STKM`/`STKM2`/`FIGH` legs and element-power reactions.
+

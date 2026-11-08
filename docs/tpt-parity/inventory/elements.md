@@ -9,9 +9,9 @@ Enabled: 195, menu-visible: 175
 
 | Status | Count |
 |---|---:|
-| Implemented | 123 |
+| Implemented | 126 |
 | Internal | 63 |
-| Blocked | 9 |
+| Blocked | 6 |
 | Disabled | 1 |
 
 `Implemented` means a dedicated Rust handler exists in
@@ -76,7 +76,7 @@ limited by a missing engine subsystem; see `implementation-status.md`.
 | 52 | DEFAULT_PT_NBLE | NBLE | 6 | GAS,CONDUCTS,LIFE_DEC | 1 | 1 | Y |  |  | Implemented |
 | 53 | DEFAULT_PT_BTRY | BTRY | 1 | SOLID | 1 | 1 | Y |  |  | Implemented |
 | 54 | DEFAULT_PT_LCRY | LCRY | 2 | SOLID | 1 | 1 | Y | Y |  | Implemented |
-| 55 | DEFAULT_PT_STKM | STKM | 11 | NOCTYPEDRAW | 1 | 1 | Y | Y | Y | Blocked (requires player controller (`Simulation::player`)) |
+| 55 | DEFAULT_PT_STKM | STKM | 11 | NOCTYPEDRAW | 1 | 1 | Y | Y | Y | Blocked (shared locomotion implemented; reference legs/element-power reactions pending Agent 3) |
 | 56 | DEFAULT_PT_SWCH | SWCH | 1 | SOLID | 1 | 1 | Y | Y |  | Implemented |
 | 57 | DEFAULT_PT_SMKE | SMKE | 6 | GAS,LIFE_DEC,LIFE_KILL_DEC | 1 | 1 |  | Y |  | Internal (no reference Update callback; generic movement/transition) |
 | 58 | DEFAULT_PT_DESL | DESL | 7 | LIQUID | 1 | 1 |  |  |  | Internal (no reference Update callback; generic movement/transition) |
@@ -120,7 +120,7 @@ limited by a missing engine subsystem; see `implementation-status.md`.
 | 96 | DEFAULT_PT_WARP | WARP | 10 | GAS,LIFE_DEC,LIFE_KILL | 1 | 1 | Y | Y | Y | Implemented |
 | 97 | DEFAULT_PT_PUMP | PUMP | 2 | SOLID | 1 | 1 | Y | Y |  | Implemented |
 | 98 | DEFAULT_PT_FWRK | FWRK | 5 | PART,LIFE_DEC | 1 | 1 | Y |  |  | Implemented |
-| 99 | DEFAULT_PT_PIPE | PIPE | 4 | SOLID,LIFE_DEC | 1 | 1 | Y | Y |  | Blocked (full flow requires `portalp` payload channel storage) |
+| 99 | DEFAULT_PT_PIPE | PIPE | 4 | SOLID,LIFE_DEC | 1 | 1 | Y | Y |  | Blocked (full payload flow across pipe segments pending Agent 3) |
 | 100 | DEFAULT_PT_FRZZ | FRZZ | 8 | PART | 1 | 1 | Y |  |  | Implemented |
 | 101 | DEFAULT_PT_FRZW | FRZW | 7 | LIQUID,LIFE_DEC | 1 | 0 | Y |  |  | Implemented |
 | 102 | DEFAULT_PT_GRAV | GRAV | 8 | PART,LIFE_DEC | 1 | 1 | Y | Y |  | Implemented |
@@ -130,8 +130,8 @@ limited by a missing engine subsystem; see `implementation-status.md`.
 | 106 | DEFAULT_PT_INST | INST | 1 | SOLID,LIFE_DEC | 1 | 1 |  |  |  | Internal (no reference Update callback; generic movement/transition) |
 | 107 | DEFAULT_PT_ISOZ | ISOZ | 10 | LIQUID,PHOTPASS,NEUTPENETRATE | 1 | 1 | Y |  |  | Implemented |
 | 108 | DEFAULT_PT_ISZS | ISZS | 10 | SOLID,PHOTPASS | 1 | 1 | Y |  |  | Implemented |
-| 109 | DEFAULT_PT_PRTI | PRTI | 11 | SOLID | 1 | 1 | Y | Y |  | Blocked (uses a thread-local portal channel (not part of the saved world)) |
-| 110 | DEFAULT_PT_PRTO | PRTO | 11 | SOLID | 1 | 1 | Y | Y |  | Blocked (uses a thread-local portal channel (not part of the saved world)) |
+| 109 | DEFAULT_PT_PRTI | PRTI | 11 | SOLID | 1 | 1 | Y | Y |  | Implemented |
+| 110 | DEFAULT_PT_PRTO | PRTO | 11 | SOLID | 1 | 1 | Y | Y |  | Implemented |
 | 111 | DEFAULT_PT_PSTE | PSTE | 7 | LIQUID | 1 | 1 |  |  |  | Internal (no reference Update callback; generic movement/transition) |
 | 112 | DEFAULT_PT_PSTS | PSTS | 9 | SOLID | 1 | 0 |  |  |  | Internal (no reference Update callback; generic movement/transition) |
 | 113 | DEFAULT_PT_ANAR | ANAR | 8 | PART | 1 | 1 | Y |  |  | Implemented |
@@ -145,11 +145,11 @@ limited by a missing engine subsystem; see `implementation-status.md`.
 | 121 | DEFAULT_PT_SHLD3 | SHD3 | 9 | SOLID,LIFE_DEC | 1 | 0 | Y |  |  | Implemented |
 | 122 | DEFAULT_PT_SHLD4 | SHD4 | 9 | SOLID,LIFE_DEC | 1 | 0 | Y |  |  | Implemented |
 | 123 | DEFAULT_PT_LOLZ | LOLZ | 11 | SOLID | 1 | 0 |  |  |  | Internal (no reference Update callback; generic movement/transition) |
-| 124 | DEFAULT_PT_WIFI | WIFI | 1 | SOLID | 1 | 1 | Y | Y |  | Blocked (wireless channel state lives outside `Sim`; transient only) |
+| 124 | DEFAULT_PT_WIFI | WIFI | 1 | SOLID | 1 | 1 | Y | Y |  | Implemented |
 | 125 | DEFAULT_PT_FILT | FILT | 9 | SOLID,PHOTPASS,LIFE_DEC,NOAMBHEAT | 1 | 1 |  | Y | Y | Internal (no reference Update callback; generic movement/transition) |
 | 126 | DEFAULT_PT_ARAY | ARAY | 1 | SOLID | 1 | 1 | Y |  |  | Implemented |
 | 127 | DEFAULT_PT_BRAY | BRAY | 1 | SOLID,LIFE_DEC,LIFE_KILL | 1 | 0 |  | Y |  | Internal (no reference Update callback; generic movement/transition) |
-| 128 | DEFAULT_PT_STKM2 | STK2 | 11 | NOCTYPEDRAW | 1 | 1 | Y |  | Y | Blocked (requires player controller (`Simulation::player2`)) |
+| 128 | DEFAULT_PT_STKM2 | STK2 | 11 | NOCTYPEDRAW | 1 | 1 | Y |  | Y | Blocked (shared locomotion implemented; reference legs/element-power reactions pending Agent 3) |
 | 129 | DEFAULT_PT_BOMB | BOMB | 5 | PART,SPARKSETTLE | 1 | 1 | Y | Y |  | Implemented |
 | 130 | DEFAULT_PT_C5 | C-5 | 5 | SOLID,PHOTPASS,NEUTPENETRATE,LIFE_DEC | 1 | 1 | Y | Y |  | Implemented |
 | 131 | DEFAULT_PT_SING | SING | 10 | PART,LIFE_DEC | 1 | 1 | Y |  | Y | Implemented |
@@ -169,7 +169,7 @@ limited by a missing engine subsystem; see `implementation-status.md`.
 | 145 | DEFAULT_PT_EXOT | EXOT | 10 | LIQUID,NEUTPASS | 1 | 1 | Y | Y |  | Implemented |
 | 147 | DEFAULT_PT_EMBR | EMBR | 5 | PART,LIFE_DEC,LIFE_KILL,SPARKSETTLE | 1 | 0 | Y | Y |  | Implemented |
 | 148 | DEFAULT_PT_H2 | HYGN | 6 | GAS,PHOTPASS | 1 | 1 | Y |  |  | Implemented |
-| 149 | DEFAULT_PT_SOAP | SOAP | 7 | LIQUID,NEUTPENETRATE,LIFE_DEC | 1 | 1 | Y | Y |  | Blocked (bubble/link physics simplified without particle-index links) |
+| 149 | DEFAULT_PT_SOAP | SOAP | 7 | LIQUID,NEUTPENETRATE,LIFE_DEC | 1 | 1 | Y | Y |  | Blocked (links implemented; full bubble pop/detach semantics pending Agent 3) |
 | 150 | DEFAULT_PT_NBHL | BHOL | 11 | SOLID | 1 | 1 | Y |  |  | Implemented |
 | 151 | DEFAULT_PT_NWHL | WHOL | 11 | SOLID | 1 | 1 | Y |  |  | Implemented |
 | 152 | DEFAULT_PT_MERC | MERC | 7 | LIQUID,CONDUCTS,NEUTABSORB,LIFE_DEC | 1 | 1 | Y |  |  | Implemented |
@@ -178,7 +178,7 @@ limited by a missing engine subsystem; see `implementation-status.md`.
 | 155 | DEFAULT_PT_CLST | CLST | 8 | PART | 1 | 1 | Y | Y | Y | Implemented |
 | 156 | DEFAULT_PT_WIRE | WWLD | 1 | SOLID | 1 | 1 | Y | Y |  | Implemented |
 | 157 | DEFAULT_PT_GBMB | GBMB | 4 | PART,LIFE_DEC,LIFE_KILL_DEC | 1 | 1 | Y | Y |  | Implemented |
-| 158 | DEFAULT_PT_FIGH | FIGH | 11 | NOCTYPEDRAW | 1 | 1 | Y |  |  | Blocked (requires fighter registry (`Simulation::fighters[]`)) |
+| 158 | DEFAULT_PT_FIGH | FIGH | 11 | NOCTYPEDRAW | 1 | 1 | Y |  |  | Blocked (shared locomotion implemented; fighter combat/AI pending Agent 3) |
 | 159 | DEFAULT_PT_FRAY | FRAY | 4 | SOLID | 1 | 1 | Y |  |  | Implemented |
 | 160 | DEFAULT_PT_RPEL | RPEL | 4 | SOLID | 1 | 1 | Y |  |  | Implemented |
 | 161 | DEFAULT_PT_PPIP | PPIP | 2 | SOLID,LIFE_DEC | 1 | 1 |  |  |  | Internal (no reference Update callback; generic movement/transition) |
@@ -188,7 +188,7 @@ limited by a missing engine subsystem; see `implementation-status.md`.
 | 165 | DEFAULT_PT_VIBR | VIBR | 10 | SOLID,LIFE_DEC | 1 | 1 | Y | Y |  | Implemented |
 | 166 | DEFAULT_PT_BVBR | BVBR | 10 | PART,LIFE_DEC | 1 | 1 |  |  |  | Internal (no reference Update callback; generic movement/transition) |
 | 167 | DEFAULT_PT_CRAY | CRAY | 1 | SOLID | 1 | 1 | Y |  |  | Implemented |
-| 168 | DEFAULT_PT_PSTN | PSTN | 4 | SOLID | 1 | 1 | Y | Y |  | Blocked (simplified piston; full `MoveStack`/`FRME` interaction pending) |
+| 168 | DEFAULT_PT_PSTN | PSTN | 4 | SOLID | 1 | 1 | Y | Y |  | Blocked (uses shared MoveStack; FRME recursion and tmp3 flags pending Agent 3) |
 | 169 | DEFAULT_PT_FRME | FRME | 4 | SOLID | 1 | 1 |  | Y |  | Internal (no reference Update callback; generic movement/transition) |
 | 170 | DEFAULT_PT_GOLD | GOLD | 9 | SOLID,CONDUCTS,NEUTPASS,HOT_GLOW,LIFE_DEC | 1 | 1 | Y | Y |  | Implemented |
 | 171 | DEFAULT_PT_TUNG | TUNG | 1 | SOLID,CONDUCTS,LIFE_DEC | 1 | 1 | Y | Y | Y | Implemented |

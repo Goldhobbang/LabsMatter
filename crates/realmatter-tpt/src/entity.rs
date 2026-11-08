@@ -14,7 +14,7 @@
 
 use crate::element::element;
 use crate::elements_generated::{props, pt};
-use crate::sim::{pmap_id, restrict_flt, Sim, CELL, MAX_TEMP, MIN_TEMP};
+use crate::sim::{restrict_flt, Sim, CELL, MAX_TEMP, MIN_TEMP};
 
 /// Reference `MAX_FIGHTERS`.
 pub const MAX_FIGHTERS: usize = 100;
@@ -132,10 +132,6 @@ impl Sim {
             return None;
         }
         let t = Self::player_type(which);
-        let index = match which {
-            Entity::Fighter(i) => i,
-            _ => 0,
-        };
         let head = self.create_part(x, y, t)?;
         self.parts[head].life = 100;
         if let Some(st) = self.player_state_mut(which) {
@@ -146,7 +142,6 @@ impl Sim {
             st.spawn_id = -1;
             st.legs = [0.0; 16];
             st.accs = [0.0; 8];
-            st.elem = if index < 0 { 0 } else { st.elem };
         }
         Some(head)
     }
@@ -174,7 +169,7 @@ impl Sim {
 
     /// True when the head is standing on solid ground (or an object the entity
     /// cannot displace).
-    fn entity_grounded(&self, head: usize, x: i32, y: i32) -> bool {
+    fn entity_grounded(&self, _head: usize, x: i32, y: i32) -> bool {
         let below = self.pmap_at(x, y + 1);
         if below != 0 {
             let bt = crate::sim::pmap_type(below);
