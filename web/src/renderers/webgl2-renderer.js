@@ -45,8 +45,25 @@ export class WebGL2Renderer {
     this.gl = canvas.getContext("webgl2", { alpha: false, antialias: false, preserveDrawingBuffer: false });
     if (!this.gl) throw new Error("no webgl2");
     // context loss handling
-    canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this._lost = true; }, { passive: false });
-    canvas.addEventListener('webglcontextrestored', () => { this._lost = false; try { this._initGL(); this.resize(this.canvas.clientWidth, this.canvas.clientHeight); } catch(_){} }, { passive: true });
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this._lost = true;
+      this._rgbaTex = null;
+      this._blit = null;
+      this._texSize = null;
+      this._upload = null;
+      console.error("WebGL context lost. The WASM simulation was not replaced. Waiting for the context to restore.");
+    }, { passive: false });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this._lost = false;
+      try {
+        this._initGL();
+        this.resize(this.canvas.clientWidth, this.canvas.clientHeight);
+        console.info("WebGL context restored");
+      } catch (err) {
+        console.error("WebGL restore failed. The WASM simulation was not replaced.", err);
+      }
+    }, { passive: true });
     this._initGL();
     this.resize(canvas.clientWidth, canvas.clientHeight);
   }
@@ -105,7 +122,13 @@ export class WebGL2Renderer {
     if (!this._upload || this._upload.length !== n) this._upload = new Uint8Array(n);
     this._upload.set(buf.subarray(0, n));
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._upload);
+    const same = this._texSize && this._texSize.w === gw && this._texSize.h === rows;
+    if (same) {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gw, rows, gl.RGBA, gl.UNSIGNED_BYTE, this._upload);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._upload);
+      this._texSize = { w: gw, h: rows };
+    }
     // Optional additive glow buffer (RGBA8, same dimensions). Uploaded to a
     // second texture and box-blurred in the blit shader for a cheap bloom.
     const glow = opts && opts.glow;

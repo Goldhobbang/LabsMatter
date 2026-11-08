@@ -101,7 +101,12 @@ export class WebGPURenderer {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("No WebGPU adapter");
     this.device = await adapter.requestDevice();
-    this.device.lost.then((info) => { this._lost = true; console.warn("WebGPU device lost:", info?.reason); });
+    this.device.lost.then((info) => {
+      this._lost = true;
+      this.fallbackRequested = true;
+      this.lossReason = "WebGPU device lost: " + (info?.reason || "unknown");
+      console.error(this.lossReason + ". The WASM simulation was not replaced.");
+    });
     this.format = navigator.gpu.getPreferredCanvasFormat();
     const mod = this.device.createShaderModule({ code: WGSL });
     if (typeof mod.getCompilationInfo === "function") {
@@ -211,13 +216,23 @@ export class WebGPURenderer {
     }
     try {
       this._ensureTexture(gw, gh);
-      const bytesPerRow = gw * 4;
-      const n = bytesPerRow * gh;
+      const tight = gw * 4;
+      const bytesPerRow = Math.ceil(tight / 256) * 256;
+      const n = tight * gh;
       if (!this._upload || this._upload.length !== n) this._upload = new Uint8Array(n);
       this._upload.set(buf.subarray(0, n));
+      let src = this._upload;
+      if (bytesPerRow !== tight) {
+        const padded = bytesPerRow * gh;
+        if (!this._padded || this._padded.length !== padded) this._padded = new Uint8Array(padded);
+        for (let y = 0; y < gh; y++) {
+          this._padded.set(this._upload.subarray(y * tight, y * tight + tight), y * bytesPerRow);
+        }
+        src = this._padded;
+      }
       this.device.queue.writeTexture(
         { texture: this.simTex },
-        this._upload,
+        src,
         { bytesPerRow, rowsPerImage: gh },
         { width: gw, height: gh }
       );
@@ -228,9 +243,18 @@ export class WebGPURenderer {
         this._ensureGlow(gw, gh);
         if (!this._glowUpload || this._glowUpload.length !== n) this._glowUpload = new Uint8Array(n);
         this._glowUpload.set(glow.subarray(0, n));
+        let glowSrc = this._glowUpload;
+        if (bytesPerRow !== tight) {
+          const padded = bytesPerRow * gh;
+          if (!this._glowPadded || this._glowPadded.length !== padded) this._glowPadded = new Uint8Array(padded);
+          for (let y = 0; y < gh; y++) {
+            this._glowPadded.set(this._glowUpload.subarray(y * tight, y * tight + tight), y * bytesPerRow);
+          }
+          glowSrc = this._glowPadded;
+        }
         this.device.queue.writeTexture(
           { texture: this.glowTex },
-          this._glowUpload,
+          glowSrc,
           { bytesPerRow, rowsPerImage: gh },
           { width: gw, height: gh }
         );
