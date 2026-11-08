@@ -57,6 +57,42 @@
             <button id="overlay-retry" class="tb" type="button" hidden>Retry</button>
           </div>
         </div>
+        <div id="entity-panel" class="entity-panel" hidden aria-label="Entity controls (experimental TPT runtime)">
+          <div class="entity-title">Entities</div>
+          <div class="entity-row">
+            <button class="tb" type="button" id="btn-spawn-p1" aria-pressed="false" title="Spawn or despawn stickman">Spawn</button>
+            <button class="tb" type="button" id="btn-entity-left" title="Move left (hold)">&#8592;</button>
+            <button class="tb" type="button" id="btn-entity-right" title="Move right (hold)">&#8594;</button>
+            <button class="tb" type="button" id="btn-entity-jump" title="Jump">&#8593;</button>
+          </div>
+          <div class="entity-row">
+            <label class="entity-label" for="stickman-element">Element</label>
+            <select id="stickman-element" title="Element the stickman spawns"></select>
+          </div>
+          <div class="entity-row">
+            <button class="tb" type="button" id="btn-spawn-fighter" title="Spawn a fighter at the viewport centre">Fighter</button>
+            <span id="entity-status" class="entity-status">no entity</span>
+          </div>
+        </div>
+        <div id="tool-panel" class="entity-panel tool-panel" hidden aria-label="Simulation tools (experimental TPT runtime)">
+          <div class="entity-title">Tools</div>
+          <div class="entity-row">
+            <button class="tb" type="button" data-simtool="0" title="Heat">Heat</button>
+            <button class="tb" type="button" data-simtool="1" title="Cool">Cool</button>
+            <button class="tb" type="button" data-simtool="2" title="Add pressure">Air+</button>
+            <button class="tb" type="button" data-simtool="3" title="Remove pressure">Vac</button>
+            <button class="tb" type="button" data-simtool="7" title="Cyclone">Cyc</button>
+            <button class="tb" type="button" data-simtool="8" title="Wind">Wind</button>
+          </div>
+          <div class="entity-row">
+            <button class="tb" type="button" id="btn-env-grav" title="Cycle gravity mode">Grav</button>
+            <button class="tb" type="button" id="btn-env-air" title="Cycle air mode">Air</button>
+            <button class="tb" type="button" id="btn-env-edge" title="Cycle edge mode">Edge</button>
+            <button class="tb" type="button" id="btn-env-newton" title="Toggle Newtonian gravity">Nwt</button>
+            <button class="tb" type="button" id="btn-env-ambient" title="Toggle ambient heat">Amb</button>
+            <span id="env-status" class="entity-status"></span>
+          </div>
+        </div>
       </div>
       <aside class="rail" aria-label="Categories and view">
         <div id="cat-rail" class="rail-group"></div>
@@ -117,6 +153,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="./src/main.js?ui=4"></script>
+  <script type="module" src="./src/main.js?ui=5"></script>
 </body>
 </html>

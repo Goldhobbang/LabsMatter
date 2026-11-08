@@ -75,3 +75,17 @@ button { cursor: pointer; }
   .speed input { width: 48px; }
   .brand { display: none; }
 }
+
+/* Experimental TPT entity controls (hidden until the TPT runtime loads). */
+.entity-panel { position: absolute; top: 4px; right: 6px; display: flex; flex-direction: column; gap: 3px; padding: 4px 6px; background: rgba(12,12,12,.88); border: 1px solid #333; font-family: var(--mono); font-size: 10px; color: #cfcfcf; z-index: 3; }
+.entity-panel[hidden] { display: none; }
+.entity-title { color: var(--muted); letter-spacing: .06em; text-transform: uppercase; font-size: 9px; }
+.entity-row { display: flex; align-items: center; gap: 3px; }
+.entity-row .tb { padding: 1px 6px; line-height: 14px; }
+.entity-panel select { background: #0c0c0c; border: 1px solid #333; color: var(--text); font-size: 10px; padding: 1px 2px; max-width: 130px; }
+.entity-status { color: var(--muted); margin-left: 4px; white-space: nowrap; }
+.entity-panel .tb.is-active { border-color: var(--hot); color: #fff; }
+
+/* Experimental TPT simulation-tool panel (bottom-left, hidden until TPT loads). */
+.tool-panel { top: auto; bottom: 6px; left: 6px; right: auto; }
+.tool-panel .tb.is-active { border-color: var(--hot); color: #fff; }

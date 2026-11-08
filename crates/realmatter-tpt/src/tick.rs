@@ -21,6 +21,10 @@ pub struct Neighbourhood {
 impl Sim {
     /// `BeforeSim`.
     pub fn before_sim(&mut self) {
+        // 0. Numerical guard: clamp non-finite particle/field state before it
+        //    can propagate through the air solver or pmap rebuild. No-op for
+        //    healthy state (see `Sim::sanitize`).
+        self.sanitize();
         // 1. Air.
         self.update_air();
         // 2. Ambient heat.
@@ -61,8 +65,10 @@ impl Sim {
 
     /// `AfterSim`.
     pub fn after_sim(&mut self) {
-        // EMP trigger and frame counter are handled by the callers that need
-        // them; nothing else runs here in the reference.
+        // Promote next-frame wireless state to current-frame state. The
+        // reference does this once per tick so WIFI emission/consumption is
+        // independent of particle iteration order.
+        self.wireless.advance();
     }
 
     pub fn step(&mut self) {

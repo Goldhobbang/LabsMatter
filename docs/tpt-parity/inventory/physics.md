@@ -139,7 +139,7 @@ Status legend: `DONE` implemented & wired; `PARTIAL` implemented with deviations
 | P08.03 | Shock propagation | `Simulation.cpp` | pressure wave | pv | — | air | — | clamp | not implemented | shock model | add to air solver | O(N) | MISSING |
 | P08.04 | Pressure-induced movement | `Simulation.cpp` | pressure force | vx,vy | pressure | fluid | — | clamp | implemented | — | keep | O(N) | DONE |
 | P08.05 | Pressure-induced phase transitions | `Simulation.cpp` | pressure thresholds | material | pressure | chemistry | — | — | not implemented | hooks | add | O(N) | MISSING |
-| P08.06 | Explosive pressure impulses | `elements/BANG.cpp` | add pressure | pv | element | air | bounds | clamp | not implemented | element API | expose add_pressure | O(N) | PARTIAL |
+| P08.06 | Explosive pressure impulses | `elements/BANG.cpp` | add pressure | pv | element | air | bounds | clamp | `Sim::add_pressure` | element API | keep | O(N) | DONE |
 | P08.07 | Air expansion | `gas.rs` | pressure expansion | vy | pressure | air | — | clamp | `gas::apply_buoyancy` | — | keep | O(N) | DONE |
 | P08.08 | Negative pressure/vacuum | `simtools/VAC.cpp` | add_pressure negative | pv | tool | air | bounds | clamp | wasm apply_tool | physics op | keep | O(N) | DONE |
 | P08.09 | Force-field interactions | `elements/ACEL.cpp` | velocity change | vx,vy | element | — | — | clamp | not implemented | element API | expose | O(N) | MISSING |

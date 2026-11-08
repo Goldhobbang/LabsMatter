@@ -7,18 +7,23 @@
 
 pub mod air;
 pub mod element;
+pub mod element_defaults;
 pub mod elements_generated;
+pub mod entity;
 pub mod gol;
 pub mod movement;
 pub mod particle;
+pub mod portal;
 pub mod rng;
 pub mod sim;
 pub mod tick;
+pub mod transport;
 pub mod transition;
 pub mod updates;
+pub mod wireless;
 
 pub use air::{AirMode, ConvectionMode};
-pub use element::{element, ElementDef};
+pub use element::{element, pt_id_by_abbr, ElementDef};
 pub use particle::{flags, Particle};
 pub use rng::Rng;
 pub use sim::{

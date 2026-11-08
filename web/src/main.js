@@ -1,8 +1,16 @@
-import { MATERIALS, CATEGORIES, searchMaterials, findMaterial } from "./materials.js";
+import * as ProdMat from "./materials.js";
+import * as TptMat from "./tpt-materials.js";
 import { getState, setState, subscribe, resetState } from "./state/store.js";
 import { WasmDirectAdapter } from "./adapters/wasm-direct.js";
+import { TptAdapter } from "./adapters/tpt.js";
 import { createRenderer } from "./renderers/renderer-factory.js";
 import { loadConfig, saveConfig, applyPreset, matchBinding, formatBinding, ACTION_LABELS } from "./shortcuts.js";
+
+// Runtime selection: production stays the default. `?engine=tpt` launches the
+// experimental TPT-parity runtime. No silent fallback — if TPT fails to load we
+// show the error on that runtime so failures are visible.
+const ENGINE = new URLSearchParams(location.search).get("engine") === "tpt" ? "tpt" : "prod";
+let matApi = ProdMat;
 
 const $ = (id) => document.getElementById(id);
 let sim = null;
@@ -41,12 +49,28 @@ async function boot() {
     return;
   }
   try {
-    const wd = new WasmDirectAdapter();
-    await wd.init();
-    sim = wd;
-    sim.setViewMode(getState().view || 0);
+    if (ENGINE === "tpt") {
+      matApi = TptMat;
+      const wd = new TptAdapter();
+      await wd.init();
+      sim = wd;
+      // Switch palette state into the TPT id space before the rail/palette
+      // render (PT element ids differ from the legacy palette ids).
+      setState({
+        category: TptMat.DEFAULT_CATEGORY,
+        materialId: TptMat.DEFAULT_MATERIAL_ID,
+        secondaryId: 0,
+        view: getState().view || 0,
+      });
+      sim.setViewMode(getState().view || 0);
+    } else {
+      const wd = new WasmDirectAdapter();
+      await wd.init();
+      sim = wd;
+      sim.setViewMode(getState().view || 0);
+    }
   } catch (e) {
-    setAppState("error", "WASM failed: " + (e?.message || e));
+    setAppState("error", (ENGINE === "tpt" ? "TPT runtime failed: " : "WASM failed: ") + (e?.message || e));
     return;
   }
   const resizeViewport = () => {
@@ -63,12 +87,39 @@ async function boot() {
   wireChrome();
   wirePointer();
   wireKeys();
+  initEntityPanel();
+  initToolPanel();
   subscribe(onState);
   onState(getState());
+  // Diagnostics handle for runtime selection and manual verification. Read-only
+  // accessors; the module keeps ownership of the live objects.
+  window.labsmatter = {
+    engine: ENGINE,
+    get sim() { return sim; },
+    get materials() { return matApi; },
+    get renderer() { return renderer; },
+  };
   setAppState("ready", "");
   lastFrame = performance.now();
   tickWindow = lastFrame;
   requestAnimationFrame(loop);
+}
+
+let toastEl = null;
+function notify(msg) {
+  console.warn(msg);
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.style.cssText =
+      "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#20242c;color:#e8ecf1;" +
+      "padding:8px 14px;border-radius:6px;font:13px system-ui,sans-serif;z-index:9999;opacity:.95;" +
+      "pointer-events:none;max-width:80vw;text-align:center";
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.style.opacity = ".95";
+  clearTimeout(toastEl._t);
+  toastEl._t = setTimeout(() => { toastEl.style.opacity = "0"; }, 3500);
 }
 
 function setAppState(state, msg) {
@@ -137,8 +188,8 @@ function onState(s) {
   $("btn-hud").classList.toggle("is-on", !!s.showHud);
   $("btn-preset").textContent = keys.preset === "legacy" ? "Legacy keys" : "Powder keys";
   $("brush-readout").textContent = `${s.brushRx}×${s.brushRy} ${s.shape[0]}`;
-  const pri = findMaterial(s.materialId);
-  const sec = findMaterial(s.secondaryId);
+  const pri = matApi.findMaterial(s.materialId);
+  const sec = matApi.findMaterial(s.secondaryId);
   $("primary-chip").style.background = pri.color;
   $("primary-chip").title = "Primary " + pri.abbr;
   $("secondary-chip").style.background = sec.color;
@@ -157,7 +208,7 @@ function onState(s) {
 function buildRail() {
   const row = $("cat-rail");
   row.innerHTML = "";
-  for (const c of CATEGORIES) {
+  for (const c of matApi.CATEGORIES) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "rail-btn";
@@ -172,7 +223,7 @@ function buildRail() {
 function buildPalette() {
   const s = getState();
   const list = $("material-list");
-  const items = searchMaterials(s.search, s.category);
+  const items = matApi.searchMaterials(s.search, s.category);
   list.innerHTML = "";
   for (const m of items) {
     const el = document.createElement("button");
@@ -200,7 +251,16 @@ function wireChrome() {
     e.target.value = "";
     if (!f) return;
     const ok = sim.loadBlob(new Uint8Array(await f.arrayBuffer()));
-    if (ok) { undoStack = []; redoStack = []; }
+    if (ok) {
+      undoStack = [];
+      redoStack = [];
+      notify(sim.lastLoadReport || "World loaded.");
+    } else {
+      notify(
+        sim.lastLoadReport ||
+          `Load failed: this file is not a compatible ${ENGINE === "tpt" ? "TPT v2/v1" : "production v1"} save. The world was not changed.`
+      );
+    }
   };
   $("btn-preset").onclick = () => {
     keys = applyPreset(keys.preset === "powder" ? "legacy" : "powder");
@@ -219,6 +279,211 @@ function wireChrome() {
     const d = $(id);
     d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
   }
+}
+
+// ---- Experimental entity controls (TPT runtime only) ---------------------
+let entityInput = 0;
+
+function modFn(name) {
+  return !!(sim && sim.mod && typeof sim.mod[name] === "function");
+}
+
+function worldCenterPixel() {
+  const s = getState();
+  const cell = 4 * (s.camera.zoom || 1);
+  const box = canvas.getBoundingClientRect();
+  return {
+    x: Math.floor((box.width / 2 - (s.camera.x || 0)) / cell),
+    y: Math.floor((box.height / 2 - (s.camera.y || 0)) / cell),
+  };
+}
+
+function setEntityInput(bits) {
+  entityInput = bits;
+  if (modFn("set_stickman_input")) {
+    try { sim.mod.set_stickman_input(0, bits); } catch (e) { console.warn(e); }
+  }
+}
+
+function holdButton(btn, bit) {
+  if (!btn) return;
+  const on = (e) => {
+    e.preventDefault();
+    setEntityInput(entityInput | bit);
+    btn.classList.add("is-active");
+    try { btn.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  const off = () => {
+    setEntityInput(entityInput & ~bit);
+    btn.classList.remove("is-active");
+  };
+  btn.addEventListener("pointerdown", on);
+  btn.addEventListener("pointerup", off);
+  btn.addEventListener("pointercancel", off);
+  btn.addEventListener("pointerleave", off);
+}
+
+function updateEntityUi() {
+  if (ENGINE !== "tpt" || !modFn("stickman_alive")) return;
+  const btn = $("btn-spawn-p1");
+  let alive = false;
+  try { alive = !!sim.mod.stickman_alive(0); } catch { alive = false; }
+  if (btn) {
+    btn.textContent = alive ? "Despawn" : "Spawn";
+    btn.setAttribute("aria-pressed", String(alive));
+  }
+  const st = $("entity-status");
+  if (st) {
+    let fighters = 0;
+    try { fighters = modFn("fighter_count") ? sim.mod.fighter_count() : 0; } catch { fighters = 0; }
+    st.textContent = `${alive ? "P1 alive" : "no P1"}${fighters ? ` \u00b7 ${fighters} fighter${fighters > 1 ? "s" : ""}` : ""}`;
+  }
+}
+
+function initEntityPanel() {
+  const panel = $("entity-panel");
+  if (!panel) return;
+  const supported =
+    ENGINE === "tpt" && modFn("spawn_stickman") && modFn("set_stickman_input") && modFn("stickman_alive");
+  if (!supported) {
+    // Do not show controls that cannot do anything. Production stays unchanged.
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const sel = $("stickman-element");
+  if (sel && !sel.options.length) {
+    const elems = (matApi.MATERIALS || []).filter((m) => (m.kind || "element") !== "wall");
+    for (const m of elems) {
+      const o = document.createElement("option");
+      o.value = String(m.id);
+      o.textContent = m.abbr;
+      o.title = m.name;
+      sel.appendChild(o);
+    }
+    const sand = elems.find((m) => m.abbr === "SAND");
+    if (sand) sel.value = String(sand.id);
+  }
+  if (sel) {
+    const apply = () => {
+      const id = parseInt(sel.value, 10) | 0;
+      if (modFn("set_stickman_element")) {
+        try { sim.mod.set_stickman_element(0, id); } catch (e) { console.warn(e); }
+      }
+    };
+    sel.onchange = apply;
+    apply();
+  }
+
+  const spawnBtn = $("btn-spawn-p1");
+  if (spawnBtn) {
+    spawnBtn.onclick = () => {
+      try {
+        if (sim.mod.stickman_alive(0)) {
+          sim.mod.despawn_stickman(0);
+          setEntityInput(0);
+        } else {
+          const c = worldCenterPixel();
+          if (!sim.mod.spawn_stickman(0, c.x, c.y)) {
+            notify("Could not spawn stickman here (cell blocked or out of bounds).");
+          }
+        }
+      } catch (e) {
+        notify("Stickman control failed: " + (e?.message || e));
+      }
+      updateEntityUi();
+    };
+  }
+
+  holdButton($("btn-entity-left"), 1);   // reference comm bit 1 = left
+  holdButton($("btn-entity-right"), 2);  // comm bit 2 = right
+  holdButton($("btn-entity-jump"), 4);   // comm bit 4 = jump
+
+  const fig = $("btn-spawn-fighter");
+  if (fig) {
+    fig.onclick = () => {
+      if (!modFn("spawn_fighter")) { notify("Fighter spawning is not available in this build."); return; }
+      const c = worldCenterPixel();
+      const slot = sim.mod.spawn_fighter(c.x, c.y);
+      notify(slot >= 0 ? `Fighter spawned (slot ${slot}).` : "Fighter registry is full.");
+      updateEntityUi();
+    };
+  }
+
+  // Keyboard movement, only while a stickman exists so normal panning is kept.
+  const MOVES = { KeyA: 1, ArrowLeft: 1, KeyD: 2, ArrowRight: 2, KeyW: 4, ArrowUp: 4 };
+  window.addEventListener("keydown", (e) => {
+    if (ENGINE !== "tpt" || !sim) return;
+    const tag = e.target && e.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (document.querySelector("dialog[open]")) return;
+    const bit = MOVES[e.code];
+    if (!bit) return;
+    let alive = false;
+    try { alive = !!sim.mod.stickman_alive(0); } catch { alive = false; }
+    if (!alive) return;
+    e.preventDefault();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    setEntityInput(entityInput | bit);
+  }, true);
+  window.addEventListener("keyup", (e) => {
+    if (ENGINE !== "tpt" || !sim) return;
+    const bit = MOVES[e.code];
+    if (!bit) return;
+    setEntityInput(entityInput & ~bit);
+  }, true);
+
+  updateEntityUi();
+}
+
+// ---- Experimental simulation tools (TPT runtime only) --------------------
+let activeSimTool = null;
+
+function updateEnvStatus() {
+  const el = $("env-status");
+  if (el) el.textContent = sim && sim.simStatus ? sim.simStatus() : "";
+}
+
+function applySimToolAt(x, y) {
+  if (activeSimTool == null || !modFn("apply_tool")) return;
+  const s = getState();
+  const r = Math.max(1, Math.round((s.brushRx + s.brushRy) / 2));
+  // dx/dy is the wind/cyclone direction; default to +x.
+  try { sim.mod.apply_tool(activeSimTool, x, y, r, 1, 0); } catch (e) { console.warn(e); }
+}
+
+function initToolPanel() {
+  const panel = $("tool-panel");
+  if (!panel) return;
+  if (ENGINE !== "tpt" || !modFn("apply_tool")) {
+    // No dead controls: hide the panel when the runtime cannot apply tools.
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  panel.querySelectorAll("[data-simtool]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const k = parseInt(b.dataset.simtool, 10);
+      activeSimTool = activeSimTool === k ? null : k;
+      panel.querySelectorAll("[data-simtool]").forEach((x) => {
+        x.classList.toggle("is-active", Number(x.dataset.simtool) === activeSimTool);
+      });
+    });
+  });
+  const env = (id, fn) => {
+    const el = $(id);
+    if (el) el.onclick = () => {
+      try { sim[fn](); } catch (e) { console.warn(e); }
+      updateEnvStatus();
+    };
+  };
+  env("btn-env-grav", "cycleGravity");
+  env("btn-env-air", "cycleAir");
+  env("btn-env-edge", "cycleEdge");
+  env("btn-env-newton", "toggleNewtonian");
+  env("btn-env-ambient", "toggleAmbient");
+  updateEnvStatus();
 }
 
 function setView(mode) {
@@ -252,6 +517,12 @@ function onDown(e) {
     stroke = { kind: "select", a: c, b: c };
     return;
   }
+  // Simulation tool active (TPT only): apply at the cursor instead of painting.
+  if (activeSimTool != null && e.button === 0) {
+    stroke = { kind: "simtool", last: c };
+    applySimToolAt(c.x, c.y);
+    return;
+  }
   let material = s.materialId;
   if (e.button === 2) material = s.secondaryId;
   if (s.tool === "eraser" && e.button === 0) material = 0;
@@ -277,6 +548,10 @@ function onMove(e) {
     const line = bresenham(stroke.last.x, stroke.last.y, c.x, c.y);
     for (const p of line) dab(p[0], p[1], stroke.material, true);
     stroke.last = c;
+  } else if (stroke.kind === "simtool") {
+    const line = bresenham(stroke.last.x, stroke.last.y, c.x, c.y);
+    for (const p of line) applySimToolAt(p[0], p[1]);
+    stroke.last = c;
   } else {
     stroke.b = c;
   }
@@ -290,6 +565,7 @@ function onUp() {
   if (s.kind === "line") commitShape(lineCells(s.a, s.b), s.material);
   else if (s.kind === "rect") commitShape(rectCells(s.a, s.b), s.material);
   else if (s.kind === "select") selection = normRect(s.a, s.b);
+  else if (s.kind === "simtool") { /* one-shot / continuous tool stroke */ }
   else endLog(s.material);
 }
 
@@ -314,13 +590,13 @@ function dab(x, y, material, record) {
   const s = getState();
   for (const [cx, cy] of brushCells(x, y, s.brushRx, s.brushRy, s.shape)) {
     if (record) note(cx, cy);
-    sim.mod.set_cell(cx, cy, material);
+    sim.setCell(cx, cy, material);
   }
 }
 
 function commitShape(cells, material) {
   beginLog();
-  for (const [x, y] of cells) { note(x, y); sim.mod.set_cell(x, y, material); }
+  for (const [x, y] of cells) { note(x, y); sim.setCell(x, y, material); }
   endLog(material);
 }
 
@@ -399,7 +675,7 @@ function flood(x, y, material) {
     guard--;
     if (sim.getCellMaterial(cx, cy) !== target) continue;
     note(cx, cy);
-    sim.mod.set_cell(cx, cy, material);
+    sim.setCell(cx, cy, material);
     stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
   }
   endLog(material);
@@ -407,7 +683,8 @@ function flood(x, y, material) {
 
 function sample(c) {
   const id = sim.getCellMaterial(c.x, c.y);
-  setState({ materialId: id, category: findMaterial(id).category });
+  const mat = matApi.findMaterial(id);
+  setState({ materialId: id, category: mat.section || mat.category || "all" });
 }
 
 function beginLog() { strokeLog = new Map(); }
@@ -431,13 +708,13 @@ function endLog(material) {
 function undo() {
   const op = undoStack.pop();
   if (!op) return;
-  for (const c of op.before) sim.mod.set_cell(c.x, c.y, c.m);
+  for (const c of op.before) sim.setCell(c.x, c.y, c.m);
   redoStack.push(op);
 }
 function redo() {
   const op = redoStack.pop();
   if (!op) return;
-  for (const c of op.before) sim.mod.set_cell(c.x, c.y, op.material);
+  for (const c of op.before) sim.setCell(c.x, c.y, op.material);
   undoStack.push(op);
 }
 
@@ -466,7 +743,7 @@ function copySel(clear) {
   if (clear && selection) {
     beginLog();
     for (let y = selection.y0; y <= selection.y1; y++) {
-      for (let x = selection.x0; x <= selection.x1; x++) { note(x, y); sim.mod.set_cell(x, y, 0); }
+      for (let x = selection.x0; x <= selection.x1; x++) { note(x, y); sim.setCell(x, y, 0); }
     }
     endLog(0);
   }
@@ -496,7 +773,7 @@ function placeStamp(x, y, data) {
   beginLog();
   for (const c of data.cells) {
     note(x + c.dx, y + c.dy);
-    sim.mod.set_cell(x + c.dx, y + c.dy, c.m);
+    sim.setCell(x + c.dx, y + c.dy, c.m);
   }
   endLog(data.cells[0] ? data.cells[0].m : 0);
 }
@@ -563,7 +840,7 @@ function shot() {
 
 function saveWorld() {
   const blob = sim.saveBlob();
-  if (!blob || !blob.length) return;
+  if (!blob || !blob.length) { notify("Save failed: the current engine has no serializer."); return; }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([blob], { type: "application/octet-stream" }));
   a.download = "labsmatter-world.rmt";
@@ -762,13 +1039,16 @@ function drawOverlay() {
 
 function paintHud() {
   const s = getState();
+  updateEntityUi();
+  updateEnvStatus();
   if (!s.showHud) return;
   const fps = renderer && renderer.getFps ? renderer.getFps() : 0;
   const d = sim.getDiagnostics ? sim.getDiagnostics() : {};
-  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  ${renderer?.backend || ""}`;
+  const engineTag = ENGINE === "tpt" ? "TPT" : "PROD";
+  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  ${renderer?.backend || ""}  ${engineTag}`;
   $("hud-parts").textContent = `${(d.particles || 0).toLocaleString()} pts  ${VIEWS[s.view] || ""}  ${sim.simStatus ? sim.simStatus() : ""}  grid ${s.grid ? s.gridSize : 0}`;
   if (!hover) { $("hud-cell").textContent = "—"; return; }
-  const m = findMaterial(sim.getCellMaterial(hover.x, hover.y));
+  const m = matApi.findMaterial(sim.getCellMaterial(hover.x, hover.y));
   const t = sim.getCellTemperature(hover.x, hover.y);
   const p = sim.getCellPressure(hover.x, hover.y);
   $("hud-cell").textContent = `${hover.x},${hover.y}  ${t.toFixed(0)}K  ${(p / 1000).toFixed(1)}kPa`;

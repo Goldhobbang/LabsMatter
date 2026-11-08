@@ -12,8 +12,11 @@ use crate::air::{
 };
 use crate::element::element;
 use crate::elements_generated::{props, PT_NUM};
+use crate::entity::PlayerState;
 use crate::particle::Particle;
+use crate::portal::PortalStore;
 use crate::rng::Rng;
+use crate::wireless::WirelessStore;
 
 pub const CELL: usize = 4;
 pub const ISTP: f32 = CELL as f32 / 2.0;
@@ -161,6 +164,20 @@ pub struct Sim {
     pub colour: Vec<u32>,
     /// Kill reason counters (diagnostics).
     pub kill_stats: [u32; 8],
+
+    // --- shared-world state owned by the world layer (Agent 1) -----------
+    /// Persistent portal payloads (`Simulation::portalp`).
+    pub portal: PortalStore,
+    /// Persistent wireless channel state (`Simulation::wireless`).
+    pub wireless: WirelessStore,
+    /// Player 1 stickman state (`Simulation::player`).
+    pub player: PlayerState,
+    /// Player 2 stickman state (`Simulation::player2`).
+    pub player2: PlayerState,
+    /// Fighter registry (`Simulation::fighters[]`).
+    pub fighters: Vec<PlayerState>,
+    /// Live fighter count (`Simulation::fighcount`).
+    pub figh_count: i32,
 }
 
 impl Sim {
@@ -205,6 +222,12 @@ impl Sim {
             grav_mask: vec![u32::MAX; n],
             colour: vec![0; width * height],
             kill_stats: [0; 8],
+            portal: PortalStore::new(),
+            wireless: WirelessStore::new(),
+            player: PlayerState::default(),
+            player2: PlayerState::default(),
+            fighters: Vec::new(),
+            figh_count: 0,
         };
         sim.init_can_move();
         sim.clear_air();
@@ -422,11 +445,40 @@ impl Sim {
     }
 
     fn apply_defaults(&mut self, i: usize, t: u16) {
-        // DefaultProperties assignments in the reference vary per element. Only
-        // the fields that are actually declared in element sources are set.
-        let def = element(t);
-        if def.abbr == "LIFE" {
-            self.parts[i].life = 0;
+        // Reference `DefaultProperties`, generated from the pinned element
+        // sources (`element_defaults.rs`). `temp` is already applied by the
+        // caller from `ElementDef::default_temp`.
+        //
+        // This is required for correctness, not cosmetics: elements with
+        // `PROP_LIFE_KILL_DEC` (e.g. PHOT, life = 680) are killed on the first
+        // tick if their declared life is not applied here.
+        let Some(d) = crate::element_defaults::defaults(t) else {
+            return;
+        };
+        let p = &mut self.parts[i];
+        if let Some(v) = d.life {
+            p.life = v;
+        }
+        if let Some(v) = d.ctype {
+            p.ctype = v;
+        }
+        if let Some(v) = d.tmp {
+            p.tmp = v;
+        }
+        if let Some(v) = d.tmp2 {
+            p.tmp2 = v;
+        }
+        if let Some(v) = d.tmp3 {
+            p.tmp3 = v;
+        }
+        if let Some(v) = d.tmp4 {
+            p.tmp4 = v;
+        }
+        if let Some(v) = d.vx {
+            p.vx = v;
+        }
+        if let Some(v) = d.vy {
+            p.vy = v;
         }
         if def.abbr == "IGNT" {
             self.parts[i].life = 3;
@@ -684,6 +736,96 @@ impl Sim {
         self.bmap[self.cell_idx(x as i32 / CELL as i32, y as i32 / CELL as i32)]
     }
 
+    /// Apply the currently selected edge mode to the wall map, mirroring the
+    /// reference `Simulation::SetEdgeMode`.
+    ///
+    /// `EDGE_SOLID` places a `WL_WALL` ring on the outer CELLs so particles are
+    /// blocked before they can reach the off-screen kill test. `EDGE_VOID` and
+    /// `EDGE_LOOP` clear that ring (loop particles are wrapped in `do_move`).
+    /// Call this after changing `settings.edge_mode` (including on load).
+    pub fn apply_edge_mode(&mut self) {
+        let (cx, cy) = (self.cells_x, self.cells_y);
+        if cx < 2 || cy < 2 {
+            return;
+        }
+        match self.settings.edge_mode {
+            EdgeMode::Solid => {
+                for x in 0..cx {
+                    self.bmap[x] = WALL_WALL;
+                    self.bmap[(cy - 1) * cx + x] = WALL_WALL;
+                }
+                for y in 1..cy - 1 {
+                    self.bmap[y * cx] = WALL_WALL;
+                    self.bmap[y * cx + (cx - 1)] = WALL_WALL;
+                }
+            }
+            EdgeMode::Void | EdgeMode::Loop => {
+                for x in 0..cx {
+                    self.bmap[x] = 0;
+                    self.bmap[(cy - 1) * cx + x] = 0;
+                }
+                for y in 1..cy - 1 {
+                    self.bmap[y * cx] = 0;
+                    self.bmap[y * cx + (cx - 1)] = 0;
+                }
+            }
+        }
+        self.refresh_air_block_maps();
+    }
+
+    /// Numerical stabilisation pass (Agent 1 world infrastructure).
+    ///
+    /// The reference relies on `restrict_flt` at every transition site; a missed
+    /// site or an element-supplied NaN can otherwise poison positions, the air
+    /// fields, and (via pmap rebuild) neighbouring cells. This clamps only
+    /// non-finite / out-of-range values and is a no-op for healthy state.
+    pub fn sanitize(&mut self) {
+        let ambient = self.settings.ambient_air_temp;
+        for p in self.parts.iter_mut() {
+            if p.t == 0 {
+                continue;
+            }
+            if !p.x.is_finite() {
+                p.x = 0.5;
+            }
+            if !p.y.is_finite() {
+                p.y = 0.5;
+            }
+            if !p.vx.is_finite() {
+                p.vx = 0.0;
+            }
+            if !p.vy.is_finite() {
+                p.vy = 0.0;
+            }
+            if !p.temp.is_finite() {
+                p.temp = ambient;
+            }
+            p.temp = p.temp.clamp(MIN_TEMP, MAX_TEMP);
+            p.vx = p.vx.clamp(-MAX_VELOCITY, MAX_VELOCITY);
+            p.vy = p.vy.clamp(-MAX_VELOCITY, MAX_VELOCITY);
+        }
+        for v in self.pv.iter_mut() {
+            if !v.is_finite() {
+                *v = 0.0;
+            }
+        }
+        for v in self.vx.iter_mut() {
+            if !v.is_finite() {
+                *v = 0.0;
+            }
+        }
+        for v in self.vy.iter_mut() {
+            if !v.is_finite() {
+                *v = 0.0;
+            }
+        }
+        for v in self.hv.iter_mut() {
+            if !v.is_finite() {
+                *v = ambient;
+            }
+        }
+    }
+
     /// True when wall `w` blocks particles of element `t` from being in the
     /// cell at all (the reference's per-particle wall kill test).
     pub fn wall_kills(&self, w: u8, t: u16) -> bool {
@@ -736,6 +878,40 @@ impl Sim {
             return false;
         }
         false
+    }
+
+    // -- physics API for elements (Agent 3) -----------------------------------
+
+    /// Add a pressure impulse to an air cell (clamped to reference range).
+    pub fn add_pressure(&mut self, cx: i32, cy: i32, dp: f32) {
+        if !self.in_cell_bounds(cx, cy) {
+            return;
+        }
+        let idx = self.cell_idx(cx, cy);
+        self.pv[idx] = (self.pv[idx] + dp).clamp(MIN_PRESSURE, MAX_PRESSURE);
+    }
+
+    /// Add an air-velocity impulse to an air cell.
+    pub fn add_air_velocity(&mut self, cx: i32, cy: i32, dvx: f32, dvy: f32) {
+        if !self.in_cell_bounds(cx, cy) {
+            return;
+        }
+        let idx = self.cell_idx(cx, cy);
+        self.vx[idx] = (self.vx[idx] + dvx).clamp(MIN_PRESSURE, MAX_PRESSURE);
+        self.vy[idx] = (self.vy[idx] + dvy).clamp(MIN_PRESSURE, MAX_PRESSURE);
+    }
+
+    /// Whether wall type `w` allows airflow through it.
+    pub fn wall_allows_air(&self, w: u8) -> bool {
+        !(w == WALL_WALL
+            || w == WALL_WALLELEC
+            || w == WALL_BLOCKAIR
+            || (w == WALL_EWALL))
+    }
+
+    /// Whether wall type `w` allows heat (ambient) through it.
+    pub fn wall_allows_heat(&self, w: u8) -> bool {
+        w != WALL_WALL && w != WALL_WALLELEC && w != WALL_BLOCKAIR
     }
 
     pub fn set_emap(&mut self, cx: i32, cy: i32) {
