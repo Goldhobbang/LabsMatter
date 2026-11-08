@@ -44,6 +44,10 @@ pub fn update_fn(t: u16) -> Option<UpdateFn> {
         pt::WOOD | pt::COAL | pt::BCOL => fuel_update,
         pt::NEUT => neut_update,
         pt::BOMB => bomb_update,
+        pt::BANG => bang_update,
+        pt::C5 => c5_update,
+        pt::IGNT => ignt_update,
+        pt::EMBR => embr_update,
         pt::WTRV => wtrv_update,
         pt::DSTW => dstw_update,
         pt::SLTW => sltw_update,
@@ -900,6 +904,225 @@ fn plnt_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 // ---------------------------------------------------------------------------
 
 fn neut_update(_sim: &mut Sim, _i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> i32 {
+    0
+}
+
+// ---------------------------------------------------------------------------
+// BANG (TNT)
+// ---------------------------------------------------------------------------
+
+fn bang_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    let tmp = sim.parts[i].tmp;
+    if tmp == 0 {
+        if sim.parts[i].temp >= 673.0 {
+            sim.parts[i].tmp = 1;
+        } else {
+            for ry in -1i32..=1 {
+                for rx in -1i32..=1 {
+                    if rx == 0 && ry == 0 {
+                        continue;
+                    }
+                    let nx = x + rx;
+                    let ny = y + ry;
+                    if !sim.in_bounds(nx, ny) {
+                        continue;
+                    }
+                    let r = sim.pmap[sim.idx(nx, ny)];
+                    if r == 0 {
+                        continue;
+                    }
+                    let rt = pmap_type(r);
+                    if rt == pt::FIRE || rt == pt::PLSM || rt == pt::SPRK || rt == pt::LIGH {
+                        sim.parts[i].tmp = 1;
+                        return 0;
+                    }
+                }
+            }
+        }
+        return 0;
+    } else if tmp == 1 {
+        if sim.in_bounds(x, y) {
+            let r = sim.pmap[sim.idx(x, y)];
+            if r != 0 && pmap_id(r) as usize == i {
+                sim.flood_tmp(x, y, 2);
+            }
+        }
+        sim.parts[i].tmp = 2;
+        return 0;
+    } else if tmp == 2 {
+        sim.parts[i].tmp = 3;
+        return 0;
+    }
+
+    let otemp = sim.parts[i].temp - 273.15;
+    add_pv(sim, x, y, 0.5);
+    sim.parts[i].tmp = 0;
+    if sim.rng.chance(1, 3) {
+        if sim.rng.chance(1, 2) {
+            let _ = sim.create_part(x, y, pt::FIRE);
+            if sim.parts[i].t == pt::FIRE {
+                sim.parts[i].temp = restrict_flt(MAX_TEMP / 4.0 + otemp, MIN_TEMP, MAX_TEMP);
+            }
+        } else {
+            let _ = sim.create_part(x, y, pt::SMKE);
+            if sim.parts[i].t == pt::SMKE {
+                sim.parts[i].life = sim.rng.between(500, 549);
+                sim.parts[i].temp = restrict_flt(MAX_TEMP / 4.0 + otemp, MIN_TEMP, MAX_TEMP);
+            }
+        }
+    } else if sim.rng.chance(1, 15) {
+        let nx = x + sim.rng.between(-1, 1);
+        let ny = y + sim.rng.between(-1, 1);
+        if let Some(nb) = create_near(sim, nx, ny, pt::EMBR) {
+            sim.parts[nb].tmp = 0;
+            sim.parts[nb].life = 50;
+            sim.parts[nb].temp = restrict_flt(MAX_TEMP / 3.0 + otemp, MIN_TEMP, MAX_TEMP);
+            sim.parts[nb].vx = sim.rng.between(-10, 10) as f32;
+            sim.parts[nb].vy = sim.rng.between(-10, 10) as f32;
+        }
+        sim.kill_part(i);
+    } else {
+        sim.kill_part(i);
+    }
+    1
+}
+
+// ---------------------------------------------------------------------------
+// C5
+// ---------------------------------------------------------------------------
+
+fn c5_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    for ry in -2i32..=2 {
+        for rx in -2i32..=2 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let id = pmap_id(r) as usize;
+            let rt = pmap_type(r);
+            let cold_trigger = (rt != pt::C5 && sim.parts[id].temp < 100.0 && !sim.is_heat_insulator(id))
+                || rt == pt::CFLM;
+            if cold_trigger && sim.rng.chance(1, 6) {
+                sim.part_change_type(i, x, y, pt::CFLM as i16);
+                sim.parts[i].temp = 0.0;
+                sim.parts[id].temp = 0.0;
+                sim.parts[i].life = sim.rng.between(50, 199);
+                add_pv(sim, x, y, 1.5);
+                return 0;
+            }
+        }
+    }
+    // PHOT emission from stored ctype (reference behavior).
+    if sim.parts[i].ctype != 0 && sim.parts[i].life == 0 {
+        let vx = ((sim.parts[i].tmp << 16) >> 16) as f32 / 255.0;
+        let vy = (sim.parts[i].tmp >> 16) as f32 / 255.0;
+        let dx = ((sim.parts[i].tmp2 << 16) >> 16) as f32 / 255.0;
+        let dy = (sim.parts[i].tmp2 >> 16) as f32 / 255.0;
+        let ctype = sim.parts[i].ctype;
+        let temp = sim.parts[i].temp;
+        let px = (x as f32 + 0.5 + dx).round() as i32;
+        let py = (y as f32 + 0.5 + dy).round() as i32;
+        if let Some(rid) = create_near(sim, px, py, pt::PHOT) {
+            sim.parts[rid].ctype = ctype;
+            sim.parts[rid].vx = vx;
+            sim.parts[rid].vy = vy;
+            sim.parts[rid].temp = temp;
+        }
+        sim.parts[i].ctype = 0;
+        sim.parts[i].tmp = 0;
+        sim.parts[i].tmp2 = 0;
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// IGNT (ignition cord)
+// ---------------------------------------------------------------------------
+
+fn ignt_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if sim.parts[i].tmp == 0 {
+        for ry in -1i32..=1 {
+            for rx in -1i32..=1 {
+                if rx == 0 && ry == 0 {
+                    continue;
+                }
+                let nx = x + rx;
+                let ny = y + ry;
+                if !sim.in_bounds(nx, ny) {
+                    continue;
+                }
+                let r = sim.pmap[sim.idx(nx, ny)];
+                if r == 0 {
+                    continue;
+                }
+                let rt = pmap_type(r);
+                if rt == pt::FIRE || rt == pt::PLSM || rt == pt::SPRK || rt == pt::LIGH
+                    || (rt == pt::IGNT && sim.parts[pmap_id(r) as usize].life == 1)
+                {
+                    sim.parts[i].tmp = 1;
+                    return 0;
+                }
+            }
+        }
+    } else if sim.parts[i].life > 0 {
+        if sim.rng.chance(2, 3) {
+            let nx = x + sim.rng.between(-1, 1);
+            let ny = y + sim.rng.between(-1, 1);
+            if let Some(nb) = create_near(sim, nx, ny, pt::EMBR) {
+                sim.parts[nb].tmp = 0;
+                sim.parts[nb].life = 30;
+                sim.parts[nb].vx = sim.rng.between(-10, 10) as f32;
+                sim.parts[nb].vy = sim.rng.between(-10, 10) as f32;
+                sim.parts[nb].temp = restrict_flt(sim.parts[i].temp - 273.15 + 400.0, MIN_TEMP, MAX_TEMP);
+            }
+        } else {
+            let nx = x + sim.rng.between(-1, 1);
+            let ny = y + sim.rng.between(-1, 1);
+            let _ = create_near(sim, nx, ny, pt::FIRE);
+        }
+        sim.parts[i].life -= 1;
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// EMBR (sparks/embers) — basic behaviour
+// ---------------------------------------------------------------------------
+
+fn embr_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    // Reference kills EMBR on contact with solid/part/liquid that is not SPARKSETTLE.
+    for ry in -1i32..=1 {
+        for rx in -1i32..=1 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let rt = pmap_type(r);
+            let props = element(rt).properties;
+            let is_settle_mat = (props & (props::TYPE_SOLID | props::TYPE_PART | props::TYPE_LIQUID)) != 0;
+            let sparksettle = (props & props::PROP_SPARKSETTLE) != 0;
+            if is_settle_mat && !sparksettle {
+                sim.kill_part(i);
+                return 1;
+            }
+        }
+    }
     0
 }
 

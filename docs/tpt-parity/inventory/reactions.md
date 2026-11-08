@@ -101,3 +101,19 @@ DEFAULT_PT_WATR, DEFAULT_PT_FIRE, DEFAULT_PT_CLNE, DEFAULT_PT_GOO, DEFAULT_PT_IC
 Count: 79
 
 DEFAULT_PT_FIRE, DEFAULT_PT_LAVA, DEFAULT_PT_SPRK, DEFAULT_PT_WOOD, DEFAULT_PT_NEUT, DEFAULT_PT_PLNT, DEFAULT_PT_ACID, DEFAULT_PT_PHOT, DEFAULT_PT_THDR, DEFAULT_PT_PLSM, DEFAULT_PT_LCRY, DEFAULT_PT_STKM, DEFAULT_PT_SWCH, DEFAULT_PT_SMKE, DEFAULT_PT_COAL, DEFAULT_PT_GLOW, DEFAULT_PT_BRCK, DEFAULT_PT_HFLM, DEFAULT_PT_FIRW, DEFAULT_PT_AMTR, DEFAULT_PT_PCLN, DEFAULT_PT_HSWC, DEFAULT_PT_LIFE, DEFAULT_PT_DLAY, DEFAULT_PT_CBNW, DEFAULT_PT_STOR, DEFAULT_PT_PVOD, DEFAULT_PT_LIGH, DEFAULT_PT_DEST, DEFAULT_PT_SPNG, DEFAULT_PT_DEUT, DEFAULT_PT_WARP, DEFAULT_PT_PUMP, DEFAULT_PT_PIPE, DEFAULT_PT_GRAV, DEFAULT_PT_BIZR, DEFAULT_PT_PRTI, DEFAULT_PT_PRTO, DEFAULT_PT_VINE, DEFAULT_PT_INVIS, DEFAULT_PT_WIFI, DEFAULT_PT_FILT, DEFAULT_PT_BRAY, DEFAULT_PT_BOMB, DEFAULT_PT_C5, DEFAULT_PT_QRTZ, DEFAULT_PT_EMP, DEFAULT_PT_ELEC, DEFAULT_PT_ACEL, DEFAULT_PT_DCEL, DEFAULT_PT_GEL, DEFAULT_PT_TRON, DEFAULT_PT_EXOT, DEFAULT_PT_EMBR, DEFAULT_PT_SOAP, DEFAULT_PT_PBCN, DEFAULT_PT_GPMP, DEFAULT_PT_CLST, DEFAULT_PT_WIRE, DEFAULT_PT_GBMB, DEFAULT_PT_DMG, DEFAULT_PT_VIBR, DEFAULT_PT_PSTN, DEFAULT_PT_FRME, DEFAULT_PT_GOLD, DEFAULT_PT_TUNG, DEFAULT_PT_PROT, DEFAULT_PT_VIRS, DEFAULT_PT_VRSS, DEFAULT_PT_VRSG, DEFAULT_PT_GRVT, DEFAULT_PT_CRMC, DEFAULT_PT_POLO, DEFAULT_PT_SLCN, DEFAULT_PT_PTNM, DEFAULT_PT_ROCK, DEFAULT_PT_LITH, DEFAULT_PT_BASE, DEFAULT_PT_SEED
+
+
+## Agent3 Wave 1 — verified update interactions (partial, source-derived)
+
+Reference sources inspected (local .reference/tpt-src tree; pinned commit provenance unresolved in that worktree — see report): BANG.cpp, C5.cpp, IGNT.cpp, EMBR.cpp, BOMB.cpp, FUSE.cpp (existing), FSEP.cpp (existing), FWRK.cpp (existing), NITR.cpp/PLEX.cpp/GUNP.cpp (no Update; transitions/flammable/explosive handled generically).
+
+| Element | Trigger | Products / effects | State fields | Status |
+|---|---|---|---|---|
+| BANG | 	mp==0: temp>=673.15 or adjacent FIRE/PLSM/SPRK/LIGH -> 	mp=1; 	mp==1 flood-fill connected same-type to 	mp=2; 	mp==2->3; 	mp>=3 explode | +0.5 PV; 1/3: 1/2 FIRE else SMKE(life 500-549,temp MAX_TEMP/4+otemp); else 1/15: EMBR near (life 50,tmp 0,vx/vy ±10,temp MAX_TEMP/3+otemp) and kill; else kill | 	mp state machine | Implemented, not gameplay verified |
+| C5 | 5x5: (non-C5, temp<100, not heat insulator) or CFLM, 1/6 chance | -> CFLM, self+neighbor temp=0, life 50-199, +1.5 PV. If ctype!=0 && life==0: emit PHOT near with packed vx/vy/dx/dy/tmp2,tmp,ctype,temp then clear ctype/tmp/tmp2 | ctype,tmp,tmp2,life,temp | Implemented (PHOT path simplified to create_near), not gameplay verified |
+| IGNT | 	mp==0: adjacent FIRE/PLSM/SPRK/LIGH or IGNT with life==1 -> 	mp=1. 	mp!=0 && life>0: 2/3 spawn EMBR near (life 30,vx/vy ±10,temp self.temp-273.15+400) else spawn FIRE near; life-- | Sustained ignition; high-temp transition to FIRE handled by transitions (673K) | 	mp,life (default life 3 via pply_defaults) | Implemented, not gameplay verified |
+| EMBR | Contact with adjacent solid/powder/liquid that lacks PROP_SPARKSETTLE | kill self | life/graphics handled elsewhere | Implemented (contact kill), not gameplay verified |
+| BOMB | 3x3 contact with non-protected non-BOMB/EMBR/DMND/CLNE/PCLN/BCLN/VIBR | Inner r<=8: kill non-protected, +0.1 PV/cell, EMBR(tmp 2,life 2,temp MAX). Outer ring r==9 band approx: EMBR(tmp 0,life 50,temp MAX,rand vel) | — | Previously implemented; retained. Not gameplay verified |
+| FUSE/FSEP/FWRK | existing implementations in tree | (see source) | — | Present; not re-verified this batch |
+
+**Not duplicated here (handled by generic engine/transitions):** NITR/PLEX have no update; GUNP has no update — flammability/explosive/temperature/pressure transitions apply via generic systems (confirm against reference transition table).

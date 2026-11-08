@@ -428,6 +428,9 @@ impl Sim {
         if def.abbr == "LIFE" {
             self.parts[i].life = 0;
         }
+        if def.abbr == "IGNT" {
+            self.parts[i].life = 3;
+        }
     }
 
     /// Create in the first free cell at or near `(x, y)` (reference `create_part(-1, ...)`).
@@ -805,6 +808,50 @@ impl Sim {
             }
         } else {
             self.set_wall(x, y, w);
+        }
+    }
+
+
+    /// Flood-fill connected particles of the same type and set 	mp (reference
+    /// lood_prop with FIELD_TMP). Uses pmap/photons like the reference.
+    pub fn flood_tmp(&mut self, x: i32, y: i32, value: i32) {
+        if !self.in_bounds(x, y) {
+            return;
+        }
+        let r = if self.pmap[self.idx(x, y)] != 0 {
+            self.pmap[self.idx(x, y)]
+        } else {
+            self.photons[self.idx(x, y)]
+        };
+        if r == 0 {
+            return;
+        }
+        let parttype = pmap_type(r);
+        let w = self.width as i32;
+        let h = self.height as i32;
+        let mut visited = vec![false; self.width * self.height];
+        let mut stack: Vec<(i32, i32)> = vec![(x, y)];
+        while let Some((cx, cy)) = stack.pop() {
+            if cx < 0 || cy < 0 || cx >= w || cy >= h {
+                continue;
+            }
+            let cell = (cy as usize) * self.width + (cx as usize);
+            if visited[cell] {
+                continue;
+            }
+            let pr = if self.pmap[cell] != 0 { self.pmap[cell] } else { self.photons[cell] };
+            if pr == 0 || pmap_type(pr) != parttype {
+                continue;
+            }
+            visited[cell] = true;
+            let id = pmap_id(pr) as usize;
+            if id < self.parts.len() && self.parts[id].t == parttype {
+                self.parts[id].tmp = value;
+            }
+            stack.push((cx - 1, cy));
+            stack.push((cx + 1, cy));
+            stack.push((cx, cy - 1));
+            stack.push((cx, cy + 1));
         }
     }
 }
