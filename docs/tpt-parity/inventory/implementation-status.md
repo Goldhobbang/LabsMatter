@@ -29,15 +29,15 @@ flags (`update`/`create`/`graphics`/`transition`).
 
 | abbr | reason |
 |---|---|
-| STKM | shared locomotion implemented; reference legs/element-power reactions pending Agent 3 |
-| PIPE | full payload flow across pipe segments pending Agent 3 |
-| STKM2 | shared locomotion implemented; reference legs/element-power reactions pending Agent 3 |
-| SOAP | links implemented; full bubble pop/detach semantics pending Agent 3 |
-| FIGH | shared locomotion implemented; fighter combat/AI pending Agent 3 |
-| PSTN | uses shared MoveStack; FRME recursion and tmp3 flags pending Agent 3 |
+| STKM | K5: hazards, leg phase, element power; full reference leg/portal physics unverified |
+| PIPE | K5: payload transport, direction, PRTI hand-off, PPIP triggers; auto-pattern HEAC flood/graphics pending |
+| STKM2 | K5: hazards, leg phase, element power; full reference leg/portal physics unverified |
+| SOAP | K5: links, pop, second-order constraints; full reference chain rewiring pending |
+| FIGH | K5: pursuit, melee, despawn; full reference fighter powers/AI unverified |
+| PSTN | K5: tmp3 flags + FRME push; full reference MoveStack recursion pending |
 
 ## Unimplemented entries
 
 | abbr | reason |
 |---|---|
-| — | none |
+| ??| none |

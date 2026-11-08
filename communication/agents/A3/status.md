@@ -1,16 +1,20 @@
 # A3 Status
 
-- Current task: T-004 (TPT parity: chemistry, elements, advanced simulation)
-- State: DONE (integration handed off to A1)
-- Last updated: 2026-11-08T12:00:00Z
+- Current task: K5 — complete remaining element behaviors
+- State: IMPLEMENTATION READY (gameplay verification delegated to Agent B)
+- Last updated: 2026-11-08
 - Branch: agent3/chemistry-elements
-- Reference: The-Powder-Toy @ 2b7221a46d378589b4de7683f16d3ebc92be6bd9
+- Worktree: AICrew-agent3
+- Baseline: K4 dbe2d76214b681fdf03b647200ac3e1e949d7339 (merged, de5ee58)
 - Notes:
-  - All 132 reference `Update` callbacks now have Rust handlers
-    (`unimplemented update count: 0`).
-  - Inventory, reaction, dependency, implementation-status, and verification
-    docs regenerated under `docs/tpt-parity/inventory/`.
-  - 8 blocked entries documented (STKM, STKM2, FIGH, WIFI, PIPE, PRTI, PRTO,
-    PSTN, SOAP) with passive handlers in place.
-  - Workspace builds; no material IDs renumbered.
-  - Integration baseline commit: 3d5c657def7f784bd8a2884a5bf4000c607e1a72
+  - WIFI confirmed correct; K4 `wireless_active=0` was a missing spark source.
+  - PIPE/PPIP: payload transport, direction, intake/output, PRTI hand-off,
+    PPIP triggers, auto-configuration.
+  - PSTN: temperature-driven extension/retraction, tmp3 flags, FRME push.
+  - SOAP: bubble formation, chain pop, obstacle detachment, second-order links.
+  - STKM/STKM2: hazards, leg phase, element power, death cleanup.
+  - FIGH: target acquisition, pursuit, melee, death cleanup.
+  - Six elements remain Partial (full reference parity not gameplay-verified).
+  - Generic/passive audit generated for 48 + 15 elements.
+  - Report: communication/agents/A3/reports/T-K5-A3-20261108.md
+  - Playtest handoff: docs/tpt-parity/qa/K5-handoff.md
