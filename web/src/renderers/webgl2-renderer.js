@@ -129,15 +129,14 @@ void main(){
   vec2 uv=(vUV-uOff)/max(uScale, vec2(1e-6));
   if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.) discard;
   vec4 c=texture(uT, uv);
-  // Write straight RGB. Blend is off for this blit; void stays the clear color
-  // via discard when alpha is empty.
-  if(c.a<0.004) discard;
-  o=c;
+  // Empty cells used to discard before the grid, so a grid never showed
+  // on bare background. Draw the background, then the grid, then the pixel.
+  o = c.a < 0.004 ? vec4(0.02, 0.03, 0.06, 1.0) : c;
   if(uGrid>=1.0){
     vec2 cell=uv*uWorld;
     vec2 g=fract(cell/uGrid);
     float w=max(fwidth(cell.x)/uGrid, 0.05);
-    if(g.x<w||g.y<w) o=vec4(mix(o.rgb, vec3(0.8), 0.45), 1.0);
+    if(g.x<w||g.y<w) o=vec4(mix(o.rgb, vec3(0.85), 0.55), 1.0);
   }
 }`);
       gl.compileShader(fs);

@@ -42,6 +42,33 @@ struct StaticRegistry {
     props: Vec<MaterialProps>,
 }
 
+fn mat(
+    id: u16,
+    name: &str,
+    state: MaterialState,
+    density: f32,
+    specific_heat: f32,
+    thermal_conductivity: f32,
+    melting_point: f32,
+    flammable: bool,
+    ignition_temp: f32,
+) -> MaterialProps {
+    MaterialProps {
+        id,
+        name: name.to_string(),
+        state,
+        density,
+        specific_heat,
+        thermal_conductivity,
+        melting_point,
+        boiling_point: f32::INFINITY,
+        viscosity: 0.0,
+        color: [1.0, 1.0, 1.0, 1.0],
+        flammable,
+        ignition_temp,
+    }
+}
+
 impl StaticRegistry {
     fn builtin() -> Self {
         let mut props = Vec::new();
@@ -274,6 +301,15 @@ impl StaticRegistry {
             flammable: true,
             ignition_temp: 500.0,
         });
+        props.push(mat(17, "snow", MaterialState::Powder, 300.0, 2100.0, 0.15, 273.15, false, f32::INFINITY));
+        props.push(mat(18, "copper", MaterialState::Solid, 8960.0, 385.0, 400.0, f32::INFINITY, false, f32::INFINITY));
+        props.push(mat(19, "nitro", MaterialState::Liquid, 850.0, 1700.0, 0.15, 250.0, true, 420.0));
+        props.push(mat(20, "hydrogen", MaterialState::Gas, 0.09, 14300.0, 0.18, f32::INFINITY, true, 773.0));
+        props.push(mat(21, "co2", MaterialState::Gas, 1.8, 840.0, 0.016, f32::INFINITY, false, f32::INFINITY));
+        props.push(mat(22, "plant", MaterialState::Solid, 400.0, 1700.0, 0.1, f32::INFINITY, true, 500.0));
+        props.push(mat(23, "gold", MaterialState::Powder, 19300.0, 129.0, 300.0, 1337.0, false, f32::INFINITY));
+        props.push(mat(24, "dust", MaterialState::Powder, 200.0, 1000.0, 0.05, f32::INFINITY, true, 480.0));
+        props.push(mat(25, "bomb", MaterialState::Solid, 1500.0, 1000.0, 0.2, f32::INFINITY, false, f32::INFINITY));
         Self { props }
     }
 }
@@ -407,6 +443,15 @@ fn rgba_for(cell: &Cell, x: i32, y: i32, mode: u8) -> (u8, u8, u8, u8) {
         14 => (128, 222, 234, 180),
         15 => (66, 66, 66, 255),
         16 => (255, 240, 80, 255),
+        17 => (230, 240, 255, 255),
+        18 => (184, 115, 51, 255),
+        19 => (230, 220, 80, 220),
+        20 => (210, 230, 255, 90),
+        21 => (180, 190, 180, 140),
+        22 => (46, 140, 60, 255),
+        23 => (212, 175, 55, 255),
+        24 => (160, 140, 110, 255),
+        25 => (90, 40, 40, 255),
         _ => (255, 0, 255, 255),
     };
     if cell.material != 0 && matches!(cell.material, 2 | 3 | 4 | 10 | 11 | 15) {
@@ -594,6 +639,7 @@ pub fn step(_dt: f64) {
             let density_of = |id: MaterialId| -> f32 {
                 materials.get(id as usize).map(|m| m.density).unwrap_or(0.0)
             };
+            step_special(cells, w as usize, h as usize);
             match gravity {
                 1 => {
                     realmatter_world::move_liquid_flat(cells, w, h, &state_of, active);
@@ -607,7 +653,11 @@ pub fn step(_dt: f64) {
                 }
             }
             if newton {
-                apply_newtonian(cells, w as usize, h as usize, &state_of);
+                apply_newtonian(cells, w as usize, h as usize, &state_of, &density_of);
+            }
+            if air == 0 {
+                apply_air_advection(cells, w as usize, h as usize, &state_of);
+                settle_heavy_gas(cells, w as usize, h as usize);
             }
             step_spark(cells, w as usize, h as usize);
             match edge {
@@ -652,17 +702,20 @@ fn step_spark(cells: &mut [Cell], w: usize, h: usize) {
             let ni = ny as usize * w + nx as usize;
             // Fresh iron only. A conductor that just stopped sparking keeps a
             // short lifetime so the pulse does not bounce back on the next frame.
-            if cells[ni].material == 8 && cells[ni].lifetime <= 0.0 {
+            if is_conductor(cells[ni].material) && cells[ni].lifetime <= 0.0 {
                 next.push(ni);
             }
         }
-        cells[i].material = 8;
+        let back = if cells[i].vx > 17.0 { 18 } else { 8 };
+        cells[i].material = back;
         cells[i].temperature = 293.15;
         cells[i].lifetime = 2.0;
+        cells[i].vx = 0.0;
         cells[i].set_flag(realmatter_core::cell::cell_flags::FIXED, true);
     }
     for ni in next {
-        if cells[ni].material == 8 {
+        if is_conductor(cells[ni].material) {
+            cells[ni].vx = cells[ni].material as f32;
             cells[ni].material = 16;
             cells[ni].temperature = 900.0;
             cells[ni].set_flag(realmatter_core::cell::cell_flags::FIXED, true);
@@ -670,7 +723,160 @@ fn step_spark(cells: &mut [Cell], w: usize, h: usize) {
     }
 }
 
-fn apply_newtonian(cells: &mut [Cell], w: usize, h: usize, state_of: &dyn Fn(MaterialId) -> Option<MaterialState>) {
+fn apply_air_advection(
+    cells: &mut [Cell],
+    w: usize,
+    h: usize,
+    state_of: &dyn Fn(MaterialId) -> Option<MaterialState>,
+) {
+    let mut planned = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let kind = state_of(cells[i].material);
+            if !matches!(kind, Some(MaterialState::Powder | MaterialState::Liquid)) {
+                continue;
+            }
+            let mut vx = 0.0f32;
+            let mut vy = 0.0f32;
+            let mut n = 0i32;
+            for dy in -3i32..=3 {
+                for dx in -3i32..=3 {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                        continue;
+                    }
+                    let ni = ny as usize * w + nx as usize;
+                    if matches!(state_of(cells[ni].material), Some(MaterialState::Gas)) {
+                        vx += cells[ni].vx;
+                        vy += cells[ni].vy;
+                        // A gas above this cell is rising away from it; carry the cell along.
+                        if dy < 0 {
+                            vy -= 0.2;
+                        }
+                        n += 1;
+                    }
+                }
+            }
+            if n == 0 {
+                continue;
+            }
+            vx /= n as f32;
+            vy /= n as f32;
+            let mx = if vx.abs() > 0.02 { vx.signum() as i32 } else { 0 };
+            let my = if vy.abs() > 0.02 { vy.signum() as i32 } else { 0 };
+            if mx != 0 || my != 0 {
+                planned.push((i, mx, my));
+            }
+        }
+    }
+    for (i, dx, dy) in planned {
+        let x = (i % w) as i32;
+        let y = (i / w) as i32;
+        let nx = x + dx;
+        let ny = y + dy;
+        if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+            continue;
+        }
+        let j = ny as usize * w + nx as usize;
+        let dest_gas = matches!(state_of(cells[j].material), Some(MaterialState::Gas));
+        if (cells[j].is_empty() || dest_gas) && !cells[i].is_empty() {
+            cells.swap(i, j);
+        }
+    }
+}
+
+fn settle_heavy_gas(cells: &mut [Cell], w: usize, h: usize) {
+    if h < 2 {
+        return;
+    }
+    // Gas diffusion also steps CO2 upward. Two downward passes leave a net sink.
+    for _ in 0..2 {
+        for y in (0..h - 1).rev() {
+            for x in 0..w {
+                let i = y * w + x;
+                let j = (y + 1) * w + x;
+                if cells[i].material == 21 && cells[j].is_empty() {
+                    cells.swap(i, j);
+                }
+            }
+        }
+    }
+}
+
+fn step_special(cells: &mut [Cell], w: usize, h: usize) {
+    let mut grow = Vec::new();
+    let mut burst = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            match cells[i].material {
+                17 if cells[i].temperature >= 273.15 => {
+                    cells[i].material = 3;
+                    cells[i].temperature = 273.15;
+                    cells[i].set_flag(realmatter_core::cell::cell_flags::FIXED, false);
+                }
+                22 => {
+                    for (dx, dy) in [(-1i32, 0), (1, 0), (0, -1), (0, 1)] {
+                        let nx = x as i32 + dx;
+                        let ny = y as i32 + dy;
+                        if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                            continue;
+                        }
+                        let ni = ny as usize * w + nx as usize;
+                        if cells[ni].material == 3 {
+                            grow.push(ni);
+                            break;
+                        }
+                    }
+                }
+                25 if cells[i].temperature >= 600.0 => burst.push((x, y)),
+                _ => {}
+            }
+        }
+    }
+    for ni in grow {
+        if cells[ni].material == 3 {
+            cells[ni].material = 22;
+            cells[ni].temperature = 293.15;
+            cells[ni].set_flag(realmatter_core::cell::cell_flags::FIXED, true);
+        }
+    }
+    for (x, y) in burst {
+        for dy in -3i32..=3 {
+            for dx in -3i32..=3 {
+                if dx * dx + dy * dy > 10 {
+                    continue;
+                }
+                let nx = x as i32 + dx;
+                let ny = y as i32 + dy;
+                if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                    continue;
+                }
+                let ni = ny as usize * w + nx as usize;
+                if cells[ni].material != 1 {
+                    cells[ni].material = 6;
+                    cells[ni].temperature = 1200.0;
+                    cells[ni].lifetime = 0.6;
+                    cells[ni].set_flag(realmatter_core::cell::cell_flags::FIXED, false);
+                }
+            }
+        }
+    }
+}
+
+fn is_conductor(id: u16) -> bool {
+    id == 8 || id == 18
+}
+
+fn apply_newtonian(
+    cells: &mut [Cell],
+    w: usize,
+    h: usize,
+    state_of: &dyn Fn(MaterialId) -> Option<MaterialState>,
+    density_of: &dyn Fn(MaterialId) -> f32,
+) {
     let mut pulls: Vec<(usize, i32, i32)> = Vec::new();
     for y in 0..h {
         for x in 0..w {
@@ -678,10 +884,10 @@ fn apply_newtonian(cells: &mut [Cell], w: usize, h: usize, state_of: &dyn Fn(Mat
             if !matches!(state_of(cells[i].material), Some(MaterialState::Powder)) {
                 continue;
             }
-            let mut sx = 0i32;
-            let mut sy = 0i32;
-            for dy in -4i32..=4 {
-                for dx in -4i32..=4 {
+            let mut sx = 0.0f32;
+            let mut sy = 0.0f32;
+            for dy in -8i32..=8 {
+                for dx in -8i32..=8 {
                     if dx == 0 && dy == 0 {
                         continue;
                     }
@@ -694,12 +900,14 @@ fn apply_newtonian(cells: &mut [Cell], w: usize, h: usize, state_of: &dyn Fn(Mat
                     if cells[ni].is_empty() {
                         continue;
                     }
-                    sx += dx.signum();
-                    sy += dy.signum();
+                    let dist2 = (dx * dx + dy * dy) as f32;
+                    let mass = density_of(cells[ni].material).max(1.0);
+                    sx += dx as f32 * mass / dist2;
+                    sy += dy as f32 * mass / dist2;
                 }
             }
-            if sx != 0 || sy != 0 {
-                pulls.push((i, sx.signum(), sy.signum()));
+            if sx.abs() > 1.0 || sy.abs() > 1.0 {
+                pulls.push((i, sx.signum() as i32, sy.signum() as i32));
             }
         }
     }
@@ -892,6 +1100,7 @@ fn initial_temperature(material: u16) -> f32 {
         // ice: below water's melting point.
         13 => 263.15,
         16 => 900.0,
+        17 => 260.0,
         _ => 293.15,
     }
 }

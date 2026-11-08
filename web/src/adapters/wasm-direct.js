@@ -21,9 +21,9 @@ export class WasmDirectAdapter {
     // site root's pkg/ directory. No absolute '/pkg' paths: those break under
     // a subpath deployment.
     const paths = [
-      "../../pkg/realmatter_wasm.js?sim=4",
-      "../pkg/realmatter_wasm.js?sim=4",
-      "./pkg/realmatter_wasm.js?sim=4",
+      "../../pkg/realmatter_wasm.js?sim=8",
+      "../pkg/realmatter_wasm.js?sim=8",
+      "./pkg/realmatter_wasm.js?sim=8",
     ];
     let lastErr = null;
     for (const p of paths) {

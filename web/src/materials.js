@@ -28,7 +28,16 @@ export const MATERIALS = [
   { id: 13, abbr: "ICE", name: "Ice", category: "solids", color: "#b3e5fc", density: 917, phase: "solid", temp: 263, conductivity: 2.2, heatCap: 2100, melt: 273, boil: null, desc: "Melts into water at 273 K." },
   { id: 14, abbr: "GLAS", name: "Glass", category: "solids", color: "#80deea", density: 2500, phase: "solid", temp: 293, conductivity: 1.0, heatCap: 840, melt: 1673, boil: null, desc: "Acid-resistant solid." },
   { id: 15, abbr: "GUN", name: "Gunpowder", category: "powders", color: "#424242", density: 1000, phase: "powder", temp: 293, conductivity: 0.2, heatCap: 1000, melt: null, boil: null, desc: "Ignites and bursts into nearby powder." },
-  { id: 16, abbr: "SPRK", name: "Spark", category: "energy", color: "#fff050", density: 0, phase: "energy", temp: 900, conductivity: 0, heatCap: 0, melt: null, boil: null, desc: "Travels through adjacent iron, one cell per frame, then becomes iron." },
+  { id: 16, abbr: "SPRK", name: "Spark", category: "energy", color: "#fff050", density: 0, phase: "energy", temp: 900, conductivity: 0, heatCap: 0, melt: null, boil: null, desc: "Travels through adjacent iron or copper, one cell per frame." },
+  { id: 17, abbr: "SNOW", name: "Snow", category: "powders", color: "#e6f0ff", density: 300, phase: "powder", temp: 260, conductivity: 0.15, heatCap: 2100, melt: 273, boil: null, desc: "Falls. Melts into water at 273 K." },
+  { id: 18, abbr: "COPR", name: "Copper", category: "solids", color: "#b87333", density: 8960, phase: "solid", temp: 293, conductivity: 400, heatCap: 385, melt: null, boil: null, desc: "Conducts spark, same as iron." },
+  { id: 19, abbr: "NITR", name: "Nitro", category: "liquids", color: "#e6dc50", density: 850, phase: "liquid", temp: 293, conductivity: 0.15, heatCap: 1700, melt: 250, boil: null, desc: "Liquid explosive. Fire sets off nearby nitro." },
+  { id: 20, abbr: "HYGN", name: "Hydrogen", category: "gases", color: "#d2e6ff", density: 0.09, phase: "gas", temp: 293, conductivity: 0.18, heatCap: 14300, melt: null, boil: null, desc: "Light gas. Rises when air is on and burns." },
+  { id: 21, abbr: "CO2", name: "CO2", category: "gases", color: "#b4beb4", density: 1.8, phase: "gas", temp: 293, conductivity: 0.016, heatCap: 840, melt: null, boil: null, desc: "Heavy gas. Sinks when air is on." },
+  { id: 22, abbr: "PLNT", name: "Plant", category: "solids", color: "#2e8c3c", density: 400, phase: "solid", temp: 293, conductivity: 0.1, heatCap: 1700, melt: null, boil: null, desc: "Drinks adjacent water and grows. Burns." },
+  { id: 23, abbr: "GOLD", name: "Gold", category: "powders", color: "#d4af37", density: 19300, phase: "powder", temp: 293, conductivity: 300, heatCap: 129, melt: 1337, boil: null, desc: "Very heavy powder." },
+  { id: 24, abbr: "DUST", name: "Dust", category: "powders", color: "#a08c6e", density: 200, phase: "powder", temp: 293, conductivity: 0.05, heatCap: 1000, melt: null, boil: null, desc: "Light powder. Burns." },
+  { id: 25, abbr: "BOMB", name: "Bomb", category: "solids", color: "#5a2828", density: 1500, phase: "solid", temp: 293, conductivity: 0.2, heatCap: 1000, melt: null, boil: null, desc: "At 600 K it becomes a ball of fire. Stone is left standing." },
 ];
 
 export function findMaterial(id) {

@@ -147,7 +147,7 @@ pub fn react_all(
                 cells[i].set_flag(cell_flags::BURNING, true);
                 // Gunpowder bursts: nearby powder catches in the same tick
                 // instead of waiting to burn like a wick.
-                if was == 15 {
+                if was == 15 || was == 19 {
                     for dy in -2i32..=2 {
                         for dx in -2i32..=2 {
                             if dx * dx + dy * dy > 5 {
@@ -159,7 +159,7 @@ pub fn react_all(
                                 continue;
                             }
                             let ni = ny as usize * w + nx as usize;
-                            if cells[ni].material == 15 {
+                            if cells[ni].material == 15 || cells[ni].material == 19 {
                                 cells[ni].material = 6;
                                 cells[ni].temperature = 1200.0;
                                 cells[ni].lifetime = 0.45;
