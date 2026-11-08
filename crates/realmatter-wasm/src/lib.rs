@@ -301,15 +301,105 @@ impl StaticRegistry {
             flammable: true,
             ignition_temp: 500.0,
         });
-        props.push(mat(17, "snow", MaterialState::Powder, 300.0, 2100.0, 0.15, 273.15, false, f32::INFINITY));
-        props.push(mat(18, "copper", MaterialState::Solid, 8960.0, 385.0, 400.0, f32::INFINITY, false, f32::INFINITY));
-        props.push(mat(19, "nitro", MaterialState::Liquid, 850.0, 1700.0, 0.15, 250.0, true, 420.0));
-        props.push(mat(20, "hydrogen", MaterialState::Gas, 0.09, 14300.0, 0.18, f32::INFINITY, true, 773.0));
-        props.push(mat(21, "co2", MaterialState::Gas, 1.8, 840.0, 0.016, f32::INFINITY, false, f32::INFINITY));
-        props.push(mat(22, "plant", MaterialState::Solid, 400.0, 1700.0, 0.1, f32::INFINITY, true, 500.0));
-        props.push(mat(23, "gold", MaterialState::Powder, 19300.0, 129.0, 300.0, 1337.0, false, f32::INFINITY));
-        props.push(mat(24, "dust", MaterialState::Powder, 200.0, 1000.0, 0.05, f32::INFINITY, true, 480.0));
-        props.push(mat(25, "bomb", MaterialState::Solid, 1500.0, 1000.0, 0.2, f32::INFINITY, false, f32::INFINITY));
+        props.push(mat(
+            17,
+            "snow",
+            MaterialState::Powder,
+            300.0,
+            2100.0,
+            0.15,
+            273.15,
+            false,
+            f32::INFINITY,
+        ));
+        props.push(mat(
+            18,
+            "copper",
+            MaterialState::Solid,
+            8960.0,
+            385.0,
+            400.0,
+            f32::INFINITY,
+            false,
+            f32::INFINITY,
+        ));
+        props.push(mat(
+            19,
+            "nitro",
+            MaterialState::Liquid,
+            850.0,
+            1700.0,
+            0.15,
+            250.0,
+            true,
+            420.0,
+        ));
+        props.push(mat(
+            20,
+            "hydrogen",
+            MaterialState::Gas,
+            0.09,
+            14300.0,
+            0.18,
+            f32::INFINITY,
+            true,
+            773.0,
+        ));
+        props.push(mat(
+            21,
+            "co2",
+            MaterialState::Gas,
+            1.8,
+            840.0,
+            0.016,
+            f32::INFINITY,
+            false,
+            f32::INFINITY,
+        ));
+        props.push(mat(
+            22,
+            "plant",
+            MaterialState::Solid,
+            400.0,
+            1700.0,
+            0.1,
+            f32::INFINITY,
+            true,
+            500.0,
+        ));
+        props.push(mat(
+            23,
+            "gold",
+            MaterialState::Powder,
+            19300.0,
+            129.0,
+            300.0,
+            1337.0,
+            false,
+            f32::INFINITY,
+        ));
+        props.push(mat(
+            24,
+            "dust",
+            MaterialState::Powder,
+            200.0,
+            1000.0,
+            0.05,
+            f32::INFINITY,
+            true,
+            480.0,
+        ));
+        props.push(mat(
+            25,
+            "bomb",
+            MaterialState::Solid,
+            1500.0,
+            1000.0,
+            0.2,
+            f32::INFINITY,
+            false,
+            f32::INFINITY,
+        ));
         Self { props }
     }
 }
@@ -333,7 +423,12 @@ fn material_table() -> &'static Vec<MaterialProps> {
     static TABLE: OnceLock<Vec<MaterialProps>> = OnceLock::new();
     TABLE.get_or_init(|| {
         let builtin = StaticRegistry::builtin();
-        let max_id = builtin.props.iter().map(|p| p.id as usize).max().unwrap_or(0);
+        let max_id = builtin
+            .props
+            .iter()
+            .map(|p| p.id as usize)
+            .max()
+            .unwrap_or(0);
         let mut table = vec![
             MaterialProps {
                 id: 0,
@@ -364,11 +459,17 @@ fn material_table() -> &'static Vec<MaterialProps> {
 struct SimState {
     world: World,
     render: Vec<u8>,
+    /// Fire buffer and persistent frame. Display-only; never read by physics.
+    scratch: realmatter_renderer::RenderScratch,
+    particles: u32,
+    last_error: String,
+    /// Milliseconds spent in the last full framebuffer compose.
+    render_ms: f32,
     /// Reused chemistry engine (registry + material table built once per
     /// world, not per tick). Dimensions follow the world; callers must
     /// refresh it after `init`/`load_blob` replace the world.
     chemistry: realmatter_chemistry::ChemistryEngine,
-    /// 0 material, 1 fancy, 2 heat, 3 pressure, 4 velocity.
+    /// See [`realmatter_renderer::view_name`]. 0–9.
     view: u8,
     /// 0 down, 1 off, 2 toward center.
     gravity: u8,
@@ -381,8 +482,7 @@ struct SimState {
 }
 
 fn make_chemistry(world: &World) -> realmatter_chemistry::ChemistryEngine {
-    let mut chem =
-        realmatter_chemistry::ChemistryEngine::from_config(world.config());
+    let mut chem = realmatter_chemistry::ChemistryEngine::from_config(world.config());
     chem.set_materials(material_table().clone());
     chem
 }
@@ -404,100 +504,63 @@ fn with_state<T>(f: impl FnOnce(&mut SimState) -> T, fallback: T) -> T {
     }
 }
 
+fn now_ms() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now())
+        .unwrap_or_else(|| js_sys::Date::now())
+}
+
 fn rebuild_render(state: &mut SimState) {
+    let started = now_ms();
     let w = state.world.width() as usize;
     let h = state.world.height() as usize;
-    state.render.resize(w * h * 4, 0);
-    for y in 0..h {
-        for x in 0..w {
-            let cell = state.world.cell(x as i32, y as i32).cloned().unwrap_or_default();
-            let (r, g, b, a) = rgba_for(&cell, x as i32, y as i32, state.view);
-            let i = (y * w + x) * 4;
-            state.render[i] = r;
-            state.render[i + 1] = g;
-            state.render[i + 2] = b;
-            state.render[i + 3] = a;
-        }
-    }
+    let view = state.view;
+    let gravity = state.gravity;
+    let ambient = state.ambient;
+    let mut scratch = std::mem::take(&mut state.scratch);
+    let mut render = std::mem::take(&mut state.render);
+    let count = realmatter_renderer::render(
+        state.world.cells(),
+        w,
+        h,
+        view,
+        gravity,
+        ambient,
+        &mut scratch,
+        &mut render,
+    );
+    state.scratch = scratch;
+    state.render = render;
+    state.particles = count;
+    state.render_ms = (now_ms() - started) as f32;
 }
 
-fn rgba_for(cell: &Cell, x: i32, y: i32, mode: u8) -> (u8, u8, u8, u8) {
-    if cell.material == 0 {
-        return (0, 0, 0, 0);
+fn paint_or_rebuild(state: &mut SimState, x: i32, y: i32, cell: &Cell) {
+    let w = state.world.width() as usize;
+    let h = state.world.height() as usize;
+    if realmatter_renderer::mode_needs_full(state.view) || state.render.len() != w * h * 4 {
+        rebuild_render(state);
+        return;
     }
-    let (mut r, mut g, mut b, a) = match cell.material {
-        0 => (0, 0, 0, 0),
-        1 => (128, 128, 128, 255),
-        2 => (217, 194, 122, 255),
-        3 => (79, 195, 247, 220),
-        4 => (141, 110, 99, 230),
-        5 => (176, 190, 197, 140),
-        6 => (255, 111, 0, 255),
-        7 => (109, 76, 65, 255),
-        8 => (144, 164, 174, 255),
-        9 => (255, 61, 0, 255),
-        10 => (118, 255, 3, 220),
-        11 => (238, 238, 238, 255),
-        12 => (97, 97, 97, 120),
-        13 => (179, 229, 252, 230),
-        14 => (128, 222, 234, 180),
-        15 => (66, 66, 66, 255),
-        16 => (255, 240, 80, 255),
-        17 => (230, 240, 255, 255),
-        18 => (184, 115, 51, 255),
-        19 => (230, 220, 80, 220),
-        20 => (210, 230, 255, 90),
-        21 => (180, 190, 180, 140),
-        22 => (46, 140, 60, 255),
-        23 => (212, 175, 55, 255),
-        24 => (160, 140, 110, 255),
-        25 => (90, 40, 40, 255),
-        _ => (255, 0, 255, 255),
-    };
-    if cell.material != 0 && matches!(cell.material, 2 | 3 | 4 | 10 | 11 | 15) {
-        let n = ((x.wrapping_mul(13).wrapping_add(y.wrapping_mul(7))) & 15) as i32 - 8;
-        r = add_u8(r, n);
-        g = add_u8(g, n);
-        b = add_u8(b, n);
-    }
-    match mode {
-        2 => return heat_rgba(cell.temperature),
-        3 => {
-            let k = ((cell.pressure - 90_000.0) / 40_000.0).clamp(0.0, 1.0);
-            return (
-                (40.0 + k * 200.0) as u8,
-                (80.0 + (0.5 - (k - 0.5).abs()) * 120.0) as u8,
-                (200.0 - k * 160.0) as u8,
-                255,
-            );
-        }
-        4 => {
-            let s = (cell.vx * cell.vx + cell.vy * cell.vy).sqrt();
-            let k = (s / 8.0).clamp(0.0, 1.0);
-            return ((40.0 + k * 215.0) as u8, (180.0 - k * 100.0) as u8, 80, 255);
-        }
-        1 if cell.temperature > 500.0 => {
-            let hot = heat_rgba(cell.temperature);
-            let t = ((cell.temperature - 500.0) / 1000.0).clamp(0.0, 0.75);
-            r = ((r as f32) * (1.0 - t) + (hot.0 as f32) * t) as u8;
-            g = ((g as f32) * (1.0 - t) + (hot.1 as f32) * t) as u8;
-            b = ((b as f32) * (1.0 - t) + (hot.2 as f32) * t) as u8;
-        }
-        _ => {}
-    }
-    (r, g, b, a)
+    realmatter_renderer::paint_cell(
+        &mut state.render,
+        w,
+        h,
+        x,
+        y,
+        cell,
+        state.view,
+        state.ambient,
+    );
 }
 
-fn add_u8(c: u8, d: i32) -> u8 {
-    (c as i32 + d).clamp(0, 255) as u8
-}
-
-fn heat_rgba(t: f32) -> (u8, u8, u8, u8) {
-    let k = ((t - 200.0) / 1600.0).clamp(0.0, 1.0);
-    let r = (k * 255.0) as u8;
-    let g = ((k * 2.2 - 0.7).clamp(0.0, 1.0) * 255.0) as u8;
-    let b = ((1.0 - k).clamp(0.0, 1.0) * 200.0) as u8;
-    (r, g, b, 255)
+fn finite(v: f32, fallback: f32) -> f32 {
+    if v.is_finite() {
+        v
+    } else {
+        fallback
+    }
 }
 
 /// Initialize the simulation. Called once from JS.
@@ -519,6 +582,10 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
     let mut state = SimState {
         world,
         render: Vec::new(),
+        scratch: realmatter_renderer::RenderScratch::default(),
+        particles: 0,
+        last_error: String::new(),
+        render_ms: 0.0,
         chemistry,
         view: 0,
         gravity: 0,
@@ -552,7 +619,6 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn step(_dt: f64) {
     use realmatter_core::chunk_mask::ActiveMask;
-    use realmatter_core::traits::ChemistryModule;
     use realmatter_physics::{fluid, gas, heat, reaction, stability, transfer};
     with_state(
         |state| {
@@ -565,12 +631,7 @@ pub fn step(_dt: f64) {
             // tick so regions wake up as soon as a cell is written into them.
             // Masked phases skip only empty source cells (proven no-ops), so
             // results are bit-identical to the unmasked pipeline.
-            let mask = ActiveMask::build_from_cells(
-                state.world.cells(),
-                w,
-                h,
-                config.chunk_size,
-            );
+            let mask = ActiveMask::build_from_cells(state.world.cells(), w, h, config.chunk_size);
             let gravity = state.gravity;
             let air = state.air;
             let edge = state.edge;
@@ -767,7 +828,11 @@ fn apply_air_advection(
             }
             vx /= n as f32;
             vy /= n as f32;
-            let mx = if vx.abs() > 0.02 { vx.signum() as i32 } else { 0 };
+            let mx = if vx.abs() > 0.02 {
+                vx.signum() as i32
+            } else {
+                0
+            };
             // Powder and liquid already fall one cell this frame. An upward
             // air step of one cell cancels that fall, so only a strong upward
             // current (an explosion, not a warm plume) may lift them.
@@ -952,7 +1017,12 @@ fn clear_border(cells: &mut [Cell], w: usize, h: usize) {
     }
 }
 
-fn wrap_border(cells: &mut [Cell], w: usize, h: usize, state_of: &dyn Fn(MaterialId) -> Option<MaterialState>) {
+fn wrap_border(
+    cells: &mut [Cell],
+    w: usize,
+    h: usize,
+    state_of: &dyn Fn(MaterialId) -> Option<MaterialState>,
+) {
     if w < 2 || h < 2 {
         return;
     }
@@ -1060,6 +1130,7 @@ pub fn sim_status() -> String {
 pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
     with_state(
         |state| {
+            let was_empty = state.world.cell(x, y).is_none_or(|c| c.is_empty());
             let mut cell = Cell::default();
             cell.material = material;
             cell.temperature = initial_temperature(material);
@@ -1073,23 +1144,14 @@ pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
             }
             match state.world.set(CellCoord::new(x, y), cell) {
                 Ok(()) => {
-                    // Incremental render update: repaint only this pixel.
-                    // Full rebuilds happen on init/step/reset/load, so per-cell
-                    // painting (brush strokes) stays O(1) instead of O(W*H).
-                    let w = state.world.width() as usize;
-                    let h = state.world.height() as usize;
-                    if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h
-                        && state.render.len() == w * h * 4
-                    {
-                        let (r, g, b, a) = rgba_for(&cell, x, y, state.view);
-                        let i = (y as usize * w + x as usize) * 4;
-                        state.render[i] = r;
-                        state.render[i + 1] = g;
-                        state.render[i + 2] = b;
-                        state.render[i + 3] = a;
-                    } else {
-                        rebuild_render(state);
+                    if was_empty && material != 0 {
+                        state.particles = state.particles.saturating_add(1);
+                    } else if !was_empty && material == 0 {
+                        state.particles = state.particles.saturating_sub(1);
                     }
+                    // One pixel, except modes whose colour depends on neighbours
+                    // or on the persistent buffer.
+                    paint_or_rebuild(state, x, y, &cell);
                     true
                 }
                 Err(_) => false,
@@ -1097,6 +1159,80 @@ pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
         },
         false,
     )
+}
+
+/// Restore or stamp a cell without resetting temperature, velocity, flags,
+/// lifetime, or pressure. Spark stores its conductor id in `vx`; copying only
+/// the material id would turn that spark into a fresh one. Non-finite numbers
+/// are replaced so a bad stamp cannot poison the solver.
+#[wasm_bindgen]
+pub fn set_cell_full(
+    x: i32,
+    y: i32,
+    material: u16,
+    temperature: f32,
+    vx: f32,
+    vy: f32,
+    flags: u8,
+    lifetime: f32,
+    pressure: f32,
+) -> bool {
+    with_state(
+        |state| {
+            let was_empty = state.world.cell(x, y).is_none_or(|c| c.is_empty());
+            let cell = Cell {
+                material,
+                temperature: finite(temperature, initial_temperature(material)),
+                vx: finite(vx, 0.0),
+                vy: finite(vy, 0.0),
+                flags,
+                lifetime: finite(lifetime, 0.0),
+                pressure: finite(pressure, 0.0),
+            };
+            match state.world.set(CellCoord::new(x, y), cell) {
+                Ok(()) => {
+                    let now_empty = material == 0;
+                    if was_empty && !now_empty {
+                        state.particles = state.particles.saturating_add(1);
+                    } else if !was_empty && now_empty {
+                        state.particles = state.particles.saturating_sub(1);
+                    }
+                    paint_or_rebuild(state, x, y, &cell);
+                    true
+                }
+                Err(_) => false,
+            }
+        },
+        false,
+    )
+}
+
+/// `[material, temperature, vx, vy, flags, lifetime, pressure]`.
+/// Empty / out of bounds is all zeros. There is no particle index to copy.
+#[wasm_bindgen]
+pub fn cell_state(x: i32, y: i32) -> Vec<f32> {
+    with_state(
+        |state| {
+            state
+                .world
+                .cell(x, y)
+                .map(pack_cell)
+                .unwrap_or_else(|| vec![0.0; 7])
+        },
+        vec![0.0; 7],
+    )
+}
+
+fn pack_cell(cell: &Cell) -> Vec<f32> {
+    vec![
+        cell.material as f32,
+        cell.temperature,
+        cell.vx,
+        cell.vy,
+        cell.flags as f32,
+        cell.lifetime,
+        cell.pressure,
+    ]
 }
 
 /// Characteristic paint temperature for a builtin material id.
@@ -1117,17 +1253,44 @@ fn initial_temperature(material: u16) -> f32 {
     }
 }
 
-/// 0 material, 1 fancy (heat tint), 2 heat, 3 pressure, 4 velocity.
-/// Colors come from the live cell fields, not from invented values.
+/// 0 Normal, 1 Fancy, 2 Heat, 3 Pressure, 4 Velocity,
+/// 5 Air velocity, 6 Air pressure, 7 Air heat, 8 Persistent, 9 Gravity.
 #[wasm_bindgen]
 pub fn set_view_mode(mode: u32) {
     with_state(
         |state| {
-            state.view = mode.min(4) as u8;
+            state.view = mode.min(realmatter_renderer::DISPLAY_MODES as u32 - 1) as u8;
             rebuild_render(state);
         },
         (),
     );
+}
+
+/// Occupied cells from the last full compose, adjusted by paints.
+#[wasm_bindgen]
+pub fn particle_count() -> u32 {
+    with_state(|state| state.particles, 0)
+}
+
+/// Last full framebuffer compose, in milliseconds. Not a browser frame time.
+#[wasm_bindgen]
+pub fn render_millis() -> f32 {
+    with_state(|state| state.render_ms, 0.0)
+}
+
+/// Active WASM module. The page must not substitute another engine for this.
+#[wasm_bindgen]
+pub fn module_id() -> String {
+    "realmatter_wasm".to_string()
+}
+
+/// Last save/load failure. Empty after a successful load.
+#[wasm_bindgen]
+pub fn last_error() -> String {
+    with_state(
+        |state| state.last_error.clone(),
+        "simulation is not initialized".into(),
+    )
 }
 
 /// Get a cell's material id (0 if out of bounds / uninitialized).
@@ -1151,13 +1314,19 @@ pub fn get_cell_pressure(x: i32, y: i32) -> f32 {
 /// Horizontal velocity, m/s (0 if out of bounds).
 #[wasm_bindgen]
 pub fn get_cell_vx(x: i32, y: i32) -> f32 {
-    with_state(|state| state.world.cell(x, y).map(|c| c.vx).unwrap_or(0.0), 0.0)
+    with_state(
+        |state| state.world.cell(x, y).map(|c| c.vx).unwrap_or(0.0),
+        0.0,
+    )
 }
 
 /// Vertical velocity, m/s (0 if out of bounds). Positive is downward.
 #[wasm_bindgen]
 pub fn get_cell_vy(x: i32, y: i32) -> f32 {
-    with_state(|state| state.world.cell(x, y).map(|c| c.vy).unwrap_or(0.0), 0.0)
+    with_state(
+        |state| state.world.cell(x, y).map(|c| c.vy).unwrap_or(0.0),
+        0.0,
+    )
 }
 
 /// Get a cell's temperature (Kelvin; 0.0 if out of bounds / uninitialized).
@@ -1201,6 +1370,8 @@ pub fn reset() -> bool {
             }
             state.world.set_tick_count(0);
             state.world.set_time_accumulator(0.0);
+            state.scratch = realmatter_renderer::RenderScratch::default();
+            state.last_error.clear();
             rebuild_render(state);
             true
         },
@@ -1211,10 +1382,7 @@ pub fn reset() -> bool {
 /// Pointer to the RGBA8 render buffer (row-major, y outer / x inner).
 #[wasm_bindgen]
 pub fn render_buffer_ptr() -> *const u8 {
-    with_state(
-        |state| state.render.as_ptr(),
-        std::ptr::null(),
-    )
+    with_state(|state| state.render.as_ptr(), std::ptr::null())
 }
 
 /// Length of the render buffer in bytes.
@@ -1249,14 +1417,17 @@ pub fn load_blob(bytes: &[u8]) -> bool {
                     // World dimensions may have changed; refresh the reused
                     // chemistry engine so its width/height stay in sync.
                     state.chemistry =
-                        realmatter_chemistry::ChemistryEngine::from_config(
-                            state.world.config(),
-                        );
+                        realmatter_chemistry::ChemistryEngine::from_config(state.world.config());
                     state.chemistry.set_materials(material_table().clone());
+                    state.scratch = realmatter_renderer::RenderScratch::default();
+                    state.last_error.clear();
                     rebuild_render(state);
                     true
                 }
-                Err(_) => false,
+                Err(err) => {
+                    state.last_error = format!("load failed: {err:?}");
+                    false
+                }
             }
         },
         false,
@@ -1304,7 +1475,11 @@ mod air_tests {
             None,
         );
         apply_air_advection(&mut cells, w, h, &states);
-        assert_eq!(cells[2 * w + 2].material, 24, "dust should be one row lower");
+        assert_eq!(
+            cells[2 * w + 2].material,
+            24,
+            "dust should be one row lower"
+        );
     }
 
     #[test]
@@ -1317,7 +1492,15 @@ mod air_tests {
         cells[2 * w + 3].material = 12;
         cells[2 * w + 3].vy = -0.4;
         apply_air_advection(&mut cells, w, h, &states);
-        assert_eq!(cells[3 * w + 4].material, 24, "dust slides with the sideways current");
-        assert_eq!(cells[2 * w + 3].material, 12, "a mild plume does not lift dust");
+        assert_eq!(
+            cells[3 * w + 4].material,
+            24,
+            "dust slides with the sideways current"
+        );
+        assert_eq!(
+            cells[2 * w + 3].material,
+            12,
+            "a mild plume does not lift dust"
+        );
     }
 }

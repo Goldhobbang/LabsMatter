@@ -15,6 +15,7 @@ realmatter-world = { path = "../realmatter-world" }
 realmatter-physics = { path = "../realmatter-physics" }
 realmatter-chemistry = { path = "../realmatter-chemistry" }
 realmatter-persist = { path = "../realmatter-persist" }
+realmatter-renderer = { path = "../realmatter-renderer" }
 wasm-bindgen.workspace = true
 js-sys.workspace = true
-web-sys.workspace = true
+web-sys = { workspace = true, features = ["Window", "Performance"] }

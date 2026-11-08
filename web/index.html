@@ -73,6 +73,11 @@
           <button class="rail-btn" type="button" data-view="2" title="Heat (3)">HEAT</button>
           <button class="rail-btn" type="button" data-view="3" title="Pressure (4)">PRES</button>
           <button class="rail-btn" type="button" data-view="4" title="Velocity (5)">VEL</button>
+          <button class="rail-btn" type="button" data-view="5" title="Air velocity (6)">AIRV</button>
+          <button class="rail-btn" type="button" data-view="6" title="Air pressure (7)">AIRP</button>
+          <button class="rail-btn" type="button" data-view="7" title="Air heat (8)">AIRH</button>
+          <button class="rail-btn" type="button" data-view="8" title="Persistent (9)">PERS</button>
+          <button class="rail-btn" type="button" data-view="9" title="Gravity (0)">GRAV</button>
           <button class="rail-btn" type="button" id="btn-grid" title="Grid (G)">GRID</button>
           <button class="rail-btn" type="button" id="btn-hud" title="HUD (H)">HUD</button>
         </div>
@@ -95,7 +100,7 @@
       <h2>Controls</h2>
       <p class="hint">Default is the Powder preset. Switch to LabsMatter Legacy from the top bar if you want the previous keys. Wheel behavior follows the preset.</p>
       <div id="help-body"></div>
-      <p class="hint">Browser limits: F11 may be reserved by the browser. Air, Newtonian gravity, and decoration painting are not simulated, so those TPT keys are not bound.</p>
+      <p class="hint">Browser limits: F11 may be reserved by the browser. Decoration painting is not simulated. Air views read the cell pressure and velocity that exist today; there is no separate air lattice. Keys 1–9 and 0 switch display modes.</p>
       <button class="tb" value="cancel">Close</button>
     </form>
   </dialog>
@@ -117,6 +122,6 @@
     </form>
   </dialog>
 
-  <script type="module" src="./src/main.js?ui=9"></script>
+  <script type="module" src="./src/main.js?ui=10"></script>
 </body>
 </html>
