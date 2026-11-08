@@ -87,6 +87,8 @@ async function boot() {
   wireChrome();
   wirePointer();
   wireKeys();
+  initEntityPanel();
+  initToolPanel();
   subscribe(onState);
   onState(getState());
   // Diagnostics handle for runtime selection and manual verification. Read-only
@@ -279,6 +281,211 @@ function wireChrome() {
   }
 }
 
+// ---- Experimental entity controls (TPT runtime only) ---------------------
+let entityInput = 0;
+
+function modFn(name) {
+  return !!(sim && sim.mod && typeof sim.mod[name] === "function");
+}
+
+function worldCenterPixel() {
+  const s = getState();
+  const cell = 4 * (s.camera.zoom || 1);
+  const box = canvas.getBoundingClientRect();
+  return {
+    x: Math.floor((box.width / 2 - (s.camera.x || 0)) / cell),
+    y: Math.floor((box.height / 2 - (s.camera.y || 0)) / cell),
+  };
+}
+
+function setEntityInput(bits) {
+  entityInput = bits;
+  if (modFn("set_stickman_input")) {
+    try { sim.mod.set_stickman_input(0, bits); } catch (e) { console.warn(e); }
+  }
+}
+
+function holdButton(btn, bit) {
+  if (!btn) return;
+  const on = (e) => {
+    e.preventDefault();
+    setEntityInput(entityInput | bit);
+    btn.classList.add("is-active");
+    try { btn.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  };
+  const off = () => {
+    setEntityInput(entityInput & ~bit);
+    btn.classList.remove("is-active");
+  };
+  btn.addEventListener("pointerdown", on);
+  btn.addEventListener("pointerup", off);
+  btn.addEventListener("pointercancel", off);
+  btn.addEventListener("pointerleave", off);
+}
+
+function updateEntityUi() {
+  if (ENGINE !== "tpt" || !modFn("stickman_alive")) return;
+  const btn = $("btn-spawn-p1");
+  let alive = false;
+  try { alive = !!sim.mod.stickman_alive(0); } catch { alive = false; }
+  if (btn) {
+    btn.textContent = alive ? "Despawn" : "Spawn";
+    btn.setAttribute("aria-pressed", String(alive));
+  }
+  const st = $("entity-status");
+  if (st) {
+    let fighters = 0;
+    try { fighters = modFn("fighter_count") ? sim.mod.fighter_count() : 0; } catch { fighters = 0; }
+    st.textContent = `${alive ? "P1 alive" : "no P1"}${fighters ? ` \u00b7 ${fighters} fighter${fighters > 1 ? "s" : ""}` : ""}`;
+  }
+}
+
+function initEntityPanel() {
+  const panel = $("entity-panel");
+  if (!panel) return;
+  const supported =
+    ENGINE === "tpt" && modFn("spawn_stickman") && modFn("set_stickman_input") && modFn("stickman_alive");
+  if (!supported) {
+    // Do not show controls that cannot do anything. Production stays unchanged.
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const sel = $("stickman-element");
+  if (sel && !sel.options.length) {
+    const elems = (matApi.MATERIALS || []).filter((m) => (m.kind || "element") !== "wall");
+    for (const m of elems) {
+      const o = document.createElement("option");
+      o.value = String(m.id);
+      o.textContent = m.abbr;
+      o.title = m.name;
+      sel.appendChild(o);
+    }
+    const sand = elems.find((m) => m.abbr === "SAND");
+    if (sand) sel.value = String(sand.id);
+  }
+  if (sel) {
+    const apply = () => {
+      const id = parseInt(sel.value, 10) | 0;
+      if (modFn("set_stickman_element")) {
+        try { sim.mod.set_stickman_element(0, id); } catch (e) { console.warn(e); }
+      }
+    };
+    sel.onchange = apply;
+    apply();
+  }
+
+  const spawnBtn = $("btn-spawn-p1");
+  if (spawnBtn) {
+    spawnBtn.onclick = () => {
+      try {
+        if (sim.mod.stickman_alive(0)) {
+          sim.mod.despawn_stickman(0);
+          setEntityInput(0);
+        } else {
+          const c = worldCenterPixel();
+          if (!sim.mod.spawn_stickman(0, c.x, c.y)) {
+            notify("Could not spawn stickman here (cell blocked or out of bounds).");
+          }
+        }
+      } catch (e) {
+        notify("Stickman control failed: " + (e?.message || e));
+      }
+      updateEntityUi();
+    };
+  }
+
+  holdButton($("btn-entity-left"), 1);   // reference comm bit 1 = left
+  holdButton($("btn-entity-right"), 2);  // comm bit 2 = right
+  holdButton($("btn-entity-jump"), 4);   // comm bit 4 = jump
+
+  const fig = $("btn-spawn-fighter");
+  if (fig) {
+    fig.onclick = () => {
+      if (!modFn("spawn_fighter")) { notify("Fighter spawning is not available in this build."); return; }
+      const c = worldCenterPixel();
+      const slot = sim.mod.spawn_fighter(c.x, c.y);
+      notify(slot >= 0 ? `Fighter spawned (slot ${slot}).` : "Fighter registry is full.");
+      updateEntityUi();
+    };
+  }
+
+  // Keyboard movement, only while a stickman exists so normal panning is kept.
+  const MOVES = { KeyA: 1, ArrowLeft: 1, KeyD: 2, ArrowRight: 2, KeyW: 4, ArrowUp: 4 };
+  window.addEventListener("keydown", (e) => {
+    if (ENGINE !== "tpt" || !sim) return;
+    const tag = e.target && e.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (document.querySelector("dialog[open]")) return;
+    const bit = MOVES[e.code];
+    if (!bit) return;
+    let alive = false;
+    try { alive = !!sim.mod.stickman_alive(0); } catch { alive = false; }
+    if (!alive) return;
+    e.preventDefault();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    setEntityInput(entityInput | bit);
+  }, true);
+  window.addEventListener("keyup", (e) => {
+    if (ENGINE !== "tpt" || !sim) return;
+    const bit = MOVES[e.code];
+    if (!bit) return;
+    setEntityInput(entityInput & ~bit);
+  }, true);
+
+  updateEntityUi();
+}
+
+// ---- Experimental simulation tools (TPT runtime only) --------------------
+let activeSimTool = null;
+
+function updateEnvStatus() {
+  const el = $("env-status");
+  if (el) el.textContent = sim && sim.simStatus ? sim.simStatus() : "";
+}
+
+function applySimToolAt(x, y) {
+  if (activeSimTool == null || !modFn("apply_tool")) return;
+  const s = getState();
+  const r = Math.max(1, Math.round((s.brushRx + s.brushRy) / 2));
+  // dx/dy is the wind/cyclone direction; default to +x.
+  try { sim.mod.apply_tool(activeSimTool, x, y, r, 1, 0); } catch (e) { console.warn(e); }
+}
+
+function initToolPanel() {
+  const panel = $("tool-panel");
+  if (!panel) return;
+  if (ENGINE !== "tpt" || !modFn("apply_tool")) {
+    // No dead controls: hide the panel when the runtime cannot apply tools.
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  panel.querySelectorAll("[data-simtool]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const k = parseInt(b.dataset.simtool, 10);
+      activeSimTool = activeSimTool === k ? null : k;
+      panel.querySelectorAll("[data-simtool]").forEach((x) => {
+        x.classList.toggle("is-active", Number(x.dataset.simtool) === activeSimTool);
+      });
+    });
+  });
+  const env = (id, fn) => {
+    const el = $(id);
+    if (el) el.onclick = () => {
+      try { sim[fn](); } catch (e) { console.warn(e); }
+      updateEnvStatus();
+    };
+  };
+  env("btn-env-grav", "cycleGravity");
+  env("btn-env-air", "cycleAir");
+  env("btn-env-edge", "cycleEdge");
+  env("btn-env-newton", "toggleNewtonian");
+  env("btn-env-ambient", "toggleAmbient");
+  updateEnvStatus();
+}
+
 function setView(mode) {
   setState({ view: mode });
   sim.setViewMode(mode);
@@ -310,6 +517,12 @@ function onDown(e) {
     stroke = { kind: "select", a: c, b: c };
     return;
   }
+  // Simulation tool active (TPT only): apply at the cursor instead of painting.
+  if (activeSimTool != null && e.button === 0) {
+    stroke = { kind: "simtool", last: c };
+    applySimToolAt(c.x, c.y);
+    return;
+  }
   let material = s.materialId;
   if (e.button === 2) material = s.secondaryId;
   if (s.tool === "eraser" && e.button === 0) material = 0;
@@ -335,6 +548,10 @@ function onMove(e) {
     const line = bresenham(stroke.last.x, stroke.last.y, c.x, c.y);
     for (const p of line) dab(p[0], p[1], stroke.material, true);
     stroke.last = c;
+  } else if (stroke.kind === "simtool") {
+    const line = bresenham(stroke.last.x, stroke.last.y, c.x, c.y);
+    for (const p of line) applySimToolAt(p[0], p[1]);
+    stroke.last = c;
   } else {
     stroke.b = c;
   }
@@ -348,6 +565,7 @@ function onUp() {
   if (s.kind === "line") commitShape(lineCells(s.a, s.b), s.material);
   else if (s.kind === "rect") commitShape(rectCells(s.a, s.b), s.material);
   else if (s.kind === "select") selection = normRect(s.a, s.b);
+  else if (s.kind === "simtool") { /* one-shot / continuous tool stroke */ }
   else endLog(s.material);
 }
 
@@ -821,6 +1039,8 @@ function drawOverlay() {
 
 function paintHud() {
   const s = getState();
+  updateEntityUi();
+  updateEnvStatus();
   if (!s.showHud) return;
   const fps = renderer && renderer.getFps ? renderer.getFps() : 0;
   const d = sim.getDiagnostics ? sim.getDiagnostics() : {};

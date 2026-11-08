@@ -1055,6 +1055,7 @@ fn import_v1(bytes: &[u8]) -> Result<(Sim, String), String> {
     let cs = cfg.chunk_size as i32;
     let mut migrated = 0u32;
     let mut unmapped = 0u32;
+    let mut flagged = 0u32;
     let mut pressure = vec![(0.0f32, 0u32); sim.pv.len()];
 
     for (_coord, snap) in &save.chunks {
@@ -1068,6 +1069,9 @@ fn import_v1(bytes: &[u8]) -> Result<(Sim, String), String> {
             let gy = snap.coord.y * cs + ly;
             if gx < 0 || gy < 0 || gx >= vw || gy >= vh {
                 continue;
+            }
+            if cell.flags != 0 {
+                flagged += 1;
             }
             let t = v1_abbr(cell.material).and_then(realmatter_tpt::pt_id_by_abbr);
             let Some(t) = t else {
@@ -1114,6 +1118,11 @@ fn import_v1(bytes: &[u8]) -> Result<(Sim, String), String> {
     );
     if unmapped > 0 {
         report.push_str(&format!(", {unmapped} unmapped materials skipped"));
+    }
+    if flagged > 0 {
+        report.push_str(&format!(
+            ", {flagged} cells had v1 flags with no v2 equivalent (dropped)"
+        ));
     }
     if deco_cells > 0 {
         report.push_str(&format!(

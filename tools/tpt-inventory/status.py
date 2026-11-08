@@ -2,18 +2,25 @@
 """Cross-reference the pinned TPT element table with the Rust implementation.
 
 Parses `crates/realmatter-tpt/src/updates.rs` dispatch tables and emits
-`docs/tpt-parity/inventory/elements.md` with an implementation-status column,
+`docs/tpt-parity/inventory/elements.md` with a per-element classification,
 plus `docs/tpt-parity/inventory/implementation-status.md`.
 
-Status values mirror the task definition:
-  * Implemented  - a dedicated Rust update handler exists and mirrors the
-                   reference source's core behaviour.
-  * Blocked      - the element needs an engine subsystem that does not exist
-                   yet (player controller); the handler only implements the
-                   passive portion.
-  * Internal     - no `Update` callback in the reference; covered by generic
-                   movement / transition logic.
-  * Disabled     - a disabled reference slot (no element).
+Classification is deliberately finer than "has Update / lacks Update":
+
+  * Full        - reference `Update` callback AND a dedicated Rust handler.
+  * Partial     - reference `Update` handler exists but is limited by a missing
+                  engine subsystem (see BLOCKED).
+  * Unimplemented - reference `Update` callback with no Rust handler.
+  * Generic     - NO reference `Update`, but the element has create / graphics /
+                  transition callbacks that the engine provides generically
+                  (spawn defaults, colour rendering, phase transitions). These
+                  are real behaviours, not "internal-only".
+  * Passive     - NO reference `Update` and no create / graphics / transition:
+                  covered only by generic movement.
+  * Disabled    - a disabled reference slot (no element).
+
+Nothing here claims independent verification; `verified` is always `no` until
+Agent B accepts gameplay behaviour.
 """
 
 import json
@@ -26,8 +33,6 @@ UPDATES = os.path.join(ROOT, "crates", "realmatter-tpt", "src", "updates.rs")
 OUT = os.path.join(ROOT, "docs", "tpt-parity", "inventory")
 
 # Elements whose handlers are still limited by missing engine subsystems.
-# As of the K3 integration, portal/wireless/entity/piston/soap storage is part
-# of `Sim`; the entries below are the remaining partial implementations.
 BLOCKED = {
     "STKM": "shared locomotion implemented; reference legs/element-power reactions pending Agent 3",
     "STKM2": "shared locomotion implemented; reference legs/element-power reactions pending Agent 3",
@@ -74,6 +79,12 @@ def extract_dispatch(fn_name, text):
     return set(re.findall(r"pt::([A-Z0-9_]+)", body))
 
 
+def has_transition(e):
+    keys = ("low_pressure_transition", "high_pressure_transition",
+            "low_temperature_transition", "high_temperature_transition")
+    return any(e.get(k, -1) not in (-1, None) for k in keys)
+
+
 def main():
     data = json.load(open(DATA, encoding="utf-8"))
     elems = data["elements"]
@@ -93,30 +104,55 @@ def main():
         return names
 
     rows = []
-    counts = {"Implemented": 0, "Internal": 0, "Blocked": 0, "Disabled": 0}
+    counts = {"Full": 0, "Partial": 0, "Unimplemented": 0,
+              "Generic": 0, "Passive": 0, "Disabled": 0}
     for e in elems:
         if e.get("disabled_slot"):
             counts["Disabled"] += 1
-            rows.append((e, "Disabled", "disabled reference slot"))
+            rows.append((e, "Disabled", "disabled reference slot", False, False, False))
             continue
-        has_update = "update" in (e.get("functions") or [])
+        funcs = e.get("functions") or []
+        has_update = "update" in funcs
+        has_create = "create" in funcs
+        has_graphics = "graphics" in funcs
+        trans = has_transition(e)
         names = const_names(e)
-        implemented = any(n in update_set for n in names)
-        if not has_update:
-            status = "Internal"
-            reason = "no reference Update callback; generic movement/transition"
-        elif implemented and any(n in BLOCKED for n in names):
-            status = "Blocked"
-            key = next(n for n in names if n in BLOCKED)
-            reason = BLOCKED[key]
-        elif implemented:
-            status = "Implemented"
-            reason = ""
+        rust_update = any(n in update_set for n in names)
+        rust_create = any(n in create_set for n in names)
+        rust_draw = any(n in draw_set for n in names)
+
+        if has_update:
+            if rust_update and any(n in BLOCKED for n in names):
+                status = "Partial"
+                reason = BLOCKED[next(n for n in names if n in BLOCKED)]
+            elif rust_update:
+                status = "Full"
+                reason = ""
+            else:
+                status = "Unimplemented"
+                reason = "no Rust handler in update_fn dispatch"
         else:
-            status = "Blocked"
-            reason = "no Rust handler in dispatch table"
+            # No reference Update callback. Distinguish elements that still
+            # carry real create / graphics / transition behaviour from truly
+            # passive matter moved by the generic engine.
+            if rust_create or rust_draw or has_create or has_graphics or trans:
+                status = "Generic"
+                bits = []
+                if has_create or rust_create:
+                    bits.append("create-defaults")
+                if has_graphics or rust_draw:
+                    bits.append("colour-render")
+                if trans:
+                    bits.append("phase-transition")
+                reason = "engine-provided " + "/".join(bits or ["behaviour"])
+            else:
+                status = "Passive"
+                reason = "generic movement only"
         counts[status] += 1
-        rows.append((e, status, reason))
+        rows.append((e, status, reason, has_update, has_create, has_graphics))
+
+    menu_visible = [e for e in live if e.get("menu_visible")]
+    selectable = [e for e in live if e.get("menu_visible") and e.get("enabled")]
 
     # elements.md
     lines = []
@@ -126,34 +162,35 @@ def main():
     lines.append("")
     lines.append(f"Total slots: {len(elems)} (live elements: {len(live)}, disabled slots: {len(elems) - len(live)})")
     lines.append(f"Enabled: {sum(1 for e in live if e.get('enabled'))}, "
-                 f"menu-visible: {sum(1 for e in live if e.get('menu_visible'))}")
+                 f"menu-visible: {len(menu_visible)}, selectable: {len(selectable)}")
     lines.append("")
-    lines.append("## Implementation status")
+    lines.append("## Implementation status (source-derived classification)")
     lines.append("")
-    lines.append("| Status | Count |")
-    lines.append("|---|---:|")
-    for k in ("Implemented", "Internal", "Blocked", "Disabled"):
-        lines.append(f"| {k} | {counts[k]} |")
+    lines.append("| Status | Count | Meaning |")
+    lines.append("|---|---:|---|")
+    lines.append(f"| Full | {counts['Full']} | reference `Update` + dedicated Rust handler |")
+    lines.append(f"| Partial | {counts['Partial']} | handler exists, blocked on an engine subsystem |")
+    lines.append(f"| Unimplemented | {counts['Unimplemented']} | reference `Update` but no Rust handler |")
+    lines.append(f"| Generic | {counts['Generic']} | no `Update`; create/graphics/transition behaviour provided by the engine |")
+    lines.append(f"| Passive | {counts['Passive']} | no `Update`; generic movement only |")
+    lines.append(f"| Disabled | {counts['Disabled']} | disabled reference slot |")
     lines.append("")
-    lines.append("`Implemented` means a dedicated Rust handler exists in")
-    lines.append("`crates/realmatter-tpt/src/updates.rs` and mirrors the reference")
-    lines.append("source's core behaviour. `Blocked` entries still have a handler but are")
-    lines.append("limited by a missing engine subsystem; see `implementation-status.md`.")
+    lines.append("`Full`/`Partial` count Rust **handlers**, not verified behaviours.")
+    lines.append("Independent gameplay verification is `no` for every element until")
+    lines.append("Agent B signs off (see `docs/tpt-parity/qa/`).")
     lines.append("")
-    lines.append("| id | abbr | name | section | state flags | enabled | menu | update | graphics | create | status |")
-    lines.append("|---:|---|---|---:|---|---:|---:|---:|---:|---:|---|")
-    for e, status, reason in rows:
+    lines.append("| id | abbr | name | section | state flags | enabled | menu | update | create | graphics | transition | status |")
+    lines.append("|---:|---|---|---:|---|---:|---:|---:|---:|---:|---:|---|")
+    for e, status, reason, hu, hc, hg in rows:
         if e.get("disabled_slot"):
             continue
         sec = e.get("menu_section", 0)
-        upd = "Y" if "update" in (e.get("functions") or []) else ""
-        gfx = "Y" if "graphics" in (e.get("functions") or []) else ""
-        crt = "Y" if "create" in (e.get("functions") or []) else ""
-        rst = f"{status}" + (f" ({reason})" if reason and status != "Implemented" else "")
+        trans = "Y" if has_transition(e) else ""
+        rst = status + (f" ({reason})" if reason and status in ("Partial", "Unimplemented") else "")
         lines.append(
             f"| {e['id']} | {e.get('identifier') or e.get('slot_name')} | {e.get('name') or ''} | {sec} | "
             f"{flags_str(e.get('properties', 0))} | {e.get('enabled', 0)} | {e.get('menu_visible', 0)} | "
-            f"{upd} | {gfx} | {crt} | {rst} |"
+            f"{'Y' if hu else ''} | {'Y' if hc else ''} | {'Y' if hg else ''} | {trans} | {rst} |"
         )
     lines.append("")
     with open(os.path.join(OUT, "elements.md"), "w", encoding="utf-8") as f:
@@ -163,29 +200,57 @@ def main():
     out = []
     out.append("# Implementation status")
     out.append("")
-    out.append("Dispatch tables: `crates/realmatter-tpt/src/updates.rs`.")
+    out.append("Generated by `tools/tpt-inventory/status.py` from the pinned")
+    out.append("reference JSON and the Rust dispatch tables in")
+    out.append("`crates/realmatter-tpt/src/updates.rs`.")
     out.append("")
     out.append("| Metric | Value |")
     out.append("|---|---:|")
     out.append(f"| Live reference elements | {len(live)} |")
-    out.append(f"| Elements with a reference `Update` callback | {sum(1 for e in live if 'update' in (e.get('functions') or []))} |")
-    out.append(f"| Dedicated Rust handlers in `update_fn` | {len([r for r in rows if r[1] == 'Implemented'])} |")
-    out.append(f"| Blocked (missing subsystem) | {counts['Blocked']} |")
-    out.append(f"| Internal-only (no Update) | {counts['Internal']} |")
+    out.append(f"| Enabled | {sum(1 for e in live if e.get('enabled'))} |")
+    out.append(f"| Menu-visible | {len(menu_visible)} |")
+    out.append(f"| Selectable (enabled + menu-visible) | {len(selectable)} |")
+    out.append(f"| Reference `Update` callbacks | {sum(1 for e in live if 'update' in (e.get('functions') or []))} |")
+    out.append(f"| Rust `update_fn` handlers | {counts['Full'] + counts['Partial']} |")
+    out.append(f"| Full handlers | {counts['Full']} |")
+    out.append(f"| Partial handlers | {counts['Partial']} |")
+    out.append(f"| Unimplemented Update callbacks | {counts['Unimplemented']} |")
+    out.append(f"| Generic (no Update; create/graphics/transition) | {counts['Generic']} |")
+    out.append(f"| Passive (no Update; movement only) | {counts['Passive']} |")
+    out.append(f"| Disabled slots | {counts['Disabled']} |")
+    out.append(f"| Independently verified | 0 |")
     out.append("")
-    out.append("## Blocked entries")
+    out.append("`Generic` elements are **not** internal-only: they rely on engine-provided")
+    out.append("create defaults, colour rendering, or phase transitions even though the")
+    out.append("reference declares no `Update` callback. See `elements.md` for the per-element")
+    out.append("flags (`update`/`create`/`graphics`/`transition`).")
+    out.append("")
+    out.append("## Partial entries")
     out.append("")
     out.append("| abbr | reason |")
     out.append("|---|---|")
-    for e, status, reason in rows:
-        if status == "Blocked":
+    for e, status, reason, *_ in rows:
+        if status == "Partial":
             out.append(f"| {e.get('slot_name')} | {reason} |")
+    out.append("")
+    out.append("## Unimplemented entries")
+    out.append("")
+    out.append("| abbr | reason |")
+    out.append("|---|---|")
+    any_unimpl = False
+    for e, status, reason, *_ in rows:
+        if status == "Unimplemented":
+            any_unimpl = True
+            out.append(f"| {e.get('slot_name')} | {reason} |")
+    if not any_unimpl:
+        out.append("| — | none |")
     out.append("")
     with open(os.path.join(OUT, "implementation-status.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(out))
 
     print("wrote elements.md and implementation-status.md")
     print("counts:", counts)
+    print("menu_visible:", len(menu_visible), "selectable:", len(selectable))
 
 
 if __name__ == "__main__":

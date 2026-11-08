@@ -7,6 +7,7 @@
 
 pub mod air;
 pub mod element;
+pub mod element_defaults;
 pub mod elements_generated;
 pub mod entity;
 pub mod gol;

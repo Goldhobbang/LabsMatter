@@ -53,3 +53,21 @@ Played and observed:
 ## Not claimed
 
 Flood fill, stamp place/rotate, copy/cut, screenshot file contents, Fancy/pressure/velocity colors, grid lines at 1× zoom, Canvas2D, WebGPU, touch-only gestures, and the public GitHub Pages build were not given a pass.
+
+---
+
+## Experimental TPT runtime handoffs (current)
+
+The session-1 notes above describe the **production** engine. The experimental
+TPT-parity runtime is documented separately and must be tested through
+`?engine=tpt`:
+
+- **K3 handoff (browser + build steps + boundary/persistence checks):**
+  [`K3-handoff.md`](K3-handoff.md)
+- **K3 independent audit (code-level, no browser):**
+  [`K3-retest-agentB.md`](K3-retest-agentB.md)
+- **K4 handoff (entity controls, sim tools, default properties, persistence):**
+  [`K4-handoff.md`](K4-handoff.md)
+
+Run: `cd web; python -m http.server 5173` then open
+`http://localhost:5173/?engine=tpt`.

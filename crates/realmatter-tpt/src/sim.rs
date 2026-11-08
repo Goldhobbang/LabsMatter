@@ -445,16 +445,40 @@ impl Sim {
     }
 
     fn apply_defaults(&mut self, i: usize, t: u16) {
-        // DefaultProperties assignments in the reference vary per element. Only
-        // the fields that are actually declared in element sources are set.
-        let def = element(t);
-        if def.abbr == "LIFE" {
-            self.parts[i].life = 0;
+        // Reference `DefaultProperties`, generated from the pinned element
+        // sources (`element_defaults.rs`). `temp` is already applied by the
+        // caller from `ElementDef::default_temp`.
+        //
+        // This is required for correctness, not cosmetics: elements with
+        // `PROP_LIFE_KILL_DEC` (e.g. PHOT, life = 680) are killed on the first
+        // tick if their declared life is not applied here.
+        let Some(d) = crate::element_defaults::defaults(t) else {
+            return;
+        };
+        let p = &mut self.parts[i];
+        if let Some(v) = d.life {
+            p.life = v;
         }
-        // Reference `IGNT.cpp`: `DefaultProperties.life = 3`. Without this the
-        // ignition element never advances to its spreading branch.
-        if def.abbr == "IGNT" {
-            self.parts[i].life = 3;
+        if let Some(v) = d.ctype {
+            p.ctype = v;
+        }
+        if let Some(v) = d.tmp {
+            p.tmp = v;
+        }
+        if let Some(v) = d.tmp2 {
+            p.tmp2 = v;
+        }
+        if let Some(v) = d.tmp3 {
+            p.tmp3 = v;
+        }
+        if let Some(v) = d.tmp4 {
+            p.tmp4 = v;
+        }
+        if let Some(v) = d.vx {
+            p.vx = v;
+        }
+        if let Some(v) = d.vy {
+            p.vy = v;
         }
     }
 
