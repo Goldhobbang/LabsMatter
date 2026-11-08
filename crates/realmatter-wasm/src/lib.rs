@@ -310,6 +310,47 @@ impl StaticRegistry {
         props.push(mat(23, "gold", MaterialState::Powder, 19300.0, 129.0, 300.0, 1337.0, false, f32::INFINITY));
         props.push(mat(24, "dust", MaterialState::Powder, 200.0, 1000.0, 0.05, f32::INFINITY, true, 480.0));
         props.push(mat(25, "bomb", MaterialState::Solid, 1500.0, 1000.0, 0.2, f32::INFINITY, false, f32::INFINITY));
+        props.push(mat(16, "spark", MaterialState::Solid, 100.0, 100.0, 251.0, f32::INFINITY, false, f32::INFINITY));
+        for (id, name) in [
+            (26u16, "metal"),
+            (27, "battery"),
+            (28, "pscn"),
+            (29, "nscn"),
+            (30, "inst"),
+            (31, "inwr"),
+            (32, "wifi"),
+            (33, "switch"),
+            (34, "pump"),
+            (35, "gpmp"),
+            (36, "hswc"),
+            (37, "pbcn"),
+            (38, "lcry"),
+            (39, "ppip"),
+            (40, "pipe"),
+            (41, "emp"),
+            (44, "ntct"),
+            (45, "ptct"),
+            (46, "insl"),
+            (47, "piston"),
+            (48, "frame"),
+            (49, "stickman"),
+            (50, "stickman2"),
+            (51, "fighter"),
+            (53, "clone"),
+            (54, "pcln"),
+            (55, "portal in"),
+            (56, "portal out"),
+            (57, "plutonium"),
+            (61, "broken metal"),
+        ] {
+            props.push(mat(id, name, MaterialState::Solid, 2000.0, 450.0, 200.0, f32::INFINITY, false, f32::INFINITY));
+        }
+        props.push(mat(42, "salt water", MaterialState::Liquid, 1020.0, 4000.0, 0.6, 250.0, false, f32::INFINITY));
+        props.push(mat(43, "resist", MaterialState::Liquid, 1100.0, 1500.0, 0.4, 250.0, false, f32::INFINITY));
+        props.push(mat(52, "soap", MaterialState::Liquid, 1000.0, 4000.0, 0.5, 250.0, false, f32::INFINITY));
+        for (id, name) in [(58u16, "neutron"), (59, "photon"), (60, "electron")] {
+            props.push(mat(id, name, MaterialState::Plasma, 0.2, 1000.0, 0.0, f32::INFINITY, false, f32::INFINITY));
+        }
         Self { props }
     }
 }
@@ -368,6 +409,8 @@ struct SimState {
     /// world, not per tick). Dimensions follow the world; callers must
     /// refresh it after `init`/`load_blob` replace the world.
     chemistry: realmatter_chemistry::ChemistryEngine,
+    /// Element ctype/life/tmp and stickman state. Not part of the shared cell.
+    elements: realmatter_chemistry::elements::ElementSim,
     /// 0 material, 1 fancy, 2 heat, 3 pressure, 4 velocity.
     view: u8,
     /// 0 down, 1 off, 2 toward center.
@@ -411,7 +454,8 @@ fn rebuild_render(state: &mut SimState) {
     for y in 0..h {
         for x in 0..w {
             let cell = state.world.cell(x as i32, y as i32).cloned().unwrap_or_default();
-            let (r, g, b, a) = rgba_for(&cell, x as i32, y as i32, state.view);
+            let aux = state.elements.aux.get(y * w + x);
+            let (r, g, b, a) = rgba_for(&cell, aux, x as i32, y as i32, state.view);
             let i = (y * w + x) * 4;
             state.render[i] = r;
             state.render[i + 1] = g;
@@ -419,41 +463,25 @@ fn rebuild_render(state: &mut SimState) {
             state.render[i + 3] = a;
         }
     }
+    realmatter_chemistry::elements::stamp_overlay(&mut state.render, &state.elements, w, h);
 }
 
-fn rgba_for(cell: &Cell, x: i32, y: i32, mode: u8) -> (u8, u8, u8, u8) {
+fn rgba_for(
+    cell: &Cell,
+    aux: Option<&realmatter_chemistry::elements::ElemAux>,
+    x: i32,
+    y: i32,
+    mode: u8,
+) -> (u8, u8, u8, u8) {
     if cell.material == 0 {
         return (0, 0, 0, 0);
     }
-    let (mut r, mut g, mut b, a) = match cell.material {
-        0 => (0, 0, 0, 0),
-        1 => (128, 128, 128, 255),
-        2 => (217, 194, 122, 255),
-        3 => (79, 195, 247, 220),
-        4 => (141, 110, 99, 230),
-        5 => (176, 190, 197, 140),
-        6 => (255, 111, 0, 255),
-        7 => (109, 76, 65, 255),
-        8 => (144, 164, 174, 255),
-        9 => (255, 61, 0, 255),
-        10 => (118, 255, 3, 220),
-        11 => (238, 238, 238, 255),
-        12 => (97, 97, 97, 120),
-        13 => (179, 229, 252, 230),
-        14 => (128, 222, 234, 180),
-        15 => (66, 66, 66, 255),
-        16 => (255, 240, 80, 255),
-        17 => (230, 240, 255, 255),
-        18 => (184, 115, 51, 255),
-        19 => (230, 220, 80, 220),
-        20 => (210, 230, 255, 90),
-        21 => (180, 190, 180, 140),
-        22 => (46, 140, 60, 255),
-        23 => (212, 175, 55, 255),
-        24 => (160, 140, 110, 255),
-        25 => (90, 40, 40, 255),
-        _ => (255, 0, 255, 255),
-    };
+    let fallback = realmatter_chemistry::elements::ElemAux::default();
+    let aux = aux.unwrap_or(&fallback);
+    if let Some((r, g, b, a)) = realmatter_chemistry::elements::color_for(cell.material, aux, cell.temperature) {
+        return tint_view(r, g, b, a, cell, mode);
+    }
+    let (mut r, mut g, mut b, a) = realmatter_chemistry::elements::base_rgba(cell.material);
     if cell.material != 0 && matches!(cell.material, 2 | 3 | 4 | 10 | 11 | 15) {
         let n = ((x.wrapping_mul(13).wrapping_add(y.wrapping_mul(7))) & 15) as i32 - 8;
         r = add_u8(r, n);
@@ -488,6 +516,35 @@ fn rgba_for(cell: &Cell, x: i32, y: i32, mode: u8) -> (u8, u8, u8, u8) {
     (r, g, b, a)
 }
 
+fn tint_view(mut r: u8, mut g: u8, mut b: u8, a: u8, cell: &Cell, mode: u8) -> (u8, u8, u8, u8) {
+    match mode {
+        2 => heat_rgba(cell.temperature),
+        3 => {
+            let k = ((cell.pressure - 90_000.0) / 40_000.0).clamp(0.0, 1.0);
+            (
+                (40.0 + k * 200.0) as u8,
+                (80.0 + (0.5 - (k - 0.5).abs()) * 120.0) as u8,
+                (200.0 - k * 160.0) as u8,
+                255,
+            )
+        }
+        4 => {
+            let s = (cell.vx * cell.vx + cell.vy * cell.vy).sqrt();
+            let k = (s / 8.0).clamp(0.0, 1.0);
+            ((40.0 + k * 215.0) as u8, (180.0 - k * 100.0) as u8, 80, 255)
+        }
+        1 if cell.temperature > 500.0 => {
+            let hot = heat_rgba(cell.temperature);
+            let t = ((cell.temperature - 500.0) / 1000.0).clamp(0.0, 0.75);
+            r = ((r as f32) * (1.0 - t) + (hot.0 as f32) * t) as u8;
+            g = ((g as f32) * (1.0 - t) + (hot.1 as f32) * t) as u8;
+            b = ((b as f32) * (1.0 - t) + (hot.2 as f32) * t) as u8;
+            (r, g, b, a)
+        }
+        _ => (r, g, b, a),
+    }
+}
+
 fn add_u8(c: u8, d: i32) -> u8 {
     (c as i32 + d).clamp(0, 255) as u8
 }
@@ -520,6 +577,7 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
         world,
         render: Vec::new(),
         chemistry,
+        elements: realmatter_chemistry::elements::ElementSim::new(),
         view: 0,
         gravity: 0,
         air: 0,
@@ -659,7 +717,14 @@ pub fn step(_dt: f64) {
                 apply_air_advection(cells, w as usize, h as usize, &state_of);
                 settle_heavy_gas(cells, w as usize, h as usize);
             }
-            step_spark(cells, w as usize, h as usize);
+            realmatter_chemistry::elements::update(
+                cells,
+                &mut state.elements,
+                w as usize,
+                h as usize,
+                edge == 2,
+                gravity,
+            );
             match edge {
                 0 => clear_border(cells, w as usize, h as usize),
                 2 => wrap_border(cells, w as usize, h as usize, &state_of),
@@ -672,55 +737,6 @@ pub fn step(_dt: f64) {
         },
         (),
     );
-}
-
-fn step_spark(cells: &mut [Cell], w: usize, h: usize) {
-    for cell in cells.iter_mut() {
-        if cell.material == 8 && cell.lifetime > 0.0 {
-            cell.lifetime = (cell.lifetime - 1.0).max(0.0);
-        }
-    }
-    let mut sparks = Vec::new();
-    for (i, cell) in cells.iter().enumerate() {
-        if cell.material == 16 {
-            sparks.push(i);
-        }
-    }
-    if sparks.is_empty() {
-        return;
-    }
-    let mut next = Vec::new();
-    for i in sparks {
-        let x = i % w;
-        let y = i / w;
-        for (dx, dy) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
-            let nx = x as isize + dx;
-            let ny = y as isize + dy;
-            if nx < 0 || ny < 0 || nx >= w as isize || ny >= h as isize {
-                continue;
-            }
-            let ni = ny as usize * w + nx as usize;
-            // Fresh iron only. A conductor that just stopped sparking keeps a
-            // short lifetime so the pulse does not bounce back on the next frame.
-            if is_conductor(cells[ni].material) && cells[ni].lifetime <= 0.0 {
-                next.push(ni);
-            }
-        }
-        let back = if cells[i].vx > 17.0 { 18 } else { 8 };
-        cells[i].material = back;
-        cells[i].temperature = 293.15;
-        cells[i].lifetime = 2.0;
-        cells[i].vx = 0.0;
-        cells[i].set_flag(realmatter_core::cell::cell_flags::FIXED, true);
-    }
-    for ni in next {
-        if is_conductor(cells[ni].material) {
-            cells[ni].vx = cells[ni].material as f32;
-            cells[ni].material = 16;
-            cells[ni].temperature = 900.0;
-            cells[ni].set_flag(realmatter_core::cell::cell_flags::FIXED, true);
-        }
-    }
 }
 
 fn apply_air_advection(
@@ -876,10 +892,6 @@ fn step_special(cells: &mut [Cell], w: usize, h: usize) {
             }
         }
     }
-}
-
-fn is_conductor(id: u16) -> bool {
-    id == 8 || id == 18
 }
 
 fn apply_newtonian(
@@ -1060,28 +1072,47 @@ pub fn sim_status() -> String {
 pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
     with_state(
         |state| {
+            let w = state.world.width() as usize;
+            let h = state.world.height() as usize;
+            if x < 0 || y < 0 || x as usize >= w || y as usize >= h {
+                return false;
+            }
+            let old = state.world.cell(x, y).cloned().unwrap_or_default();
             let mut cell = Cell::default();
             cell.material = material;
             cell.temperature = initial_temperature(material);
-            // Solids are structures. Only wall used to be flagged, so sand and
-            // water density-swapped through wood, ice, and glass.
             let solid = material_table()
                 .get(material as usize)
                 .is_some_and(|m| m.state == MaterialState::Solid);
             if solid || material == 16 {
                 cell.set_flag(realmatter_core::cell::cell_flags::FIXED, true);
             }
+            let index = y as usize * w + x as usize;
+            state.elements.ensure(w * h);
+            let accepted = {
+                let cells = state.world.cells();
+                state.elements.on_paint(cells, index, &mut cell, &old)
+            };
+            if !accepted {
+                return false;
+            }
+            if cell.material == 49 {
+                state.elements.init_player_at(0, index, x, y);
+            } else if cell.material == 50 {
+                state.elements.init_player_at(1, index, x, y);
+            } else if cell.material == 51 {
+                let slot = state.elements.aux[index].tmp;
+                if slot >= 0 {
+                    state.elements.init_fighter_at(slot as usize, index, x, y);
+                }
+            }
             match state.world.set(CellCoord::new(x, y), cell) {
                 Ok(()) => {
-                    // Incremental render update: repaint only this pixel.
-                    // Full rebuilds happen on init/step/reset/load, so per-cell
-                    // painting (brush strokes) stays O(1) instead of O(W*H).
-                    let w = state.world.width() as usize;
-                    let h = state.world.height() as usize;
                     if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h
                         && state.render.len() == w * h * 4
                     {
-                        let (r, g, b, a) = rgba_for(&cell, x, y, state.view);
+                        let aux = state.elements.aux.get(index);
+                        let (r, g, b, a) = rgba_for(&cell, aux, x, y, state.view);
                         let i = (y as usize * w + x as usize) * 4;
                         state.render[i] = r;
                         state.render[i + 1] = g;
@@ -1201,11 +1232,24 @@ pub fn reset() -> bool {
             }
             state.world.set_tick_count(0);
             state.world.set_time_accumulator(0.0);
+            state.elements.clear();
             rebuild_render(state);
             true
         },
         false,
     )
+}
+
+/// Stickman controls. Bits: 1 left, 2 right, 4 jump, 8 use element.
+/// Slot 0 is STKM, slot 1 is STK2. Existing browser keys are not rebound.
+#[wasm_bindgen]
+pub fn set_player_input(slot: u32, bits: u32) {
+    with_state(
+        |state| {
+            state.elements.set_input(slot as usize, bits as u8);
+        },
+        (),
+    );
 }
 
 /// Pointer to the RGBA8 render buffer (row-major, y outer / x inner).
@@ -1230,7 +1274,14 @@ pub fn save_blob() -> Vec<u8> {
         |state| {
             let registry: Arc<dyn MaterialRegistry> = Arc::new(StaticRegistry::builtin());
             let mut engine = realmatter_persist::PersistEngine::new(registry);
-            engine.save_full(&mut state.world, None).unwrap_or_default()
+            let mut bytes = engine.save_full(&mut state.world, None).unwrap_or_default();
+            let n = (state.world.width() * state.world.height()) as usize;
+            state.elements.ensure(n);
+            if state.elements.aux.len() > n {
+                state.elements.aux.truncate(n);
+            }
+            bytes.extend(state.elements.export_trailer());
+            bytes
         },
         Vec::new(),
     )
@@ -1243,16 +1294,21 @@ pub fn load_blob(bytes: &[u8]) -> bool {
         |state| {
             let registry: Arc<dyn MaterialRegistry> = Arc::new(StaticRegistry::builtin());
             let engine = realmatter_persist::PersistEngine::new(registry);
-            match engine.load_blob(bytes) {
+            let (core, extra) = realmatter_chemistry::elements::split_trailer(bytes);
+            match engine.load_blob(core) {
                 Ok(world) => {
                     state.world = world;
-                    // World dimensions may have changed; refresh the reused
-                    // chemistry engine so its width/height stay in sync.
                     state.chemistry =
                         realmatter_chemistry::ChemistryEngine::from_config(
                             state.world.config(),
                         );
                     state.chemistry.set_materials(material_table().clone());
+                    let n = (state.world.width() * state.world.height()) as usize;
+                    state.elements.clear();
+                    state.elements.ensure(n);
+                    if !extra.is_empty() {
+                        let _ = state.elements.import_payload(extra);
+                    }
                     rebuild_render(state);
                     true
                 }

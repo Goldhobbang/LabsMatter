@@ -8,6 +8,7 @@ pub use realmatter_core as core;
 pub use realmatter_physics as physics;
 
 pub mod bonds;
+pub mod elements;
 pub mod engine;
 pub mod registry;
 pub mod schema;
