@@ -18,7 +18,7 @@ pub mod transition;
 pub mod updates;
 
 pub use air::{AirMode, ConvectionMode};
-pub use element::{element, ElementDef};
+pub use element::{element, pt_id_by_abbr, ElementDef};
 pub use particle::{flags, Particle};
 pub use rng::Rng;
 pub use sim::{

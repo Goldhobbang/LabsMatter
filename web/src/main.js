@@ -236,10 +236,11 @@ function wireChrome() {
     if (ok) {
       undoStack = [];
       redoStack = [];
-      notify("World loaded.");
+      notify(sim.lastLoadReport || "World loaded.");
     } else {
       notify(
-        `Load failed: this file is not a compatible ${ENGINE === "tpt" ? "TPT v2" : "production v1"} save. The world was not changed.`
+        sim.lastLoadReport ||
+          `Load failed: this file is not a compatible ${ENGINE === "tpt" ? "TPT v2/v1" : "production v1"} save. The world was not changed.`
       );
     }
   };

@@ -102,13 +102,38 @@ export function init(width, height) {
 }
 
 /**
- * Load a v2 blob. Returns false (and leaves the current world untouched) on
- * any error, including a v1/legacy blob — IDs are never reinterpreted.
+ * Reason / summary of the most recent `load_blob` call. Empty before any
+ * load. On success of a legacy import this includes how many particles were
+ * migrated and which state could not be represented.
+ * @returns {string}
+ */
+export function last_load_report() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        wasm.last_load_report(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred1_0 = r0;
+        deferred1_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export2(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * Load a save. Accepts the native v2 format (`LMT2`) and the legacy v1
+ * Cell-based format (`RMT\0`, optionally `ZLIB`-wrapped). The active world is
+ * left untouched on any error. Legacy material ids are mapped through their
+ * canonical TPT abbreviation, never reused numerically.
  * @param {Uint8Array | number[]} bytes
  * @returns {boolean}
  */
 export function load_blob(bytes) {
-    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export3);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.load_blob(ptr0, len0);
     return ret !== 0;
@@ -168,7 +193,7 @@ export function save_blob() {
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var v1 = getArrayU8FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_export3(r0, r1 * 1, 1);
+        wasm.__wbindgen_export2(r0, r1 * 1, 1);
         return v1;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
@@ -259,7 +284,7 @@ export function sim_status() {
         return getStringFromWasm0(r0, r1);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export3(deferred1_0, deferred1_1, 1);
+        wasm.__wbindgen_export2(deferred1_0, deferred1_1, 1);
     }
 }
 
@@ -268,6 +293,17 @@ export function sim_status() {
  */
 export function step(_dt) {
     wasm.step(_dt);
+}
+
+/**
+ * Advance the simulation without rebuilding the CPU render buffer. Used by
+ * diagnostics/benchmarks to measure pure simulation cost separately from the
+ * render-buffer build. The frontend does not call this; `step` remains the
+ * normal entry point so rendering never goes stale during play.
+ * @param {number} _dt
+ */
+export function step_sim_only(_dt) {
+    wasm.step_sim_only(_dt);
 }
 
 /**

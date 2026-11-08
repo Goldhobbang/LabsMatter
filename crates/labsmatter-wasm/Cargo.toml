@@ -12,5 +12,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 realmatter-tpt = { path = "../realmatter-tpt" }
+# Legacy (v1) save import: decode the Cell-based format and migrate to v2.
+realmatter-core = { path = "../realmatter-core" }
+realmatter-persist = { path = "../realmatter-persist" }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }

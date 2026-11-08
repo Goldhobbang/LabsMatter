@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use realmatter_tpt::air::{AirMode, ConvectionMode};
 use realmatter_tpt::element::element;
 use realmatter_tpt::particle::Particle;
-use realmatter_tpt::sim::{EdgeMode, GravityMode, Sim, CELL};
+use realmatter_tpt::sim::{EdgeMode, GravityMode, Sim, CELL, MAX_TEMP, MIN_TEMP};
 use wasm_bindgen::prelude::*;
 
 thread_local! {
@@ -24,6 +24,12 @@ thread_local! {
     static HEIGHT: RefCell<u32> = RefCell::new(0);
     /// 0 material, 1 fancy (heat tint), 2 heat, 3 pressure, 4 velocity.
     static VIEW: RefCell<u8> = RefCell::new(0);
+    /// Human-readable result of the most recent load attempt (v2 or v1).
+    static LOAD_REPORT: RefCell<String> = RefCell::new(String::new());
+}
+
+fn set_report(msg: impl Into<String>) {
+    LOAD_REPORT.with(|r| *r.borrow_mut() = msg.into());
 }
 
 const MAGIC: &[u8; 4] = b"LMT2";
@@ -160,6 +166,15 @@ fn rebuild_render() {
 pub fn step(_dt: f64) {
     with_sim(|sim| sim.step(), ());
     rebuild_render();
+}
+
+/// Advance the simulation without rebuilding the CPU render buffer. Used by
+/// diagnostics/benchmarks to measure pure simulation cost separately from the
+/// render-buffer build. The frontend does not call this; `step` remains the
+/// normal entry point so rendering never goes stale during play.
+#[wasm_bindgen]
+pub fn step_sim_only(_dt: f64) {
+    with_sim(|sim| sim.step(), ());
 }
 
 /// Paint a particle (PT id space). `material == 0` erases the pixel.
@@ -440,6 +455,9 @@ pub fn set_edge_mode(mode: u32) {
                 2 => EdgeMode::Loop,
                 _ => EdgeMode::Solid,
             };
+            // Reference `SetEdgeMode`: solid installs a border wall ring so
+            // particles are blocked instead of falling into the kill margin.
+            sim.apply_edge_mode();
         },
         (),
     );
@@ -520,6 +538,7 @@ pub fn cycle_edge() {
                 2 => EdgeMode::Loop,
                 _ => EdgeMode::Solid,
             };
+            sim.apply_edge_mode();
         },
         (),
     );
@@ -685,28 +704,169 @@ pub fn save_blob() -> Vec<u8> {
     )
 }
 
-/// Load a v2 blob. Returns false (and leaves the current world untouched) on
-/// any error, including a v1/legacy blob — IDs are never reinterpreted.
+fn install_sim(sim: Sim) {
+    let w = sim.width as u32;
+    let h = sim.height as u32;
+    SIM.with(|s| *s.borrow_mut() = Some(sim));
+    WIDTH.with(|x| *x.borrow_mut() = w);
+    HEIGHT.with(|y| *y.borrow_mut() = h);
+    RENDER.with(|r| *r.borrow_mut() = vec![0u8; (w * h * 4) as usize]);
+    rebuild_render();
+}
+
+/// Reason / summary of the most recent `load_blob` call. Empty before any
+/// load. On success of a legacy import this includes how many particles were
+/// migrated and which state could not be represented.
+#[wasm_bindgen]
+pub fn last_load_report() -> String {
+    LOAD_REPORT.with(|r| r.borrow().clone())
+}
+
+/// Load a save. Accepts the native v2 format (`LMT2`) and the legacy v1
+/// Cell-based format (`RMT\0`, optionally `ZLIB`-wrapped). The active world is
+/// left untouched on any error. Legacy material ids are mapped through their
+/// canonical TPT abbreviation, never reused numerically.
 #[wasm_bindgen]
 pub fn load_blob(bytes: &[u8]) -> bool {
-    match decode_blob(bytes) {
-        Ok(sim) => {
-            let w = sim.width as u32;
-            let h = sim.height as u32;
-            SIM.with(|s| *s.borrow_mut() = Some(sim));
-            WIDTH.with(|x| *x.borrow_mut() = w);
-            HEIGHT.with(|y| *y.borrow_mut() = h);
-            RENDER.with(|r| *r.borrow_mut() = vec![0u8; (w * h * 4) as usize]);
-            rebuild_render();
-            true
+    if bytes.len() >= 4 && &bytes[0..4] == MAGIC {
+        match decode_blob(bytes) {
+            Ok(sim) => {
+                install_sim(sim);
+                set_report("loaded v2 world");
+                true
+            }
+            Err(e) => {
+                set_report(format!("v2 load failed: {e}"));
+                false
+            }
         }
-        Err(e) => {
-            // Surface the reason in the browser console via wasm-bindgen's panic
-            // hook is too noisy; callers can distinguish false.
-            let _ = e;
-            false
+    } else {
+        match import_v1(bytes) {
+            Ok((sim, report)) => {
+                install_sim(sim);
+                set_report(report);
+                true
+            }
+            Err(e) => {
+                set_report(format!("legacy import failed: {e}"));
+                false
+            }
         }
     }
+}
+
+/// Canonical TPT abbreviation for a legacy (v1) registry id.
+fn v1_abbr(id: u16) -> Option<&'static str> {
+    match id {
+        0 => Some("NONE"),
+        1 => Some("STNE"),
+        _ => {
+            let a = realmatter_core::tpt_elements::abbr_of(id);
+            if !a.is_empty() {
+                Some(a)
+            } else {
+                realmatter_core::tpt_elements::ELEMENT_SPECS
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.abbr)
+            }
+        }
+    }
+}
+
+/// Migrate a legacy v1 (Cell-based) save into the TPT particle model.
+///
+/// Mapping rules:
+/// - one v1 cell -> one TPT pixel (both render at 4 CSS px per unit);
+/// - material id -> canonical abbreviation -> current PT id (explicit, no
+///   numeric reuse);
+/// - temperature, velocity, and lifetime (seconds -> 60 Hz frames) preserved;
+/// - per-cell pressure averaged into the TPT air-pressure CELL grid;
+/// - v1 flags and the decoration layer have no TPT equivalent and are reported.
+fn import_v1(bytes: &[u8]) -> Result<(Sim, String), String> {
+    let raw = realmatter_persist::format::decompress_blob(bytes)?;
+    let save = realmatter_persist::format::decode(&raw)?;
+    let cfg = &save.header.config;
+    let vw = cfg.width as i32;
+    let vh = cfg.height as i32;
+    if vw <= 0 || vh <= 0 {
+        return Err("invalid v1 dimensions".into());
+    }
+    // TPT requires dimensions divisible by CELL; pad up.
+    let w = ((vw as usize) + CELL - 1) / CELL * CELL;
+    let h = ((vh as usize) + CELL - 1) / CELL * CELL;
+    let mut sim = Sim::new(w, h);
+    sim.tick = save.header.tick_count;
+
+    let cs = cfg.chunk_size as i32;
+    let mut migrated = 0u32;
+    let mut unmapped = 0u32;
+    let mut pressure = vec![(0.0f32, 0u32); sim.pv.len()];
+
+    for (_coord, snap) in &save.chunks {
+        for (i, cell) in snap.cells.iter().enumerate() {
+            if cell.material == 0 {
+                continue;
+            }
+            let lx = (i as i32) % cs;
+            let ly = (i as i32) / cs;
+            let gx = snap.coord.x * cs + lx;
+            let gy = snap.coord.y * cs + ly;
+            if gx < 0 || gy < 0 || gx >= vw || gy >= vh {
+                continue;
+            }
+            let t = v1_abbr(cell.material).and_then(realmatter_tpt::pt_id_by_abbr);
+            let Some(t) = t else {
+                unmapped += 1;
+                continue;
+            };
+            if let Some(pid) = sim.create_part(gx, gy, t) {
+                sim.parts[pid].temp = cell.temperature.clamp(MIN_TEMP, MAX_TEMP);
+                sim.parts[pid].vx = if cell.vx.is_finite() { cell.vx } else { 0.0 };
+                sim.parts[pid].vy = if cell.vy.is_finite() { cell.vy } else { 0.0 };
+                if cell.lifetime > 0.0 {
+                    sim.parts[pid].life = (cell.lifetime * 60.0)
+                        .round()
+                        .clamp(0.0, i32::MAX as f32) as i32;
+                }
+                migrated += 1;
+            }
+            let cx = gx / CELL as i32;
+            let cy = gy / CELL as i32;
+            if cx >= 0 && cy >= 0 && (cx as usize) < sim.cells_x && (cy as usize) < sim.cells_y {
+                let idx = cy as usize * sim.cells_x + cx as usize;
+                if cell.pressure.is_finite() {
+                    pressure[idx].0 += cell.pressure;
+                    pressure[idx].1 += 1;
+                }
+            }
+        }
+    }
+    for (idx, (sum, n)) in pressure.iter().enumerate() {
+        if *n > 0 {
+            sim.pv[idx] = sum / *n as f32;
+        }
+    }
+    sim.recalc();
+
+    let deco_cells = save
+        .deco
+        .as_ref()
+        .map(|d| d.iter().filter(|c| **c != 0).count())
+        .unwrap_or(0);
+    let mut report = format!(
+        "migrated v1 world: {migrated} particles, {}x{} cells",
+        vw, vh
+    );
+    if unmapped > 0 {
+        report.push_str(&format!(", {unmapped} unmapped materials skipped"));
+    }
+    if deco_cells > 0 {
+        report.push_str(&format!(
+            ", {deco_cells} decoration cells not representable in v2 (omitted)"
+        ));
+    }
+    Ok((sim, report))
 }
 
 fn decode_blob(bytes: &[u8]) -> Result<Sim, String> {
@@ -810,6 +970,9 @@ fn decode_blob(bytes: &[u8]) -> Result<Sim, String> {
     let emap = r.take(n)?.to_vec();
     sim.bmap = bmap;
     sim.emap = emap;
+    // Re-establish the edge-mode wall ring from the restored setting (reference
+    // `SetEdgeMode` semantics), so a Solid save cannot lose its boundary.
+    sim.apply_edge_mode();
 
     sim.recalc();
     Ok(sim)

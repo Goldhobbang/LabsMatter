@@ -117,6 +117,18 @@ pub fn element(t: u16) -> &'static ElementDef {
     }
 }
 
+/// Look up an element id by its reference abbreviation (e.g. `"SAND"`).
+///
+/// Used by the legacy v1 save importer to map old registry ids through their
+/// canonical TPT abbreviation instead of reusing numeric ids (which differ
+/// between the two id spaces). Only enabled elements are considered.
+pub fn pt_id_by_abbr(abbr: &str) -> Option<u16> {
+    ELEMENTS
+        .iter()
+        .find(|e| e.enabled && e.abbr.eq_ignore_ascii_case(abbr))
+        .map(|e| e.id)
+}
+
 /// True when `t` is a real element (inside the reference ID space and enabled).
 #[inline]
 pub fn is_element(t: i32) -> bool {

@@ -30,3 +30,7 @@ verify-*.mjs
 diag-*.mjs
 
 .reference/
+
+# Local verification scripts (not committed)
+_*_check.mjs
+*_check.mjs

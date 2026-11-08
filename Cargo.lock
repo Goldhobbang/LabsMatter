@@ -466,6 +466,8 @@ name = "labsmatter-wasm"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "realmatter-core",
+ "realmatter-persist",
  "realmatter-tpt",
  "wasm-bindgen",
 ]

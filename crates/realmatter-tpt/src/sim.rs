@@ -428,6 +428,11 @@ impl Sim {
         if def.abbr == "LIFE" {
             self.parts[i].life = 0;
         }
+        // Reference `IGNT.cpp`: `DefaultProperties.life = 3`. Without this the
+        // ignition element never advances to its spreading branch.
+        if def.abbr == "IGNT" {
+            self.parts[i].life = 3;
+        }
     }
 
     /// Create in the first free cell at or near `(x, y)` (reference `create_part(-1, ...)`).
@@ -679,6 +684,43 @@ impl Sim {
             return 0;
         }
         self.bmap[self.cell_idx(x as i32 / CELL as i32, y as i32 / CELL as i32)]
+    }
+
+    /// Apply the currently selected edge mode to the wall map, mirroring the
+    /// reference `Simulation::SetEdgeMode`.
+    ///
+    /// `EDGE_SOLID` places a `WL_WALL` ring on the outer CELLs so particles are
+    /// blocked before they can reach the off-screen kill test. `EDGE_VOID` and
+    /// `EDGE_LOOP` clear that ring (loop particles are wrapped in `do_move`).
+    /// Call this after changing `settings.edge_mode` (including on load).
+    pub fn apply_edge_mode(&mut self) {
+        let (cx, cy) = (self.cells_x, self.cells_y);
+        if cx < 2 || cy < 2 {
+            return;
+        }
+        match self.settings.edge_mode {
+            EdgeMode::Solid => {
+                for x in 0..cx {
+                    self.bmap[x] = WALL_WALL;
+                    self.bmap[(cy - 1) * cx + x] = WALL_WALL;
+                }
+                for y in 1..cy - 1 {
+                    self.bmap[y * cx] = WALL_WALL;
+                    self.bmap[y * cx + (cx - 1)] = WALL_WALL;
+                }
+            }
+            EdgeMode::Void | EdgeMode::Loop => {
+                for x in 0..cx {
+                    self.bmap[x] = 0;
+                    self.bmap[(cy - 1) * cx + x] = 0;
+                }
+                for y in 1..cy - 1 {
+                    self.bmap[y * cx] = 0;
+                    self.bmap[y * cx + (cx - 1)] = 0;
+                }
+            }
+        }
+        self.refresh_air_block_maps();
     }
 
     /// True when wall `w` blocks particles of element `t` from being in the

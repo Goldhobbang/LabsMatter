@@ -283,7 +283,13 @@ export class TptAdapter {
         let arr = bytes;
         if (bytes instanceof ArrayBuffer) arr = new Uint8Array(bytes);
         if (Array.isArray(bytes)) arr = new Uint8Array(bytes);
-        return !!this.mod.load_blob(arr);
+        const ok = !!this.mod.load_blob(arr);
+        // Surface the migration/error report to the caller (and console) so a
+        // legacy import or rejection is never silent.
+        this.lastLoadReport =
+          typeof this.mod.last_load_report === "function" ? this.mod.last_load_report() : "";
+        if (this.lastLoadReport) console.info("[labsmatter] " + this.lastLoadReport);
+        return ok;
       } catch (e) { console.warn(e); }
     }
     return false;
