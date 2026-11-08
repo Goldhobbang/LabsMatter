@@ -9,7 +9,7 @@
 use crate::element::element;
 use crate::elements_generated::pt;
 use crate::elements_generated::props;
-use crate::sim::{pmap_id, pmap_pack, pmap_type, restrict_flt, Sim, CELL, MAX_TEMP, MIN_TEMP, MAX_PRESSURE, MIN_PRESSURE};
+use crate::sim::{pmap_id, pmap_type, restrict_flt, Sim, CELL, MAX_TEMP, MIN_TEMP, MAX_PRESSURE, MIN_PRESSURE};
 
 pub type UpdateFn = fn(&mut Sim, usize, i32, i32, i32, i32) -> i32;
 pub type CreateFn = fn(&mut Sim, usize, i32, i32, i32, i32);
@@ -5091,7 +5091,7 @@ fn deut_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
     };
     let temp = (sim.parts[i].temp + 1.0).max(1.0);
     let mut maxlife = ((10000.0 / (temp + 1.0)) - 1.0) as i32;
-    if sim.rng.chance(10000 % (temp as i32 + 1), (temp as u32 + 1)) {
+    if sim.rng.chance(10000 % (temp as i32 + 1), temp as u32 + 1) {
         maxlife += 1;
     }
     maxlife *= (5.0 - 8.0 / (gravtot + 2.0)) as i32;
@@ -6385,7 +6385,7 @@ fn ligh_create_line(sim: &mut Sim, x1: i32, y1: i32, x2: i32, y2: i32, temp: f32
     let mut y = y1;
     let ystep = if y1 < y2 { 1 } else { -1 };
     let mut e = 0.0f32;
-    let mut place = |sim: &mut Sim, x: i32, y: i32, last: bool| -> bool {
+    let place = |sim: &mut Sim, x: i32, y: i32, last: bool| -> bool {
         let (px, py) = if reverse_xy { (y, x) } else { (x, y) };
         if let Some(p) = sim.create_part(px, py, pt::LIGH) {
             sim.parts[p].temp = temp;
@@ -6802,7 +6802,7 @@ fn tron_new_head(sim: &mut Sim, x: i32, y: i32, i: usize, direction: i32) -> i32
     if !cell_free(sim, x, y) {
         return -1;
     }
-    let mut props = sim.parts[i].tmp;
+    let props = sim.parts[i].tmp;
     let mut tail_len = sim.parts[i].tmp2;
     let mut life = sim.parts[i].life;
     if let Some(np) = sim.create_part(x, y, pt::TRON) {
