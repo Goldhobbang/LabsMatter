@@ -130,15 +130,30 @@ already persisted by the v3 save. Do not add a second link table.
 Browser controls call these; A3 does not need new bindings to complete the
 element behaviour.
 
-## 6. What A3 must still implement (element logic only)
+## 6. What A3 implemented in K5 (element logic)
 
-| Element | Remaining work |
-|---|---|
-| PIPE | full payload transfer between pipe segments and PRTI hand-off, using `Sim.portal` |
-| PSTN | `FRME` recursion and `tmp3` flags (`FLAG_EXT_OBSTACLE`, `FLAG_EXT_ARMLIMIT`, `FLAG_RET_OBSTACLE`, `FLAG_RET_TOOSHORT`) |
-| SOAP | bubble pop/detach edge cases and multi-link chains via the `soap_*` helpers |
-| STKM/STKM2 | reference leg physics, element-power reactions, portal interaction |
-| FIGH | fighter combat/AI on top of `step_entity` |
+| Element | Implemented | Remaining reference gap |
+|---|---|---|
+| WIFI | Reference transmit/receive confirmed; channel from temperature, `AfterSim` promotion | none (needs a spark source; placing WIFI is not a signal) |
+| PIPE/PPIP | payload storage, directional transport, intake/output, PRTI hand-off, PPIP triggers, auto-configuration | HEAC flood trigger, stored-particle graphics |
+| PSTN | temperature-driven extension/retraction, `tmp3` flags, FRME push | full recursive shared-stack propagation |
+| SOAP | bubble formation, chain pop, obstacle detach, second-order constraints | full chain rewiring |
+| STKM/STKM2 | hazards, leg phase, element-power spawn, death cleanup | reference leg-particle physics, portal interaction |
+| FIGH | target acquisition, pursuit, melee, death cleanup | reference fighter powers / multi-fighter brawling |
 
-A1 will not implement these behaviours; A1 maintains the storage, tick ordering,
-persistence and WASM/frontend access.
+A1 maintains the storage, tick ordering, persistence and WASM/frontend access.
+A3 does not allocate a second portal/wireless/entity store.
+
+### 6.1 Requested A1 API (optional)
+
+`entity_head(Entity::Fighter(slot))` returns the first live `FIGH`, not the one
+whose `tmp == slot`. K5 works around this by using the update callback index.
+A slot-aware helper would be cleaner:
+
+```rust
+impl Sim {
+    /// Head particle for a specific fighter slot (`parts[i].tmp == slot`).
+    pub fn fighter_head(&self, slot: usize) -> Option<usize>;
+}
+```
+

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Cross-reference the pinned TPT element table with the Rust implementation.
 
 Parses `crates/realmatter-tpt/src/updates.rs` dispatch tables and emits
@@ -32,15 +32,16 @@ DATA = os.path.join(ROOT, "docs", "tpt-parity", "data", "tpt-reference.json")
 UPDATES = os.path.join(ROOT, "crates", "realmatter-tpt", "src", "updates.rs")
 OUT = os.path.join(ROOT, "docs", "tpt-parity", "inventory")
 
-# Elements whose handlers are still limited by missing engine subsystems.
+# Partial handlers: functional K5 implementations whose full reference parity is
+# not yet gameplay-verified. Kept separate from `Full` so nothing is overstated.
 BLOCKED = {
-    "STKM": "shared locomotion implemented; reference legs/element-power reactions pending Agent 3",
-    "STKM2": "shared locomotion implemented; reference legs/element-power reactions pending Agent 3",
-    "STK2": "shared locomotion implemented; reference legs/element-power reactions pending Agent 3",
-    "FIGH": "shared locomotion implemented; fighter combat/AI pending Agent 3",
-    "PIPE": "full payload flow across pipe segments pending Agent 3",
-    "PSTN": "uses shared MoveStack; FRME recursion and tmp3 flags pending Agent 3",
-    "SOAP": "links implemented; full bubble pop/detach semantics pending Agent 3",
+    "STKM": "K5: hazards, leg phase, element power; full reference leg/portal physics unverified",
+    "STKM2": "K5: hazards, leg phase, element power; full reference leg/portal physics unverified",
+    "STK2": "K5: hazards, leg phase, element power; full reference leg/portal physics unverified",
+    "FIGH": "K5: pursuit, melee, despawn; full reference fighter powers/AI unverified",
+    "PIPE": "K5: payload transport, direction, PRTI hand-off, PPIP triggers; auto-pattern HEAC flood/graphics pending",
+    "PSTN": "K5: tmp3 flags + FRME push; full reference MoveStack recursion pending",
+    "SOAP": "K5: links, pop, second-order constraints; full reference chain rewiring pending",
 }
 
 STATE_FLAGS = {
@@ -243,15 +244,67 @@ def main():
             any_unimpl = True
             out.append(f"| {e.get('slot_name')} | {reason} |")
     if not any_unimpl:
-        out.append("| — | none |")
+        out.append("| ??| none |")
     out.append("")
     with open(os.path.join(OUT, "implementation-status.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(out))
 
-    print("wrote elements.md and implementation-status.md")
+    # generic-passive-audit.md
+    audit = []
+    audit.append("# Generic / passive element audit (K5)")
+    audit.append("")
+    audit.append("Elements with no `Update` callback but with source-defined `create`,")
+    audit.append("`graphics`, or temperature/pressure transition behaviour. The engine must")
+    audit.append("provide those behaviours centrally; this audit records what each relies on.")
+    audit.append("")
+    audit.append("| abbr | create | graphics | transitions | engine support |")
+    audit.append("|---|---:|---:|---|---|")
+    for e, status, reason, hu, hc, hg in rows:
+        if status not in ("Generic", "Passive") or e.get("disabled_slot"):
+            continue
+        trans = []
+        for key, label in (
+            ("low_temperature_transition", "lowT"),
+            ("high_temperature_transition", "highT"),
+            ("low_pressure_transition", "lowP"),
+            ("high_pressure_transition", "highP"),
+        ):
+            if e.get(key, -1) != -1:
+                trans.append(label)
+        support = []
+        if hc:
+            support.append("element_defaults.rs")
+        if hg:
+            support.append("base color render")
+        if trans:
+            support.append("transition_phase")
+        if not support:
+            support.append("movement only")
+        audit.append(
+            "| {abbr} | {c} | {g} | {t} | {s} |".format(
+                abbr=e.get("slot_name"),
+                c="Y" if hc else "",
+                g="Y" if hg else "",
+                t=",".join(trans) if trans else "-",
+                s=", ".join(support),
+            )
+        )
+    audit.append("")
+    audit.append("The K5 audit found no Generic/Passive element whose source declares a")
+    audit.append("create/graphics/transition behaviour that is missing from the engine:")
+    audit.append("reference `DefaultProperties` are applied by `element_defaults.rs` at")
+    audit.append("particle creation, base colours come from the generated element table, and")
+    audit.append("all declared temperature/pressure transitions are applied by")
+    audit.append("`transition_phase`.")
+    audit.append("")
+    with open(os.path.join(OUT, "generic-passive-audit.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(audit))
+
+    print("wrote elements.md, implementation-status.md, generic-passive-audit.md")
     print("counts:", counts)
     print("menu_visible:", len(menu_visible), "selectable:", len(selectable))
 
 
 if __name__ == "__main__":
     main()
+

@@ -77,7 +77,7 @@ Agent B signs off (see `docs/tpt-parity/qa/`).
 | 52 | DEFAULT_PT_NBLE | NBLE | 6 | GAS,CONDUCTS,LIFE_DEC | 1 | 1 | Y |  |  |  | Full |
 | 53 | DEFAULT_PT_BTRY | BTRY | 1 | SOLID | 1 | 1 | Y |  |  | Y | Full |
 | 54 | DEFAULT_PT_LCRY | LCRY | 2 | SOLID | 1 | 1 | Y |  | Y | Y | Full |
-| 55 | DEFAULT_PT_STKM | STKM | 11 | NOCTYPEDRAW | 1 | 1 | Y | Y | Y | Y | Partial (shared locomotion implemented; reference legs/element-power reactions pending Agent 3) |
+| 55 | DEFAULT_PT_STKM | STKM | 11 | NOCTYPEDRAW | 1 | 1 | Y | Y | Y | Y | Partial (K5: hazards, leg phase, element power; full reference leg/portal physics unverified) |
 | 56 | DEFAULT_PT_SWCH | SWCH | 1 | SOLID | 1 | 1 | Y |  | Y |  | Full |
 | 57 | DEFAULT_PT_SMKE | SMKE | 6 | GAS,LIFE_DEC,LIFE_KILL_DEC | 1 | 1 |  |  | Y | Y | Generic |
 | 58 | DEFAULT_PT_DESL | DESL | 7 | LIQUID | 1 | 1 |  |  |  | Y | Generic |
@@ -121,7 +121,7 @@ Agent B signs off (see `docs/tpt-parity/qa/`).
 | 96 | DEFAULT_PT_WARP | WARP | 10 | GAS,LIFE_DEC,LIFE_KILL | 1 | 1 | Y | Y | Y |  | Full |
 | 97 | DEFAULT_PT_PUMP | PUMP | 2 | SOLID | 1 | 1 | Y |  | Y |  | Full |
 | 98 | DEFAULT_PT_FWRK | FWRK | 5 | PART,LIFE_DEC | 1 | 1 | Y |  |  |  | Full |
-| 99 | DEFAULT_PT_PIPE | PIPE | 4 | SOLID,LIFE_DEC | 1 | 1 | Y |  | Y | Y | Partial (full payload flow across pipe segments pending Agent 3) |
+| 99 | DEFAULT_PT_PIPE | PIPE | 4 | SOLID,LIFE_DEC | 1 | 1 | Y |  | Y | Y | Partial (K5: payload transport, direction, PRTI hand-off, PPIP triggers; auto-pattern HEAC flood/graphics pending) |
 | 100 | DEFAULT_PT_FRZZ | FRZZ | 8 | PART | 1 | 1 | Y |  |  | Y | Full |
 | 101 | DEFAULT_PT_FRZW | FRZW | 7 | LIQUID,LIFE_DEC | 1 | 0 | Y |  |  | Y | Full |
 | 102 | DEFAULT_PT_GRAV | GRAV | 8 | PART,LIFE_DEC | 1 | 1 | Y |  | Y |  | Full |
@@ -150,7 +150,7 @@ Agent B signs off (see `docs/tpt-parity/qa/`).
 | 125 | DEFAULT_PT_FILT | FILT | 9 | SOLID,PHOTPASS,LIFE_DEC,NOAMBHEAT | 1 | 1 |  | Y | Y |  | Generic |
 | 126 | DEFAULT_PT_ARAY | ARAY | 1 | SOLID | 1 | 1 | Y |  |  |  | Full |
 | 127 | DEFAULT_PT_BRAY | BRAY | 1 | SOLID,LIFE_DEC,LIFE_KILL | 1 | 0 |  |  | Y |  | Generic |
-| 128 | DEFAULT_PT_STKM2 | STK2 | 11 | NOCTYPEDRAW | 1 | 1 | Y | Y |  | Y | Partial (shared locomotion implemented; reference legs/element-power reactions pending Agent 3) |
+| 128 | DEFAULT_PT_STKM2 | STK2 | 11 | NOCTYPEDRAW | 1 | 1 | Y | Y |  | Y | Partial (K5: hazards, leg phase, element power; full reference leg/portal physics unverified) |
 | 129 | DEFAULT_PT_BOMB | BOMB | 5 | PART,SPARKSETTLE | 1 | 1 | Y |  | Y |  | Full |
 | 130 | DEFAULT_PT_C5 | C-5 | 5 | SOLID,PHOTPASS,NEUTPENETRATE,LIFE_DEC | 1 | 1 | Y |  | Y |  | Full |
 | 131 | DEFAULT_PT_SING | SING | 10 | PART,LIFE_DEC | 1 | 1 | Y | Y |  |  | Full |
@@ -170,7 +170,7 @@ Agent B signs off (see `docs/tpt-parity/qa/`).
 | 145 | DEFAULT_PT_EXOT | EXOT | 10 | LIQUID,NEUTPASS | 1 | 1 | Y |  | Y |  | Full |
 | 147 | DEFAULT_PT_EMBR | EMBR | 5 | PART,LIFE_DEC,LIFE_KILL,SPARKSETTLE | 1 | 0 | Y |  | Y |  | Full |
 | 148 | DEFAULT_PT_H2 | HYGN | 6 | GAS,PHOTPASS | 1 | 1 | Y |  |  |  | Full |
-| 149 | DEFAULT_PT_SOAP | SOAP | 7 | LIQUID,NEUTPENETRATE,LIFE_DEC | 1 | 1 | Y |  | Y |  | Partial (links implemented; full bubble pop/detach semantics pending Agent 3) |
+| 149 | DEFAULT_PT_SOAP | SOAP | 7 | LIQUID,NEUTPENETRATE,LIFE_DEC | 1 | 1 | Y |  | Y |  | Partial (K5: links, pop, second-order constraints; full reference chain rewiring pending) |
 | 150 | DEFAULT_PT_NBHL | BHOL | 11 | SOLID | 1 | 1 | Y |  |  |  | Full |
 | 151 | DEFAULT_PT_NWHL | WHOL | 11 | SOLID | 1 | 1 | Y |  |  |  | Full |
 | 152 | DEFAULT_PT_MERC | MERC | 7 | LIQUID,CONDUCTS,NEUTABSORB,LIFE_DEC | 1 | 1 | Y |  |  |  | Full |
@@ -179,7 +179,7 @@ Agent B signs off (see `docs/tpt-parity/qa/`).
 | 155 | DEFAULT_PT_CLST | CLST | 8 | PART | 1 | 1 | Y | Y | Y | Y | Full |
 | 156 | DEFAULT_PT_WIRE | WWLD | 1 | SOLID | 1 | 1 | Y |  | Y |  | Full |
 | 157 | DEFAULT_PT_GBMB | GBMB | 4 | PART,LIFE_DEC,LIFE_KILL_DEC | 1 | 1 | Y |  | Y |  | Full |
-| 158 | DEFAULT_PT_FIGH | FIGH | 11 | NOCTYPEDRAW | 1 | 1 | Y |  |  | Y | Partial (shared locomotion implemented; fighter combat/AI pending Agent 3) |
+| 158 | DEFAULT_PT_FIGH | FIGH | 11 | NOCTYPEDRAW | 1 | 1 | Y |  |  | Y | Partial (K5: pursuit, melee, despawn; full reference fighter powers/AI unverified) |
 | 159 | DEFAULT_PT_FRAY | FRAY | 4 | SOLID | 1 | 1 | Y |  |  |  | Full |
 | 160 | DEFAULT_PT_RPEL | RPEL | 4 | SOLID | 1 | 1 | Y |  |  |  | Full |
 | 161 | DEFAULT_PT_PPIP | PPIP | 2 | SOLID,LIFE_DEC | 1 | 1 |  |  |  |  | Generic |
@@ -189,7 +189,7 @@ Agent B signs off (see `docs/tpt-parity/qa/`).
 | 165 | DEFAULT_PT_VIBR | VIBR | 10 | SOLID,LIFE_DEC | 1 | 1 | Y |  | Y |  | Full |
 | 166 | DEFAULT_PT_BVBR | BVBR | 10 | PART,LIFE_DEC | 1 | 1 |  |  |  |  | Passive |
 | 167 | DEFAULT_PT_CRAY | CRAY | 1 | SOLID | 1 | 1 | Y |  |  |  | Full |
-| 168 | DEFAULT_PT_PSTN | PSTN | 4 | SOLID | 1 | 1 | Y |  | Y |  | Partial (uses shared MoveStack; FRME recursion and tmp3 flags pending Agent 3) |
+| 168 | DEFAULT_PT_PSTN | PSTN | 4 | SOLID | 1 | 1 | Y |  | Y |  | Partial (K5: tmp3 flags + FRME push; full reference MoveStack recursion pending) |
 | 169 | DEFAULT_PT_FRME | FRME | 4 | SOLID | 1 | 1 |  |  | Y |  | Generic |
 | 170 | DEFAULT_PT_GOLD | GOLD | 9 | SOLID,CONDUCTS,NEUTPASS,HOT_GLOW,LIFE_DEC | 1 | 1 | Y |  | Y | Y | Full |
 | 171 | DEFAULT_PT_TUNG | TUNG | 1 | SOLID,CONDUCTS,LIFE_DEC | 1 | 1 | Y | Y | Y |  | Full |
