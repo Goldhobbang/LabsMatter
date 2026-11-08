@@ -243,3 +243,37 @@ All 175 menu-visible elements were painted and stepped 3 ticks in the release
 WASM: 174 create a particle (0:NONE is the eraser), no crash. Boundary
 positions/properties, wall collision, portal persistence, entity stability, and
 v3 round-trip were exercised.
+
+---
+
+## K5 update
+
+### Rendering infrastructure
+`rebuild_render` now composites: wall base colour (per CELL) with powered
+`eglow` from `emap`, particle colour (normal / fancy heat tint / heat ramp /
+pressure / velocity), and per-particle `dcolour` decoration. Energy particles
+render. Walls and decoration were previously invisible.
+
+### Decoration editor
+`set_deco` / `get_deco` / `clear_all_deco` operate on `Particle.dcolour`
+(persisted in LMT2 v3). Browser: `Deco` toggle + colour picker + `Clear`.
+
+### Simulation tools
+`apply_tool` kinds: 0 HEAT, 1 COOL, 2 AIR, 3 VAC, 4 PGRV, 5 NGRV, 6 MIX,
+7 CYCL, 8 WIND, 9 AMBP, 10 AMBM. HEAT/COOL target the particle only; AIR/VAC
+use reference pressure scale; PGRV/NGRV write the gravity-mass grid (full
+gravity-well solver is an A2 dependency and has no browser button yet).
+
+### Inspection API
+`get_cell_info` (JSON) and individual getters expose type/position/temp/velocity/
+life/ctype/tmp/tmp2/tmp3/tmp4/flags/dcolour/wall/emap/pressure/air velocity/
+ambient/gravity, plus `get_world_settings` and `get_entity_head`. CPU-side, works
+under any renderer.
+
+### Bug fixes
+- Empty pixels no longer report particle slot 0 temperature (`pmap_id(0)==0`).
+- HEAT/COOL no longer heat slot 0 through empty pixels.
+
+### Inventory
+`docs/tpt-parity/inventory/application-features.md` tracks editing, simtools,
+walls, rendering, UI/shortcuts and save coverage with reference/impl/owner/status.

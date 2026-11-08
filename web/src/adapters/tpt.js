@@ -218,6 +218,61 @@ export class TptAdapter {
     return 0;
   }
 
+  // ---- Extended inspection (QA / inspector) ----------------------------
+  _num(fn, x, y, dflt = 0) {
+    if (this.mod && typeof this.mod[fn] === "function") {
+      try { return this.mod[fn](x, y); } catch {}
+    }
+    return dflt;
+  }
+  getCellLife(x, y) { return this._num("get_cell_life", x, y); }
+  getCellCtype(x, y) { return this._num("get_cell_ctype", x, y); }
+  getCellTmp(x, y) { return this._num("get_cell_tmp", x, y); }
+  getCellTmp2(x, y) { return this._num("get_cell_tmp2", x, y); }
+  getCellTmp3(x, y) { return this._num("get_cell_tmp3", x, y); }
+  getCellTmp4(x, y) { return this._num("get_cell_tmp4", x, y); }
+  getCellFlags(x, y) { return this._num("get_cell_flags", x, y); }
+  getCellDcolour(x, y) { return this._num("get_cell_dcolour", x, y); }
+  getCellPx(x, y) { return this._num("get_cell_px", x, y, -1); }
+  getCellPy(x, y) { return this._num("get_cell_py", x, y, -1); }
+  getCellEmap(x, y) { return this._num("get_cell_emap", x, y); }
+  getCellAmbient(x, y) { return this._num("get_cell_ambient", x, y); }
+  getGravityX(x, y) { return this._num("get_gravity_x", x, y); }
+  getGravityY(x, y) { return this._num("get_gravity_y", x, y); }
+  getEntityHead(which = 0) {
+    if (this.mod && typeof this.mod.get_entity_head === "function") {
+      try { return this.mod.get_entity_head(which); } catch {}
+    }
+    return -1;
+  }
+  getCellInfo(x, y) {
+    if (this.mod && typeof this.mod.get_cell_info === "function") {
+      try { return this.mod.get_cell_info(x, y); } catch {}
+    }
+    return null;
+  }
+  getWorldSettings() {
+    if (this.mod && typeof this.mod.get_world_settings === "function") {
+      try { return this.mod.get_world_settings(); } catch {}
+    }
+    return null;
+  }
+
+  // ---- Decoration ------------------------------------------------------
+  setDeco(x, y, argb) {
+    if (this.mod && typeof this.mod.set_deco === "function") {
+      try { return !!this.mod.set_deco(x, y, argb >>> 0); } catch {}
+    }
+    return false;
+  }
+  getDeco(x, y) { return this._num("get_deco", x, y); }
+  clearDeco() {
+    if (this.mod && typeof this.mod.clear_all_deco === "function") {
+      try { this.mod.clear_all_deco(); return true; } catch {}
+    }
+    return false;
+  }
+
   readRenderBuffer() {
     if (!this.mod || !this.exports) return null;
     try {

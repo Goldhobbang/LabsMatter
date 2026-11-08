@@ -439,6 +439,7 @@ function initEntityPanel() {
 
 // ---- Experimental simulation tools (TPT runtime only) --------------------
 let activeSimTool = null;
+let decoActive = false;
 
 function updateEnvStatus() {
   const el = $("env-status");
@@ -469,6 +470,11 @@ function initToolPanel() {
       panel.querySelectorAll("[data-simtool]").forEach((x) => {
         x.classList.toggle("is-active", Number(x.dataset.simtool) === activeSimTool);
       });
+      if (activeSimTool != null) {
+        decoActive = false;
+        const db = $("btn-deco");
+        if (db) { db.classList.remove("is-active"); db.setAttribute("aria-pressed", "false"); }
+      }
     });
   });
   const env = (id, fn) => {
@@ -483,7 +489,54 @@ function initToolPanel() {
   env("btn-env-edge", "cycleEdge");
   env("btn-env-newton", "toggleNewtonian");
   env("btn-env-ambient", "toggleAmbient");
+
+  const decoBtn = $("btn-deco");
+  if (decoBtn) {
+    if (!modFn("set_deco")) {
+      decoBtn.disabled = true;
+      decoBtn.title = "Decoration is not available in this build";
+    } else {
+      decoBtn.onclick = () => {
+        decoActive = !decoActive;
+        decoBtn.classList.toggle("is-active", decoActive);
+        decoBtn.setAttribute("aria-pressed", String(decoActive));
+        if (decoActive) {
+          // Decoration and a sim tool are mutually exclusive paint modes.
+          activeSimTool = null;
+          panel.querySelectorAll("[data-simtool]").forEach((x) => x.classList.remove("is-active"));
+        }
+      };
+    }
+  }
+  const clearBtn = $("btn-deco-clear");
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      try {
+        if (sim.clearDeco) sim.clearDeco();
+        else if (modFn("clear_all_deco")) sim.mod.clear_all_deco();
+        notify("Decoration cleared.");
+      } catch (e) { console.warn(e); }
+    };
+  }
   updateEnvStatus();
+}
+
+function decoArgb() {
+  const el = $("deco-color");
+  const hex = (el && el.value ? el.value : "#ff6600").replace("#", "");
+  const r = parseInt(hex.slice(0, 2), 16) || 0;
+  const g = parseInt(hex.slice(2, 4), 16) || 0;
+  const b = parseInt(hex.slice(4, 6), 16) || 0;
+  return ((255 << 24) | (r << 16) | (g << 8) | b) >>> 0;
+}
+
+function applyDecoAt(x, y) {
+  if (!decoActive) return;
+  const argb = decoArgb();
+  try {
+    if (sim.setDeco) sim.setDeco(x, y, argb);
+    else if (modFn("set_deco")) sim.mod.set_deco(x, y, argb);
+  } catch (e) { console.warn(e); }
 }
 
 function setView(mode) {
@@ -523,6 +576,12 @@ function onDown(e) {
     applySimToolAt(c.x, c.y);
     return;
   }
+  // Decoration paint mode (TPT only): tint the particles under the cursor.
+  if (decoActive && e.button === 0) {
+    stroke = { kind: "deco", last: c };
+    applyDecoAt(c.x, c.y);
+    return;
+  }
   let material = s.materialId;
   if (e.button === 2) material = s.secondaryId;
   if (s.tool === "eraser" && e.button === 0) material = 0;
@@ -552,6 +611,10 @@ function onMove(e) {
     const line = bresenham(stroke.last.x, stroke.last.y, c.x, c.y);
     for (const p of line) applySimToolAt(p[0], p[1]);
     stroke.last = c;
+  } else if (stroke.kind === "deco") {
+    const line = bresenham(stroke.last.x, stroke.last.y, c.x, c.y);
+    for (const p of line) applyDecoAt(p[0], p[1]);
+    stroke.last = c;
   } else {
     stroke.b = c;
   }
@@ -566,6 +629,7 @@ function onUp() {
   else if (s.kind === "rect") commitShape(rectCells(s.a, s.b), s.material);
   else if (s.kind === "select") selection = normRect(s.a, s.b);
   else if (s.kind === "simtool") { /* one-shot / continuous tool stroke */ }
+  else if (s.kind === "deco") { /* continuous decoration stroke */ }
   else endLog(s.material);
 }
 

@@ -71,3 +71,5 @@ TPT-parity runtime is documented separately and must be tested through
 
 Run: `cd web; python -m http.server 5173` then open
 `http://localhost:5173/?engine=tpt`.
+- **K5 handoff (walls/decoration rendering, tools, inspection API):**
+  [`K5-handoff.md`](K5-handoff.md)
