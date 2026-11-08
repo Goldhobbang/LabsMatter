@@ -9,7 +9,10 @@
 use crate::element::element;
 use crate::elements_generated::pt;
 use crate::elements_generated::props;
-use crate::sim::{pmap_id, pmap_type, restrict_flt, Sim, CELL, MAX_TEMP, MIN_TEMP, MAX_PRESSURE};
+use crate::sim::{
+    pmap_id, pmap_pack, pmap_type, restrict_flt, Sim, CELL, MAX_PRESSURE, MAX_TEMP, MIN_PRESSURE,
+    MIN_TEMP,
+};
 
 pub type UpdateFn = fn(&mut Sim, usize, i32, i32, i32, i32) -> i32;
 pub type CreateFn = fn(&mut Sim, usize, i32, i32, i32, i32);
@@ -60,6 +63,23 @@ pub fn update_fn(t: u16) -> Option<UpdateFn> {
         pt::SWCH => swch_update,
         pt::GLAS => glas_update,
         pt::YEST => yest_update,
+        pt::GOO => goo_update,
+        pt::PLUT => plut_update,
+        pt::URAN => uran_update,
+        pt::MORT => mort_update,
+        pt::THDR => thdr_update,
+        pt::AMTR => amtr_update,
+        pt::HSWC => hswc_update,
+        pt::FUSE => fuse_update,
+        pt::FSEP => fsep_update,
+        pt::LCRY => lcry_update,
+        pt::DLAY => dlay_update,
+        pt::CBNW => cbnw_update,
+        pt::CAUS => caus_update,
+        pt::DEUT => deut_update,
+        pt::WARP => warp_update,
+        pt::PUMP => pump_update,
+        pt::FWRK => fwrk_update,
         _ => return None,
     })
 }
@@ -70,6 +90,7 @@ pub fn create_fn(t: u16) -> Option<CreateFn> {
         pt::LIFE => life_create,
         pt::CLNE | pt::PCLN | pt::BCLN | pt::PBCN => clone_create,
         pt::GLAS => glas_create,
+        pt::WARP => warp_create,
         _ => return None,
     })
 }
@@ -1997,6 +2018,871 @@ fn yest_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
         if cell_free(sim, nx, ny) {
             sim.create_part(nx, ny, pt::YEST);
         }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// GOO: goo. Becomes mobile (life) when pressurised.
+// ---------------------------------------------------------------------------
+
+fn goo_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if sim.parts[i].life == 0 && pv(sim, x, y) > 1.0 {
+        sim.parts[i].life = sim.rng.between(300, 379);
+    }
+    if sim.parts[i].life != 0 && sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+        let vc = sim.cell_idx(x / CELL as i32, y / CELL as i32);
+        sim.parts[i].vx += 0.1 * sim.vx[vc];
+        sim.parts[i].vy += 0.1 * sim.vy[vc];
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// PLUT: plutonium. Emits neutrons under pressure.
+// ---------------------------------------------------------------------------
+
+fn plut_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if sim.rng.chance(1, 100) && sim.rng.chance((5.0 * pv(sim, x, y)) as i32, 1000) {
+        sim.part_change_type(i, x, y, pt::NEUT as i16);
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// URAN: uranium. Heats with pressure.
+// ---------------------------------------------------------------------------
+
+fn uran_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    let p = pv(sim, x, y);
+    if p > 0.0 {
+        if sim.parts[i].temp == MIN_TEMP {
+            sim.parts[i].temp += 0.01;
+        } else {
+            let t = sim.parts[i].temp * (1.0 + p / 2000.0) + MIN_TEMP;
+            sim.parts[i].temp = restrict_flt(t, MIN_TEMP, MAX_TEMP);
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// MORT: mortar. Emits smoke above itself.
+// ---------------------------------------------------------------------------
+
+fn mort_update(sim: &mut Sim, _i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if cell_free(sim, x, y - 1) {
+        sim.create_part(x, y - 1, pt::SMKE);
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// THDR: thunder. Sparks conductors, explodes on anything else.
+// ---------------------------------------------------------------------------
+
+fn thdr_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    let mut kill = false;
+    for rx in -2..=2 {
+        for ry in -2..=2 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let rt = pmap_type(r);
+            let id = pmap_id(r) as usize;
+            if (element(rt).properties & props::PROP_CONDUCTS) != 0
+                && sim.parts[id].life == 0
+                && !matches!(rt, pt::WATR | pt::SLTW)
+                && sim.parts[id].ctype != pt::SPRK as i32
+            {
+                sim.parts[id].ctype = rt as i32;
+                sim.part_change_type(id, nx, ny, pt::SPRK as i16);
+                sim.parts[id].life = 4;
+                kill = true;
+            } else if !matches!(rt, pt::CLNE | pt::THDR | pt::SPRK | pt::DMND | pt::FIRE) {
+                if sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+                    let vc = sim.cell_idx(x / CELL as i32, y / CELL as i32);
+                    sim.pv[vc] = restrict_flt(sim.pv[vc] + 100.0, MIN_PRESSURE, MAX_PRESSURE);
+                }
+                kill = true;
+            }
+        }
+    }
+    if kill {
+        sim.kill_part(i);
+        return 1;
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// AMTR: anti-matter. Annihilates matter into photons.
+// ---------------------------------------------------------------------------
+
+fn amtr_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    for rx in -1..=1 {
+        for ry in -1..=1 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let rt = pmap_type(r);
+            let id = pmap_id(r) as usize;
+            if matches!(
+                rt,
+                pt::AMTR | pt::DMND | pt::CLNE | pt::PCLN | pt::VOID | pt::BHOL | pt::NBHL | pt::PRTI
+                    | pt::PRTO
+            ) {
+                continue;
+            }
+            sim.parts[i].life += 1;
+            if sim.parts[i].life == 4 {
+                sim.kill_part(i);
+                return 1;
+            }
+            if sim.rng.chance(1, 10) {
+                sim.part_change_type(id, nx, ny, pt::PHOT as i16);
+            } else {
+                sim.kill_part(id);
+            }
+            if sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+                let vc = sim.cell_idx(x / CELL as i32, y / CELL as i32);
+                sim.pv[vc] -= 2.0;
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// HSWC: heat switch. Links to other HSWC; conducts only when life == 10.
+// ---------------------------------------------------------------------------
+
+fn hswc_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if sim.parts[i].life != 10 {
+        if sim.parts[i].life > 0 {
+            sim.parts[i].life -= 1;
+        }
+        return 0;
+    }
+    for rx in -2..=2 {
+        for ry in -2..=2 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let mut r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                r = sim.photons[sim.idx(nx, ny)];
+            }
+            if r == 0 {
+                continue;
+            }
+            let id = pmap_id(r) as usize;
+            let rt = pmap_type(r);
+            if rt == pt::HSWC {
+                let other = sim.parts[id].life;
+                if other < 10 && other > 0 {
+                    sim.parts[i].life = 9;
+                } else if other == 0 {
+                    sim.parts[id].life = 10;
+                }
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// FUSE: fuse. Burn down into plasma, then become FSEP.
+// ---------------------------------------------------------------------------
+
+fn fuse_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if sim.parts[i].life <= 0 {
+        sim.part_change_type(i, x, y, pt::PLSM as i16);
+        if sim.parts[i].t == pt::PLSM {
+            sim.parts[i].life = 50;
+        }
+        return 1;
+    } else if sim.parts[i].life < 40 {
+        sim.parts[i].life -= 1;
+        if sim.rng.chance(1, 100) {
+            let nx = x + sim.rng.between(-1, 1);
+            let ny = y + sim.rng.between(-1, 1);
+            if let Some(j) = create_near(sim, nx, ny, pt::PLSM) {
+                sim.parts[j].life = 50;
+            }
+        }
+    }
+    if pv(sim, x, y) > 2.7 && sim.parts[i].tmp > 40 {
+        sim.parts[i].tmp = 39;
+    } else if sim.parts[i].tmp <= 0 {
+        sim.part_change_type(i, x, y, pt::FSEP as i16);
+        return 1;
+    } else if sim.parts[i].tmp < 40 {
+        sim.parts[i].tmp -= 1;
+    }
+    for rx in -2..=2 {
+        for ry in -2..=2 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let rt = pmap_type(r);
+            if rt == pt::SPRK || (sim.parts[i].temp >= 973.15 && sim.rng.chance(1, 20)) {
+                if sim.parts[i].life > 40 {
+                    sim.parts[i].life = 39;
+                }
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// FSEP: fuse separator. Burns into plasma.
+// ---------------------------------------------------------------------------
+
+fn fsep_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if sim.parts[i].life <= 0 {
+        sim.part_change_type(i, x, y, pt::PLSM as i16);
+        if sim.parts[i].t == pt::PLSM {
+            sim.parts[i].life = 50;
+        }
+        return 1;
+    } else if sim.parts[i].life < 40 {
+        sim.parts[i].life -= 1;
+        if sim.rng.chance(1, 10) {
+            let nx = x + sim.rng.between(-1, 1);
+            let ny = y + sim.rng.between(-1, 1);
+            if let Some(j) = create_near(sim, nx, ny, pt::PLSM) {
+                sim.parts[j].life = 50;
+            }
+        }
+    } else {
+        for rx in -2..=2 {
+            for ry in -2..=2 {
+                if rx == 0 && ry == 0 {
+                    continue;
+                }
+                let nx = x + rx;
+                let ny = y + ry;
+                if !sim.in_bounds(nx, ny) {
+                    continue;
+                }
+                let r = sim.pmap[sim.idx(nx, ny)];
+                if r == 0 {
+                    continue;
+                }
+                let rt = pmap_type(r);
+                if (rt == pt::SPRK || sim.parts[i].temp >= 673.15)
+                    && sim.parts[i].life > 40
+                    && sim.rng.chance(1, 15)
+                {
+                    sim.parts[i].life = 39;
+                }
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// LCRY: liquid crystal. Acts as a bistable switch.
+// ---------------------------------------------------------------------------
+
+fn lcry_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    let (check, setto): (i32, i32);
+    match sim.parts[i].tmp {
+        1 => {
+            if sim.parts[i].life <= 0 {
+                sim.parts[i].tmp = 0;
+            } else {
+                sim.parts[i].life -= 2;
+                if sim.parts[i].life < 0 {
+                    sim.parts[i].life = 0;
+                }
+                sim.parts[i].tmp2 = sim.parts[i].life;
+            }
+            check = 3;
+            setto = 1;
+        }
+        0 => {
+            check = 3;
+            setto = 1;
+        }
+        2 => {
+            if sim.parts[i].life >= 10 {
+                sim.parts[i].tmp = 3;
+            } else {
+                sim.parts[i].life += 2;
+                if sim.parts[i].life > 10 {
+                    sim.parts[i].life = 10;
+                }
+                sim.parts[i].tmp2 = sim.parts[i].life;
+            }
+            check = 0;
+            setto = 2;
+        }
+        3 => {
+            check = 0;
+            setto = 2;
+        }
+        _ => {
+            sim.parts[i].tmp = 0;
+            sim.parts[i].life = 0;
+            return 0;
+        }
+    }
+    for rx in -1..=1 {
+        for ry in -1..=1 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let id = pmap_id(r) as usize;
+            if pmap_type(r) == pt::LCRY && sim.parts[id].tmp == check {
+                sim.parts[id].tmp = setto;
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// DLAY: delay line. Passes life values between neighbours.
+// ---------------------------------------------------------------------------
+
+fn dlay_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    let oldl = sim.parts[i].life;
+    if sim.parts[i].life > 0 {
+        sim.parts[i].life -= 1;
+    }
+    if sim.parts[i].temp <= 274.15 {
+        sim.parts[i].temp = 274.15;
+    }
+    for rx in -2..=2 {
+        for ry in -2..=2 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let id = pmap_id(r) as usize;
+            let rt = pmap_type(r);
+            let pavg = parts_avg(sim, id, i, pt::INSL);
+            if pavg == pt::INSL || pavg == pt::RSSS {
+                continue;
+            }
+            if rt == pt::SPRK
+                && sim.parts[i].life == 0
+                && sim.parts[id].life > 0
+                && sim.parts[id].life < 4
+                && sim.parts[id].ctype == pt::PSCN as i32
+            {
+                sim.parts[i].life = (sim.parts[i].temp - 273.15 + 0.5) as i32;
+            } else if rt == pt::DLAY {
+                if sim.parts[i].life == 0 {
+                    if sim.parts[id].life != 0 {
+                        sim.parts[i].life = sim.parts[id].life;
+                        if id > i {
+                            sim.parts[i].life -= 1;
+                        }
+                    }
+                } else if sim.parts[id].life == 0 {
+                    sim.parts[id].life = sim.parts[i].life;
+                    if id > i {
+                        sim.parts[id].life += 1;
+                    }
+                }
+            } else if rt == pt::NSCN && oldl == 1 {
+                if cell_free(sim, nx, ny) {
+                    sim.create_part(nx, ny, pt::SPRK);
+                }
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// CBNW: bubble water. Explodes to CO2 on particles, reacts with fire.
+// ---------------------------------------------------------------------------
+
+fn cbnw_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    let p = pv(sim, x, y);
+    if p <= 3.0 {
+        if p <= -0.5 || sim.rng.chance(1, 4000) {
+            sim.part_change_type(i, x, y, pt::CO2 as i16);
+            sim.parts[i].ctype = 5;
+            if sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+                let vc = sim.cell_idx(x / CELL as i32, y / CELL as i32);
+                sim.pv[vc] += 0.5;
+            }
+        }
+    }
+    if sim.parts[i].tmp2 != 20 {
+        if sim.parts[i].tmp2 > 20 {
+            sim.parts[i].tmp2 -= 1;
+        } else {
+            sim.parts[i].tmp2 += 1;
+        }
+    } else if sim.rng.chance(1, 200) {
+        sim.parts[i].tmp2 = sim.rng.between(0, 39);
+    }
+    if sim.parts[i].tmp > 0 {
+        if sim.parts[i].tmp == 1 && sim.rng.chance(3, 4) {
+            sim.part_change_type(i, x, y, pt::CO2 as i16);
+            sim.parts[i].ctype = 5;
+            if sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+                let vc = sim.cell_idx(x / CELL as i32, y / CELL as i32);
+                sim.pv[vc] += 0.2;
+            }
+        }
+        sim.parts[i].tmp -= 1;
+    }
+    for rx in -1..=1 {
+        for ry in -1..=1 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let rt = pmap_type(r);
+            let id = pmap_id(r) as usize;
+            let rprops = element(rt).properties;
+            if (rprops & props::TYPE_PART) != 0 && sim.parts[i].tmp == 0 && sim.rng.chance(1, 83) {
+                sim.parts[i].tmp = sim.rng.between(0, 24);
+            } else if (rprops & props::TYPE_SOLID) != 0
+                && !matches!(rt, pt::DMND | pt::GLAS)
+                && sim.parts[i].tmp == 0
+                && sim.rng.chance((2.0 - pv(sim, x, y)) as i32, 6667)
+            {
+                sim.part_change_type(i, x, y, pt::CO2 as i16);
+                sim.parts[i].ctype = 5;
+                if sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+                    let vc = sim.cell_idx(x / CELL as i32, y / CELL as i32);
+                    sim.pv[vc] += 0.2;
+                }
+            }
+            if rt == pt::CBNW {
+                if sim.parts[i].tmp == 0 {
+                    if sim.parts[id].tmp != 0 {
+                        sim.parts[i].tmp = sim.parts[id].tmp;
+                        if id > i {
+                            sim.parts[i].tmp -= 1;
+                        }
+                    }
+                } else if sim.parts[id].tmp == 0 {
+                    sim.parts[id].tmp = sim.parts[i].tmp;
+                    if id > i {
+                        sim.parts[id].tmp += 1;
+                    }
+                }
+            } else if rt == pt::RBDM || rt == pt::LRBD {
+                if sim.parts[i].temp > 285.15 && sim.rng.chance(1, 166) {
+                    sim.part_change_type(i, x, y, pt::FIRE as i16);
+                    sim.parts[i].life = 4;
+                    sim.parts[i].ctype = pt::WATR as i32;
+                }
+            } else if rt == pt::FIRE && sim.parts[id].ctype != pt::WATR as i32 {
+                sim.kill_part(id);
+                if sim.rng.chance(1, 50) {
+                    sim.kill_part(i);
+                    return 1;
+                }
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// CAUS: caustic gas. Corrodes like acid, converts GAS to RFRG.
+// ---------------------------------------------------------------------------
+
+fn caus_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    for rx in -2..=2 {
+        for ry in -2..=2 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let rt = pmap_type(r);
+            let id = pmap_id(r) as usize;
+            if rt == pt::GAS {
+                if pv(sim, nx, ny) > 3.0 {
+                    sim.part_change_type(id, nx, ny, pt::RFRG as i16);
+                    sim.part_change_type(i, x, y, pt::RFRG as i16);
+                    return 1;
+                }
+            } else if !matches!(rt, pt::ACID | pt::CAUS | pt::RFRG | pt::RFGL) {
+                if (element(rt).hardness > 0)
+                    && sim.rng.chance(element(rt).hardness, 1000)
+                    && sim.parts[i].life > 50
+                {
+                    let pavg = parts_avg(sim, i, id, pt::GLAS);
+                    if pavg != pt::GLAS {
+                        let mut newtemp = (60.0 - element(rt).hardness as f32) * 7.0;
+                        if newtemp < 0.0 {
+                            newtemp = 0.0;
+                        }
+                        sim.parts[i].temp += newtemp;
+                        sim.parts[i].life -= 1;
+                        sim.kill_part(id);
+                    }
+                } else if sim.parts[i].life <= 50 {
+                    sim.kill_part(i);
+                    return 1;
+                }
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// DEUT: deuterium. Compresses/expands, diffuses its life value.
+// ---------------------------------------------------------------------------
+
+fn deut_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    let gravtot = {
+        let (gx, gy) = sim.grav_force[sim.cell_idx(x / CELL as i32, y / CELL as i32)];
+        gx.abs() + gy.abs()
+    };
+    let temp = (sim.parts[i].temp + 1.0).max(1.0);
+    let mut maxlife = ((10000.0 / (temp + 1.0)) - 1.0) as i32;
+    if sim.rng.chance((10000 % (temp as i32 + 1)), (temp as u32 + 1)) {
+        maxlife += 1;
+    }
+    maxlife *= (5.0 - 8.0 / (gravtot + 2.0)) as i32;
+    if sim.parts[i].life < maxlife {
+        for rx in -1..=1 {
+            for ry in -1..=1 {
+                if rx == 0 && ry == 0 {
+                    continue;
+                }
+                let nx = x + rx;
+                let ny = y + ry;
+                if !sim.in_bounds(nx, ny) {
+                    continue;
+                }
+                let r = sim.pmap[sim.idx(nx, ny)];
+                if r == 0 || sim.parts[i].life >= maxlife {
+                    continue;
+                }
+                let rt = pmap_type(r);
+                let id = pmap_id(r) as usize;
+                if rt == pt::DEUT && sim.rng.chance(1, 3) {
+                    if sim.parts[id].life <= maxlife - sim.parts[i].life - 1 {
+                        sim.parts[i].life += sim.parts[id].life + 1;
+                        sim.kill_part(id);
+                    }
+                }
+            }
+        }
+    } else {
+        for rx in -1..=1 {
+            for ry in -1..=1 {
+                if rx == 0 && ry == 0 {
+                    continue;
+                }
+                if sim.parts[i].life <= maxlife {
+                    break;
+                }
+                let nx = x + rx;
+                let ny = y + ry;
+                if !cell_free(sim, nx, ny) {
+                    continue;
+                }
+                if sim.parts[i].life >= 1 {
+                    if let Some(np) = sim.create_part(nx, ny, pt::DEUT) {
+                        sim.parts[i].life -= 1;
+                        sim.parts[np].temp = sim.parts[i].temp;
+                        sim.parts[np].life = 0;
+                    }
+                }
+            }
+        }
+    }
+    for _ in 0..4 {
+        let rx = sim.rng.between(-2, 2);
+        let ry = sim.rng.between(-2, 2);
+        if rx == 0 && ry == 0 {
+            continue;
+        }
+        let nx = x + rx;
+        let ny = y + ry;
+        if !sim.in_bounds(nx, ny) {
+            continue;
+        }
+        let r = sim.pmap[sim.idx(nx, ny)];
+        if r == 0 {
+            continue;
+        }
+        let id = pmap_id(r) as usize;
+        if pmap_type(r) == pt::DEUT && sim.parts[i].life > sim.parts[id].life && sim.parts[i].life > 0 {
+            let diff = sim.parts[i].life - sim.parts[id].life;
+            if diff == 1 {
+                sim.parts[id].life += 1;
+                sim.parts[i].life -= 1;
+            } else if diff > 0 {
+                sim.parts[id].life += diff / 2;
+                sim.parts[i].life -= diff / 2;
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// WARP: warp. Teleports neighbours and occasionally emits electrons.
+// ---------------------------------------------------------------------------
+
+fn warp_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if sim.parts[i].tmp2 > 2000 {
+        sim.parts[i].temp = 10000.0;
+        if sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+            let vc = sim.cell_idx(x / CELL as i32, y / CELL as i32);
+            sim.pv[vc] = restrict_flt(
+                sim.pv[vc] + (sim.parts[i].tmp2 as f32 / 5000.0),
+                MIN_PRESSURE,
+                MAX_PRESSURE,
+            );
+        }
+        if sim.rng.chance(1, 50) {
+            create_near(sim, x, y, pt::ELEC);
+        }
+    }
+    for trade in 0..5 {
+        let rx = sim.rng.between(-1, 1);
+        let ry = sim.rng.between(-1, 1);
+        if rx == 0 && ry == 0 {
+            continue;
+        }
+        let nx = x + rx;
+        let ny = y + ry;
+        if !sim.in_bounds(nx, ny) {
+            continue;
+        }
+        let r = sim.pmap[sim.idx(nx, ny)];
+        if r == 0 {
+            continue;
+        }
+        let rt = pmap_type(r);
+        let id = pmap_id(r) as usize;
+        if matches!(
+            rt,
+            pt::WARP | pt::STKM | pt::STKM2 | pt::DMND | pt::CLNE | pt::BCLN | pt::PCLN
+        ) {
+            continue;
+        }
+        let (ox, oy) = (sim.parts[id].x, sim.parts[id].y);
+        sim.parts[i].x = ox;
+        sim.parts[i].y = oy;
+        sim.parts[id].x = x as f32;
+        sim.parts[id].y = y as f32;
+        sim.parts[id].vx = sim.rng.between(-2, 1) as f32 + 0.5;
+        sim.parts[id].vy = sim.rng.between(-2, 1) as f32;
+        sim.parts[i].life += 4;
+        let idx0 = sim.idx(x, y);
+        let idx1 = sim.idx(nx, ny);
+        sim.pmap[idx0] = r;
+        sim.pmap[idx1] = pmap_pack(i as u32, pt::WARP);
+        let _ = trade;
+        return 0;
+    }
+    0
+}
+
+fn warp_create(sim: &mut Sim, i: usize, _x: i32, _y: i32, _t: i32, _v: i32) {
+    sim.parts[i].life = sim.rng.between(70, 164);
+}
+
+// ---------------------------------------------------------------------------
+// PUMP: pressure pump. Equalises pressure in the surrounding cells.
+// ---------------------------------------------------------------------------
+
+fn pump_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if sim.parts[i].life != 10 {
+        if sim.parts[i].life > 0 {
+            sim.parts[i].life -= 1;
+        }
+        return 0;
+    }
+    if sim.parts[i].temp >= MAX_PRESSURE + 273.15 {
+        sim.parts[i].temp = MAX_PRESSURE + 273.15;
+    }
+    if sim.parts[i].temp <= MIN_PRESSURE + 273.15 {
+        sim.parts[i].temp = MIN_PRESSURE + 273.15;
+    }
+    for rx in -1..=1 {
+        for ry in -1..=1 {
+            let cx = x / CELL as i32 + rx;
+            let cy = y / CELL as i32 + ry;
+            if !sim.in_cell_bounds(cx, cy) {
+                continue;
+            }
+            if sim.parts[i].tmp != 1 {
+                if !(rx == 0 && ry == 0) {
+                    let vc = sim.cell_idx(cx, cy);
+                    sim.pv[vc] += 0.1 * ((sim.parts[i].temp - 273.15) - sim.pv[vc]);
+                }
+            }
+        }
+    }
+    for rx in -2..=2 {
+        for ry in -2..=2 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if !sim.in_bounds(nx, ny) {
+                continue;
+            }
+            let r = sim.pmap[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+            let id = pmap_id(r) as usize;
+            if pmap_type(r) == pt::PUMP {
+                let other = sim.parts[id].life;
+                if other < 10 && other > 0 {
+                    sim.parts[i].life = 9;
+                } else if other == 0 {
+                    sim.parts[id].life = 10;
+                }
+            }
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
+// FWRK: firework. Ignites from fire/plasma/thunder, then bursts into EMBR.
+// ---------------------------------------------------------------------------
+
+fn fwrk_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    if sim.parts[i].tmp <= 0 {
+        for rx in -1..=1 {
+            for ry in -1..=1 {
+                if rx == 0 && ry == 0 {
+                    continue;
+                }
+                let nx = x + rx;
+                let ny = y + ry;
+                if !sim.in_bounds(nx, ny) {
+                    continue;
+                }
+                let r = sim.pmap[sim.idx(nx, ny)];
+                if r == 0 {
+                    continue;
+                }
+                let rt = pmap_type(r);
+                if matches!(rt, pt::FIRE | pt::PLSM | pt::THDR) {
+                    let (mut gx, mut gy) = sim.gravity_field(x, y, element(pt::FWRK).gravity, 1.0);
+                    if gx * gx + gy * gy < 0.001 {
+                        let angle = sim.rng.between(0, 6283) as f32 * 0.001;
+                        gx += angle.sin() * element(pt::FWRK).gravity * 0.5;
+                        gy += angle.cos() * element(pt::FWRK).gravity * 0.5;
+                    }
+                    sim.parts[i].tmp = 1;
+                    sim.parts[i].life = sim.rng.between(20, 29);
+                    let mult = (sim.parts[i].life as f32 + 20.0) * 0.2 / (gx * gx + gy * gy).sqrt();
+                    sim.parts[i].vx -= gx * mult;
+                    sim.parts[i].vy -= gy * mult;
+                    return 0;
+                }
+            }
+        }
+    } else if sim.parts[i].tmp == 1 {
+        if sim.parts[i].life <= 0 {
+            sim.parts[i].tmp = 2;
+        } else {
+            sim.parts[i].flags &= !crate::particle::flags::STAGNANT;
+        }
+    } else {
+        let vx = sim.parts[i].vx;
+        let vy = sim.parts[i].vy;
+        let dcolour = sim.parts[i].dcolour;
+        for _ in 0..40 {
+            let mag = sim.rng.between(40, 99) as f32 * 0.05;
+            let angle = sim.rng.between(0, 6283) as f32 * 0.001;
+            if let Some(np) = create_near(sim, x, y, pt::EMBR) {
+                sim.parts[np].vx = vx * 0.5 + angle.cos() * mag;
+                sim.parts[np].vy = vy * 0.5 + angle.sin() * mag;
+                sim.parts[np].tmp = 1;
+                sim.parts[np].life = sim.rng.between(70, 109);
+                sim.parts[np].temp = sim.rng.between(5750, 6249) as f32;
+                sim.parts[np].dcolour = dcolour;
+            }
+        }
+        if sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+            let vc = sim.cell_idx(x / CELL as i32, y / CELL as i32);
+            sim.pv[vc] += 8.0;
+        }
+        sim.kill_part(i);
+        return 1;
     }
     0
 }
