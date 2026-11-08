@@ -67,6 +67,10 @@ export class WebGL2Renderer {
 
   resize(w, h) {
     if (!this.canvas || !this.gl || this._lost) return;
+    // A 0-size layout pass used to pin the backing store at 1px. CSS then
+    // stretched that single clear-color pixel over the whole viewport, so the
+    // simulation looked black while the particle counter still climbed.
+    if (!(w > 1 && h > 1)) return;
     const dpr = Math.min(window.devicePixelRatio||1,2);
     this.canvas.width = Math.max(1, Math.floor(w*dpr));
     this.canvas.height = Math.max(1, Math.floor(h*dpr));
@@ -90,7 +94,15 @@ export class WebGL2Renderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     const rows = Math.min(gh, Math.floor(buf.length / (gw * 4)));
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf.subarray(0, gw * rows * 4));
+    const n = gw * rows * 4;
+    // Copy out of the wasm heap. texImage2D on a view into WebAssembly.Memory
+    // (non-zero byteOffset, buffer may detach on grow) uploads zeros on
+    // several browsers, which is a black frame. The CPU particle count still
+    // reads the real cells.
+    if (!this._upload || this._upload.length !== n) this._upload = new Uint8Array(n);
+    this._upload.set(buf.subarray(0, n));
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._upload);
     // Fullscreen textured quad via the instanced shader path is overkill;
     // use a minimal blit program created lazily.
     if (!this._blit) {
@@ -114,14 +126,17 @@ uniform float uGrid;
 in vec2 vUV;
 out vec4 o;
 void main(){
-  vec2 uv=(vUV-uOff)/uScale;
+  vec2 uv=(vUV-uOff)/max(uScale, vec2(1e-6));
   if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.) discard;
-  o=texture(uT, uv);
-  if(uGrid>0.5){
+  vec4 c=texture(uT, uv);
+  // Empty cells used to discard before the grid, so a grid never showed
+  // on bare background. Draw the background, then the grid, then the pixel.
+  o = c.a < 0.004 ? vec4(0.02, 0.03, 0.06, 1.0) : c;
+  if(uGrid>=1.0){
     vec2 cell=uv*uWorld;
-    vec2 f=fract(cell);
-    float w=max(fwidth(cell.x), 0.04);
-    if(f.x<w||f.y<w) o=vec4(mix(o.rgb, vec3(0.82), 0.35), 1.0);
+    vec2 g=fract(cell/uGrid);
+    float w=max(fwidth(cell.x)/uGrid, 0.05);
+    if(g.x<w||g.y<w) o=vec4(mix(o.rgb, vec3(0.85), 0.55), 1.0);
   }
 }`);
       gl.compileShader(fs);
@@ -141,10 +156,13 @@ void main(){
     gl.useProgram(this._blit.pr);
     gl.bindBuffer(gl.ARRAY_BUFFER, this._blit.vb);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uOff"), (camera.x || 0) / cssW, (camera.y || 0) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uScale"), (gw * cellPx) / cssW, (gh * cellPx) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uWorld"), gw, gh);
-    gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGrid"), this.overlay.grid && cellPx >= 6 ? 1 : 0);
+    const gridSpacing = this.overlay.grid ? (this.overlay.gridSize || 8) : 0;
+    gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGrid"), gridSpacing);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);
     gl.uniform1i(gl.getUniformLocation(this._blit.pr, "uT"), 0);

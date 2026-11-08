@@ -2,21 +2,22 @@
 
 const listeners = new Set();
 let state = {
-  tool: "brush",
-  brushSize: 3,
-  materialId: 2, // sand
-  category: "all",
+  tool: "brush", // brush | select
+  brushRx: 4,
+  brushRy: 4,
+  shape: "circle",
+  materialId: 2,
+  secondaryId: 0,
+  category: "powders",
   search: "",
   playing: false,
   speed: 1,
-  grid: true,
-  heat: false,
+  grid: false,
+  gridSize: 8,
+  view: 0,
+  showHud: true,
   showFps: true,
-  reducedMotion: false,
-  highContrast: false,
   camera: { x: 0, y: 0, zoom: 1 },
-  selectedMaterial: null,
-  hoveredCell: null,
   status: "Ready.",
 };
 

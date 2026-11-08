@@ -10,5 +10,7 @@ pub mod tick;
 pub use realmatter_core as core;
 
 pub use grid::World;
-pub use movement::{move_powder_step, move_liquid_step, MovementStats};
+pub use movement::{
+    move_liquid_flat, move_liquid_step, move_powder_step, move_toward_center, MovementStats,
+};
 pub use tick::{TickScheduler, TickStats};

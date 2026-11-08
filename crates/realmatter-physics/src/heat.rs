@@ -115,6 +115,33 @@ pub fn phase_transitions(cells: &mut [Cell], materials: &[MaterialProps]) {
         if cell.is_empty() {
             continue;
         }
+        // Ice, water, and steam actually change material. Clamping temperature
+        // alone left ice solid forever. Other solids stay put: there is no
+        // molten-iron material to convert them into.
+        if cell.material == 13 && cell.temperature >= 273.15 {
+            cell.material = 3;
+            cell.temperature = 273.15;
+            cell.set_flag(cell_flags::FIXED, false);
+            continue;
+        }
+        if cell.material == 3 && cell.temperature <= 273.15 {
+            cell.material = 13;
+            cell.temperature = 273.15;
+            cell.set_flag(cell_flags::FIXED, true);
+            continue;
+        }
+        if cell.material == 3 && cell.temperature >= 373.15 {
+            cell.material = 5;
+            cell.temperature = 373.15;
+            cell.set_flag(cell_flags::FIXED, false);
+            continue;
+        }
+        if cell.material == 5 && cell.temperature <= 373.15 {
+            cell.material = 3;
+            cell.temperature = 360.0;
+            cell.set_flag(cell_flags::FIXED, false);
+            continue;
+        }
         let m = material_or_default(materials, cell.material);
         // Melting: solid -> liquid
         if m.state == core::material::MaterialState::Solid

@@ -35,6 +35,7 @@ export class Canvas2DRenderer extends RendererAdapter {
   }
   resize(w, h) {
     if (!this.canvas) return;
+    if (!(w > 1 && h > 1)) return;
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.canvas.width = Math.max(1, Math.floor(w * this.dpr));
     this.canvas.height = Math.max(1, Math.floor(h * this.dpr));
