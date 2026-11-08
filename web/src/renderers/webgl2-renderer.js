@@ -45,8 +45,28 @@ export class WebGL2Renderer {
     this.gl = canvas.getContext("webgl2", { alpha: false, antialias: false, preserveDrawingBuffer: false });
     if (!this.gl) throw new Error("no webgl2");
     // context loss handling
-    canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this._lost = true; }, { passive: false });
-    canvas.addEventListener('webglcontextrestored', () => { this._lost = false; try { this._initGL(); this.resize(this.canvas.clientWidth, this.canvas.clientHeight); } catch(_){} }, { passive: true });
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this._lost = true;
+      this.note = "WebGL context lost";
+      console.error("WebGL context lost. The WASM simulation was not replaced. Waiting for the context to restore.");
+    }, { passive: false });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this._lost = false;
+      this._rgbaTex = null;
+      this._blit = null;
+      this._texSize = null;
+      this._upload = null;
+      try {
+        this._initGL();
+        this.resize(this.canvas.clientWidth, this.canvas.clientHeight);
+        this.note = "WebGL context restored";
+        console.info("WebGL context restored");
+      } catch (err) {
+        this.note = "WebGL restore failed";
+        console.error("WebGL restore failed. The WASM simulation was not replaced.", err);
+      }
+    }, { passive: true });
     this._initGL();
     this.resize(canvas.clientWidth, canvas.clientHeight);
   }
@@ -85,7 +105,7 @@ export class WebGL2Renderer {
     if (this._lost || !gl || !buf || gw <= 0 || gh <= 0) { this.lastRenderMs = performance.now()-t0; return; }
     const w = this.canvas.width, h = this.canvas.height;
     if (w < 1 || h < 1) { this.lastRenderMs = performance.now()-t0; return; }
-    gl.clearColor(0.02,0.03,0.06,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clearColor(5 / 255, 8 / 255, 15 / 255, 1); gl.clear(gl.COLOR_BUFFER_BIT);
     if (!this._rgbaTex) this._rgbaTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
@@ -102,7 +122,13 @@ export class WebGL2Renderer {
     if (!this._upload || this._upload.length !== n) this._upload = new Uint8Array(n);
     this._upload.set(buf.subarray(0, n));
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._upload);
+    const same = this._texSize && this._texSize.w === gw && this._texSize.h === rows;
+    if (same) {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gw, rows, gl.RGBA, gl.UNSIGNED_BYTE, this._upload);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gw, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._upload);
+      this._texSize = { w: gw, h: rows };
+    }
     // Fullscreen textured quad via the instanced shader path is overkill;
     // use a minimal blit program created lazily.
     if (!this._blit) {
@@ -131,7 +157,9 @@ void main(){
   vec4 c=texture(uT, uv);
   // Empty cells used to discard before the grid, so a grid never showed
   // on bare background. Draw the background, then the grid, then the pixel.
-  o = c.a < 0.004 ? vec4(0.02, 0.03, 0.06, 1.0) : c;
+  vec3 bg = vec3(5.0/255.0, 8.0/255.0, 15.0/255.0);
+  // RGB is already composited in WASM. Force opaque so WebGL matches WebGPU.
+  o = c.a < 0.004 ? vec4(bg, 1.0) : vec4(c.rgb, 1.0);
   if(uGrid>=1.0){
     vec2 cell=uv*uWorld;
     vec2 g=fract(cell/uGrid);
@@ -143,12 +171,19 @@ void main(){
       const pr = gl.createProgram();
       gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr);
       if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) {
-        console.warn("WebGL blit link failed", gl.getProgramInfoLog(pr), gl.getShaderInfoLog(fs));
+        console.error("WebGL blit link failed", gl.getProgramInfoLog(pr), gl.getShaderInfoLog(fs));
       }
       const vb = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, vb);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-      this._blit = { pr, vb };
+      this._blit = {
+        pr, vb,
+        off: gl.getUniformLocation(pr, "uOff"),
+        scale: gl.getUniformLocation(pr, "uScale"),
+        world: gl.getUniformLocation(pr, "uWorld"),
+        grid: gl.getUniformLocation(pr, "uGrid"),
+        tex: gl.getUniformLocation(pr, "uT"),
+      };
     }
     const zoom = camera.zoom || 1, cellPx = 4 * zoom;
     const dprVis = Math.min(window.devicePixelRatio || 1, 2);
@@ -158,14 +193,14 @@ void main(){
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uOff"), (camera.x || 0) / cssW, (camera.y || 0) / cssH);
-    gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uScale"), (gw * cellPx) / cssW, (gh * cellPx) / cssH);
-    gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uWorld"), gw, gh);
+    gl.uniform2f(this._blit.off, (camera.x || 0) / cssW, (camera.y || 0) / cssH);
+    gl.uniform2f(this._blit.scale, (gw * cellPx) / cssW, (gh * cellPx) / cssH);
+    gl.uniform2f(this._blit.world, gw, gh);
     const gridSpacing = this.overlay.grid ? (this.overlay.gridSize || 8) : 0;
-    gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGrid"), gridSpacing);
+    gl.uniform1f(this._blit.grid, gridSpacing);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._rgbaTex);
-    gl.uniform1i(gl.getUniformLocation(this._blit.pr, "uT"), 0);
+    gl.uniform1i(this._blit.tex, 0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     this.lastRenderMs = performance.now()-t0;
     const now=performance.now(); this._fpsAcc++; if (now-this._fpsT>=500){this.fps=this._fpsAcc*1000/(now-this._fpsT);this._fpsAcc=0;this._fpsT=now;}
@@ -176,7 +211,7 @@ void main(){
     const gl = this.gl;
     if (this._lost || !gl || !snapshot) { this.lastRenderMs = performance.now()-t0; return; }
     const w = this.canvas.width, h = this.canvas.height; if (w < 1 || h < 1) { this.lastRenderMs = performance.now()-t0; return; }
-    gl.clearColor(0.02,0.03,0.06,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clearColor(5 / 255, 8 / 255, 15 / 255, 1); gl.clear(gl.COLOR_BUFFER_BIT);
 
     const gw=snapshot.width,gh=snapshot.height,grid=snapshot.grid,temp=snapshot.temp;
     const zoom=camera.zoom||1, cellPx=4*zoom, offX=camera.x, offY=camera.y;

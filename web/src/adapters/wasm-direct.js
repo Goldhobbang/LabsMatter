@@ -21,9 +21,9 @@ export class WasmDirectAdapter {
     // site root's pkg/ directory. No absolute '/pkg' paths: those break under
     // a subpath deployment.
     const paths = [
-      "../../pkg/realmatter_wasm.js?sim=9",
-      "../pkg/realmatter_wasm.js?sim=9",
-      "./pkg/realmatter_wasm.js?sim=9",
+      "../../pkg/realmatter_wasm.js?sim=10",
+      "../pkg/realmatter_wasm.js?sim=10",
+      "./pkg/realmatter_wasm.js?sim=10",
     ];
     let lastErr = null;
     for (const p of paths) {
@@ -141,6 +141,12 @@ export class WasmDirectAdapter {
     const now = performance.now();
     if (this._countAt && now - this._countAt < 250) return;
     this._countAt = now;
+    if (this.mod && typeof this.mod.particle_count === "function") {
+      try {
+        this._particles = this.mod.particle_count() | 0;
+        return;
+      } catch { /* count from the buffer below */ }
+    }
     const { w, h } = this.getWorldSize();
     const buf = this.readRenderBuffer();
     let particles = 0;
@@ -227,6 +233,9 @@ export class WasmDirectAdapter {
   toggleNewtonian() { try { this.mod.toggle_newtonian?.(); } catch (e) { console.warn(e); } }
   toggleAmbient() { try { this.mod.toggle_ambient?.(); } catch (e) { console.warn(e); } }
   simStatus() { try { return this.mod.sim_status?.() || ""; } catch { return ""; } }
+  moduleId() { try { return this.mod.module_id?.() || "realmatter_wasm"; } catch { return "realmatter_wasm"; } }
+  lastError() { try { return this.mod.last_error?.() || ""; } catch { return ""; } }
+  renderMillis() { try { return Number(this.mod.render_millis?.() || 0); } catch { return 0; } }
   setViewMode(mode) {
     if (this.mod && typeof this.mod.set_view_mode === "function") {
       try { this.mod.set_view_mode(mode | 0); } catch (e) { console.warn(e); }

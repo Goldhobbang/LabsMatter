@@ -49,7 +49,7 @@ export class Canvas2DRenderer extends RendererAdapter {
     const w = this.canvas.width / this.dpr;
     const h = this.canvas.height / this.dpr;
     ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = "#05060a";
+    ctx.fillStyle = "#05080f";
     ctx.fillRect(0, 0, w, h);
     const zoom = camera.zoom || 1;
     const cell = this.cellPx * zoom;
@@ -105,7 +105,7 @@ export class Canvas2DRenderer extends RendererAdapter {
     const ctx = this.ctx;
     const w = this.canvas.width / this.dpr;
     const h = this.canvas.height / this.dpr;
-    ctx.fillStyle = "#05060a";
+    ctx.fillStyle = "#05080f";
     ctx.fillRect(0, 0, w, h);
 
     const { width: gw, height: gh, grid, temp } = snapshot;

@@ -4,6 +4,8 @@ Reference tree: The Powder Toy `2b7221a46d378589b4de7683f16d3ebc92be6bd9`.
 
 `src/simulation/elements/` contains **195** `.cpp` files. That count is not the number of selectable palette entries. Variants (for example BIZR / BIZRG / BIZRS), tools, and internal helpers share that folder. A full menu-section pass of `SimulationData` is still required before anyone claims "195 elements". This file records what LabsMatter can actually simulate.
 
+Shared renderer, display modes, and editing integrity for the K7 pass are in `docs/tpt-parity/k7-renderer.md`. That document is not element parity.
+
 ## LabsMatter registry
 
 Selectable ids now run 0–25 (26 palette entries). Added since the 17-id list: snow (melts), copper (spark conductor), nitro (liquid burst), hydrogen (light burning gas), CO2 (sinks when air is on), plant (replaces adjacent water), gold, dust, bomb (fireball at 600 K, stone survives). The reference tree is still far larger. This is not full element parity.

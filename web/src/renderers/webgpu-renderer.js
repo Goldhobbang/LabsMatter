@@ -86,7 +86,12 @@ export class WebGPURenderer {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("No WebGPU adapter");
     this.device = await adapter.requestDevice();
-    this.device.lost.then((info) => { this._lost = true; console.warn("WebGPU device lost:", info?.reason); });
+    this.device.lost.then((info) => {
+      this._lost = true;
+      this.fallbackRequested = true;
+      this.lossReason = "WebGPU device lost: " + (info?.reason || "unknown");
+      console.error(this.lossReason + ". The WASM simulation was not replaced.");
+    });
     this.format = navigator.gpu.getPreferredCanvasFormat();
     const mod = this.device.createShaderModule({ code: WGSL });
     if (typeof mod.getCompilationInfo === "function") {
@@ -161,13 +166,23 @@ export class WebGPURenderer {
     }
     try {
       this._ensureTexture(gw, gh);
-      const bytesPerRow = gw * 4;
-      const n = bytesPerRow * gh;
+      const tight = gw * 4;
+      const bytesPerRow = Math.ceil(tight / 256) * 256;
+      const n = tight * gh;
       if (!this._upload || this._upload.length !== n) this._upload = new Uint8Array(n);
       this._upload.set(buf.subarray(0, n));
+      let src = this._upload;
+      if (bytesPerRow !== tight) {
+        const padded = bytesPerRow * gh;
+        if (!this._padded || this._padded.length !== padded) this._padded = new Uint8Array(padded);
+        for (let y = 0; y < gh; y++) {
+          this._padded.set(this._upload.subarray(y * tight, y * tight + tight), y * bytesPerRow);
+        }
+        src = this._padded;
+      }
       this.device.queue.writeTexture(
         { texture: this.simTex },
-        this._upload,
+        src,
         { bytesPerRow, rowsPerImage: gh },
         { width: gw, height: gh }
       );
@@ -177,22 +192,20 @@ export class WebGPURenderer {
       const offY = (camera.y || 0) * this.dpr;
       const worldPxW = gw * cellPx * this.dpr;
       const worldPxH = gh * cellPx * this.dpr;
-      const params = new Float32Array([
-        offX, offY, worldPxW, worldPxH,
-        this.canvas.width, this.canvas.height, gw, gh,
-        0.02, 0.024, 0.04, 1.0,
-      ]);
-      // Pad to 64 bytes (16 floats).
-      const padded = new Float32Array(16);
-      padded.set(params.subarray(0, 12));
+      if (!this._params) this._params = new Float32Array(16);
+      const padded = this._params;
+      padded[0] = offX; padded[1] = offY; padded[2] = worldPxW; padded[3] = worldPxH;
+      padded[4] = this.canvas.width; padded[5] = this.canvas.height; padded[6] = gw; padded[7] = gh;
+      padded[8] = 5 / 255; padded[9] = 8 / 255; padded[10] = 15 / 255; padded[11] = 1;
       padded[12] = this.overlay.grid ? (this.overlay.gridSize || 8) : 0;
+      padded[13] = 0; padded[14] = 0; padded[15] = 0;
       this.device.queue.writeBuffer(this.uniformBuf, 0, padded);
       const encoder = this.device.createCommandEncoder();
       const pass = encoder.beginRenderPass({
         colorAttachments: [{
           view: this.context.getCurrentTexture().createView(),
           loadOp: "clear",
-          clearValue: { r: 0.02, g: 0.024, b: 0.04, a: 1.0 },
+          clearValue: { r: 5 / 255, g: 8 / 255, b: 15 / 255, a: 1.0 },
           storeOp: "store",
         }],
       });
@@ -202,7 +215,8 @@ export class WebGPURenderer {
       pass.end();
       this.device.queue.submit([encoder.finish()]);
     } catch (e) {
-      console.warn("WebGPU render failed:", e?.message);
+      this.note = "WebGPU frame failed";
+      console.error("WebGPU render failed. The WASM simulation was not replaced.", e?.message);
     }
     this.lastRenderMs = performance.now() - t0;
     const now = performance.now();

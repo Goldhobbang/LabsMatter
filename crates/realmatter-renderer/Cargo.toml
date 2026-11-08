@@ -6,8 +6,12 @@ license.workspace = true
 
 [dependencies]
 realmatter-core = { path = "../realmatter-core" }
-wgpu = { workspace = true }
-thiserror = { workspace = true }
+
+[features]
+default = []
+# Native GPU backend. The browser does not use this crate's wgpu path;
+# WebGL2 and WebGPU consume the RGBA buffer produced by `render`.
+gpu = []
 
 [lib]
 crate-type = ["rlib"]

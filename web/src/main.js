@@ -27,7 +27,10 @@ let tickSamples = 0;
 let tickWindow = 0;
 let measuredTps = 0;
 const SHAPES = ["circle", "square", "triangle"];
-const VIEWS = ["Normal", "Fancy", "Heat", "Pressure", "Velocity"];
+const VIEWS = ["Normal", "Fancy", "Heat", "Pressure", "Velocity", "Air velocity", "Air pressure", "Air heat", "Persistent", "Gravity"];
+let statusNote = "";
+let statusUntil = 0;
+let switchingRenderer = false;
 
 async function boot() {
   setAppState("loading", "Starting simulation…");
@@ -37,7 +40,7 @@ async function boot() {
   try {
     renderer = await createRenderer(canvas);
   } catch (e) {
-    setAppState("error", "Renderer failed: " + (e?.message || e));
+    setAppState("error", "Renderer failed: " + (e?.message || e) + ". The simulation was not started.");
     return;
   }
   try {
@@ -45,8 +48,12 @@ async function boot() {
     await wd.init();
     sim = wd;
     sim.setViewMode(getState().view || 0);
+    if (sim.moduleId() !== "realmatter_wasm") {
+      setAppState("error", "Unexpected WASM module " + sim.moduleId() + ". Refusing to run a substitute engine.");
+      return;
+    }
   } catch (e) {
-    setAppState("error", "WASM failed: " + (e?.message || e));
+    setAppState("error", "WASM module realmatter_wasm failed: " + (e?.message || e) + ". The legacy JavaScript simulation was not started.");
     return;
   }
   const resizeViewport = () => {
@@ -85,7 +92,34 @@ function setAppState(state, msg) {
   }
 }
 
+async function switchToWebGL(reason) {
+  if (switchingRenderer) return;
+  switchingRenderer = true;
+  console.error(reason + " Switching the renderer to WebGL2. The WASM simulation was not replaced.");
+  try {
+    const { WebGL2Renderer } = await import("./renderers/webgl2-renderer.js");
+    const next = new WebGL2Renderer();
+    next.attach(canvas);
+    next.backend = "webgl2";
+    next.note = "recovered from WebGPU";
+    const box = canvas.parentElement;
+    if (box) next.resize(box.clientWidth, box.clientHeight);
+    try { renderer.dispose(); } catch { /* already lost */ }
+    renderer = next;
+    setStatus("WebGPU device lost. Rendering with WebGL2. Simulation unchanged.");
+  } catch (e) {
+    setAppState("error", "Renderer recovery failed: " + (e?.message || e) + ". The simulation was not replaced.");
+  } finally {
+    switchingRenderer = false;
+  }
+}
+
 function loop(now) {
+  if (renderer?.fallbackRequested) {
+    const reason = renderer.lossReason || "WebGPU device lost";
+    renderer.fallbackRequested = false;
+    switchToWebGL(reason);
+  }
   const frameDt = Math.min(0.25, (now - lastFrame) / 1000);
   lastFrame = now;
   const s = getState();
@@ -200,7 +234,13 @@ function wireChrome() {
     e.target.value = "";
     if (!f) return;
     const ok = sim.loadBlob(new Uint8Array(await f.arrayBuffer()));
-    if (ok) { undoStack = []; redoStack = []; }
+    if (ok) {
+      undoStack = [];
+      redoStack = [];
+      setStatus("World loaded.");
+    } else {
+      setStatus(sim.lastError() || "Save could not be loaded. The world was not replaced.");
+    }
   };
   $("btn-preset").onclick = () => {
     keys = applyPreset(keys.preset === "powder" ? "legacy" : "powder");
@@ -410,20 +450,39 @@ function sample(c) {
   setState({ materialId: id, category: findMaterial(id).category });
 }
 
+function setStatus(msg) {
+  statusNote = msg;
+  statusUntil = performance.now() + 6000;
+  console.info(msg);
+}
+function readCell(x, y) {
+  if (sim.mod && typeof sim.mod.cell_state === "function") {
+    const s = sim.mod.cell_state(x, y);
+    return { m: s[0] | 0, t: s[1], vx: s[2], vy: s[3], f: s[4] | 0, life: s[5], p: s[6] };
+  }
+  return { m: sim.getCellMaterial(x, y) };
+}
+function writeCell(x, y, c) {
+  if (!c || c.t == null || typeof sim.mod.set_cell_full !== "function") {
+    sim.mod.set_cell(x, y, c.m | 0);
+    return;
+  }
+  sim.mod.set_cell_full(x, y, c.m | 0, c.t, c.vx, c.vy, c.f | 0, c.life, c.p);
+}
 function beginLog() { strokeLog = new Map(); }
 function note(x, y) {
   if (!strokeLog) return;
   const k = x + "," + y;
-  if (!strokeLog.has(k)) strokeLog.set(k, sim.getCellMaterial(x, y));
+  if (!strokeLog.has(k)) strokeLog.set(k, readCell(x, y));
 }
-function endLog(material) {
+function endLog() {
   if (!strokeLog || strokeLog.size === 0) { strokeLog = null; return; }
-  const before = [];
-  for (const [k, m] of strokeLog) {
+  const cells = [];
+  for (const [k, before] of strokeLog) {
     const [x, y] = k.split(",").map(Number);
-    before.push({ x, y, m });
+    cells.push({ x, y, before, after: readCell(x, y) });
   }
-  undoStack.push({ before, material });
+  undoStack.push({ cells });
   if (undoStack.length > 30) undoStack.shift();
   redoStack.length = 0;
   strokeLog = null;
@@ -431,13 +490,18 @@ function endLog(material) {
 function undo() {
   const op = undoStack.pop();
   if (!op) return;
-  for (const c of op.before) sim.mod.set_cell(c.x, c.y, c.m);
+  const list = op.cells || op.before || [];
+  for (const c of list) writeCell(c.x, c.y, c.before || { m: c.m });
   redoStack.push(op);
 }
 function redo() {
   const op = redoStack.pop();
   if (!op) return;
-  for (const c of op.before) sim.mod.set_cell(c.x, c.y, op.material);
+  const list = op.cells || op.before || [];
+  for (const c of list) {
+    if (c.after) writeCell(c.x, c.y, c.after);
+    else sim.mod.set_cell(c.x, c.y, op.material | 0);
+  }
   undoStack.push(op);
 }
 
@@ -452,8 +516,8 @@ function grab(rect) {
   const cells = [];
   for (let y = rect.y0; y <= rect.y1; y++) {
     for (let x = rect.x0; x <= rect.x1; x++) {
-      const m = sim.getCellMaterial(x, y);
-      if (m) cells.push({ dx: x - rect.x0, dy: y - rect.y0, m });
+      const st = readCell(x, y);
+      if (st.m) cells.push({ dx: x - rect.x0, dy: y - rect.y0, ...st });
     }
   }
   return { w: rect.x1 - rect.x0 + 1, h: rect.y1 - rect.y0 + 1, cells, name: "stamp" };
@@ -475,30 +539,45 @@ function normalizeStamp(cells) {
   if (!cells.length) return cells;
   const minX = Math.min(...cells.map((c) => c.dx));
   const minY = Math.min(...cells.map((c) => c.dy));
-  return cells.map((c) => ({ dx: c.dx - minX, dy: c.dy - minY, m: c.m }));
+  return cells.map((c) => ({ ...c, dx: c.dx - minX, dy: c.dy - minY }));
+}
+// Screen-space 90° turn used by the existing stamp: (dx, dy) -> (dy, -dx).
+// Velocity follows the same turn. Spark stores a conductor id in vx, so that
+// value stays put. There is no player, portal, pipe, or SOAP index to retarget.
+function turnVelocity(c) {
+  if ((c.m | 0) === 16 || c.vx == null) return c;
+  const vx = c.vy;
+  const vy = -c.vx;
+  return { ...c, vx, vy };
 }
 function rotatePaste() {
   if (!paste) return;
-  paste = { ...paste, cells: normalizeStamp(paste.cells.map((c) => ({ dx: c.dy, dy: -c.dx, m: c.m }))) };
+  paste = { ...paste, cells: normalizeStamp(paste.cells.map((c) => turnVelocity({ ...c, dx: c.dy, dy: -c.dx }))) };
 }
 function flipPaste(axis) {
   if (!paste) return;
   paste = {
     ...paste,
-    cells: normalizeStamp(paste.cells.map((c) => ({
-      dx: axis === "x" ? -c.dx : c.dx,
-      dy: axis === "y" ? -c.dy : c.dy,
-      m: c.m,
-    }))),
+    cells: normalizeStamp(paste.cells.map((c) => {
+      const next = {
+        ...c,
+        dx: axis === "x" ? -c.dx : c.dx,
+        dy: axis === "y" ? -c.dy : c.dy,
+      };
+      if ((c.m | 0) === 16 || c.vx == null) return next;
+      if (axis === "x") next.vx = -c.vx;
+      if (axis === "y") next.vy = -c.vy;
+      return next;
+    })),
   };
 }
 function placeStamp(x, y, data) {
   beginLog();
   for (const c of data.cells) {
     note(x + c.dx, y + c.dy);
-    sim.mod.set_cell(x + c.dx, y + c.dy, c.m);
+    writeCell(x + c.dx, y + c.dy, c);
   }
-  endLog(data.cells[0] ? data.cells[0].m : 0);
+  endLog();
 }
 function saveStamp() {
   const data = grab(selection || activeRect());
@@ -549,7 +628,14 @@ function shot() {
   const img = ctx.createImageData(w, h);
   const n = Math.min(buf.length, w * h * 4);
   img.data.set(buf.subarray(0, n));
-  for (let i = 3; i < n; i += 4) if (img.data[i] === 0) img.data[i] = 255;
+  for (let i = 0; i < n; i += 4) {
+    if (img.data[i + 3] === 0) {
+      img.data[i] = 5;
+      img.data[i + 1] = 8;
+      img.data[i + 2] = 15;
+      img.data[i + 3] = 255;
+    }
+  }
   ctx.putImageData(img, 0, 0);
   c.toBlob((blob) => {
     if (!blob) return;
@@ -563,7 +649,10 @@ function shot() {
 
 function saveWorld() {
   const blob = sim.saveBlob();
-  if (!blob || !blob.length) return;
+  if (!blob || !blob.length) {
+    setStatus(sim.lastError() || "Save failed. Nothing was written.");
+    return;
+  }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([blob], { type: "application/octet-stream" }));
   a.download = "labsmatter-world.rmt";
@@ -765,13 +854,19 @@ function paintHud() {
   if (!s.showHud) return;
   const fps = renderer && renderer.getFps ? renderer.getFps() : 0;
   const d = sim.getDiagnostics ? sim.getDiagnostics() : {};
-  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  ${renderer?.backend || ""}`;
+  const note = statusUntil > performance.now() ? `  ${statusNote}` : "";
+  const adapter = `${renderer?.backend || "none"}${renderer?.note ? " " + renderer.note : ""}`;
+  const mod = sim.moduleId ? sim.moduleId() : "";
+  const compose = sim.renderMillis ? sim.renderMillis() : 0;
+  $("hud-fps").textContent = `FPS ${fps.toFixed(0)}  TPS ${s.playing ? measuredTps.toFixed(0) : "0"}  compose ${compose.toFixed(2)} ms  ${adapter}  ${mod}${note}`;
   $("hud-parts").textContent = `${(d.particles || 0).toLocaleString()} pts  ${VIEWS[s.view] || ""}  ${sim.simStatus ? sim.simStatus() : ""}  grid ${s.grid ? s.gridSize : 0}`;
   if (!hover) { $("hud-cell").textContent = "—"; return; }
   const m = findMaterial(sim.getCellMaterial(hover.x, hover.y));
   const t = sim.getCellTemperature(hover.x, hover.y);
   const p = sim.getCellPressure(hover.x, hover.y);
-  $("hud-cell").textContent = `${hover.x},${hover.y}  ${t.toFixed(0)}K  ${(p / 1000).toFixed(1)}kPa`;
+  const vx = sim.getCellVx ? sim.getCellVx(hover.x, hover.y) : 0;
+  const vy = sim.getCellVy ? sim.getCellVy(hover.x, hover.y) : 0;
+  $("hud-cell").textContent = `${hover.x},${hover.y}  ${t.toFixed(0)}K  ${(p / 1000).toFixed(1)}kPa  vx ${vx.toFixed(2)} vy ${vy.toFixed(2)}`;
   $("hud-mat").textContent = `${m.abbr} ${m.name}`;
 }
 

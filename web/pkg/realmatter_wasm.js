@@ -1,3 +1,24 @@
+/**
+ * `[material, temperature, vx, vy, flags, lifetime, pressure]`.
+ * Empty / out of bounds is all zeros. There is no particle index to copy.
+ * @param {number} x
+ * @param {number} y
+ * @returns {Float32Array}
+ */
+export function cell_state(x, y) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        wasm.cell_state(retptr, x, y);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayF32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export2(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
 export function cycle_air() {
     wasm.cycle_air();
 }
@@ -85,15 +106,66 @@ export function init(width, height) {
 }
 
 /**
+ * Last save/load failure. Empty after a successful load.
+ * @returns {string}
+ */
+export function last_error() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        wasm.last_error(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred1_0 = r0;
+        deferred1_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export2(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
  * Load a persist-format blob into the world. Returns false on failure.
  * @param {Uint8Array | number[]} bytes
  * @returns {boolean}
  */
 export function load_blob(bytes) {
-    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export4);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.load_blob(ptr0, len0);
     return ret !== 0;
+}
+
+/**
+ * Active WASM module. The page must not substitute another engine for this.
+ * @returns {string}
+ */
+export function module_id() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        wasm.module_id(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred1_0 = r0;
+        deferred1_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export2(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
+ * Occupied cells from the last full compose, adjusted by paints.
+ * @returns {number}
+ */
+export function particle_count() {
+    const ret = wasm.particle_count();
+    return ret >>> 0;
 }
 
 /**
@@ -112,6 +184,15 @@ export function render_buffer_len() {
 export function render_buffer_ptr() {
     const ret = wasm.render_buffer_ptr();
     return ret >>> 0;
+}
+
+/**
+ * Last full framebuffer compose, in milliseconds. Not a browser frame time.
+ * @returns {number}
+ */
+export function render_millis() {
+    const ret = wasm.render_millis();
+    return ret;
 }
 
 /**
@@ -134,7 +215,7 @@ export function save_blob() {
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var v1 = getArrayU8FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_export3(r0, r1 * 1, 1);
+        wasm.__wbindgen_export2(r0, r1 * 1, 1);
         return v1;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
@@ -175,6 +256,27 @@ export function set_cell(x, y, material) {
 }
 
 /**
+ * Restore or stamp a cell without resetting temperature, velocity, flags,
+ * lifetime, or pressure. Spark stores its conductor id in `vx`; copying only
+ * the material id would turn that spark into a fresh one. Non-finite numbers
+ * are replaced so a bad stamp cannot poison the solver.
+ * @param {number} x
+ * @param {number} y
+ * @param {number} material
+ * @param {number} temperature
+ * @param {number} vx
+ * @param {number} vy
+ * @param {number} flags
+ * @param {number} lifetime
+ * @param {number} pressure
+ * @returns {boolean}
+ */
+export function set_cell_full(x, y, material, temperature, vx, vy, flags, lifetime, pressure) {
+    const ret = wasm.set_cell_full(x, y, material, temperature, vx, vy, flags, lifetime, pressure);
+    return ret !== 0;
+}
+
+/**
  * Edge: 0 void, 1 solid, 2 wrap.
  * @param {number} mode
  */
@@ -198,8 +300,8 @@ export function set_newtonian(on) {
 }
 
 /**
- * 0 material, 1 fancy (heat tint), 2 heat, 3 pressure, 4 velocity.
- * Colors come from the live cell fields, not from invented values.
+ * 0 Normal, 1 Fancy, 2 Heat, 3 Pressure, 4 Velocity,
+ * 5 Air velocity, 6 Air pressure, 7 Air heat, 8 Persistent, 9 Gravity.
  * @param {number} mode
  */
 export function set_view_mode(mode) {
@@ -223,7 +325,7 @@ export function sim_status() {
         return getStringFromWasm0(r0, r1);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export3(deferred1_0, deferred1_1, 1);
+        wasm.__wbindgen_export2(deferred1_0, deferred1_1, 1);
     }
 }
 
@@ -283,6 +385,51 @@ export function world_width() {
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg___wbindgen_is_undefined_be5b34249ff1fc15: function(arg0) {
+            const ret = arg0 === undefined;
+            return ret;
+        },
+        __wbg___wbindgen_throw_4c88d8bf264fd984: function(arg0, arg1) {
+            throw new Error(getStringFromWasm0(arg0, arg1));
+        },
+        __wbg_instanceof_Window_5cf453f5639aa1a2: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof Window;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
+        __wbg_now_043d245551b22f9c: function(arg0) {
+            const ret = arg0.now();
+            return ret;
+        },
+        __wbg_now_463ac581d2fc7ea3: function() {
+            const ret = Date.now();
+            return ret;
+        },
+        __wbg_performance_50e6a3f8dc80bbca: function(arg0) {
+            const ret = arg0.performance;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_static_accessor_GLOBAL_THIS_003ee833af9699fc: function() {
+            const ret = typeof globalThis === 'undefined' ? undefined : globalThis;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_static_accessor_GLOBAL_e4293fb22cbe77da: function() {
+            const ret = typeof global === 'undefined' ? undefined : global;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_static_accessor_SELF_53bb20457401453d: function() {
+            const ret = typeof self === 'undefined' ? undefined : self;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
+        __wbg_static_accessor_WINDOW_b5e0810bfecb7feb: function() {
+            const ret = typeof window === 'undefined' ? undefined : window;
+            return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
+        },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
@@ -303,6 +450,17 @@ function __wbg_get_imports() {
     };
 }
 
+function addToExternrefTable0(obj) {
+    const idx = wasm.__wbindgen_export();
+    wasm.__wbindgen_externrefs.set(idx, obj);
+    return idx;
+}
+
+function getArrayF32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
 function getArrayU8FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
@@ -314,6 +472,14 @@ function getDataViewMemory0() {
         cachedDataViewMemory0 = new DataView(wasm.memory.buffer);
     }
     return cachedDataViewMemory0;
+}
+
+let cachedFloat32ArrayMemory0 = null;
+function getFloat32ArrayMemory0() {
+    if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
+        cachedFloat32ArrayMemory0 = new Float32Array(wasm.memory.buffer);
+    }
+    return cachedFloat32ArrayMemory0;
 }
 
 function getStringFromWasm0(ptr, len) {
@@ -329,6 +495,10 @@ function getUint8ArrayMemory0() {
     return cachedUint8ArrayMemory0;
 }
 
+function isLikeNone(x) {
+    return x === undefined || x === null;
+}
+
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
@@ -338,7 +508,7 @@ function passArray8ToWasm0(arg, malloc) {
 
 function takeFromExternrefTable0(idx) {
     const value = wasm.__wbindgen_externrefs.get(idx);
-    wasm.__wbindgen_export(idx);
+    wasm.__wbindgen_export3(idx);
     return value;
 }
 
@@ -364,6 +534,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedFloat32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;
@@ -449,7 +620,7 @@ async function __wbg_init_once(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('realmatter_wasm_bg.wasm?sim=9', import.meta.url);
+        module_or_path = new URL('realmatter_wasm_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 
