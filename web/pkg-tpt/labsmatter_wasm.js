@@ -279,7 +279,8 @@ export function get_deco(x, y) {
 }
 
 /**
- * Head particle index for an entity (0 = P1, 1 = P2, >=2 = fighter slot + 2).
+ * Head particle index for an entity.
+ * `which`: 0 = player 1, 1 = player 2, `2 + slot` = fighter `slot`.
  * Returns -1 when the entity does not exist.
  * @param {number} which
  * @returns {number}
