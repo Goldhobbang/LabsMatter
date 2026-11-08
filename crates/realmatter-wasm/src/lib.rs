@@ -748,13 +748,16 @@ fn apply_air_advection(
                         continue;
                     }
                     let ni = ny as usize * w + nx as usize;
+                    // Material 0 is empty, but the registry types it as gas.
+                    // Counting those cells made open air look like a rising
+                    // current, so dust and the other powders were lifted one
+                    // cell every frame and never reached the ground.
+                    if cells[ni].is_empty() {
+                        continue;
+                    }
                     if matches!(state_of(cells[ni].material), Some(MaterialState::Gas)) {
                         vx += cells[ni].vx;
                         vy += cells[ni].vy;
-                        // A gas above this cell is rising away from it; carry the cell along.
-                        if dy < 0 {
-                            vy -= 0.2;
-                        }
                         n += 1;
                     }
                 }
@@ -765,7 +768,16 @@ fn apply_air_advection(
             vx /= n as f32;
             vy /= n as f32;
             let mx = if vx.abs() > 0.02 { vx.signum() as i32 } else { 0 };
-            let my = if vy.abs() > 0.02 { vy.signum() as i32 } else { 0 };
+            // Powder and liquid already fall one cell this frame. An upward
+            // air step of one cell cancels that fall, so only a strong upward
+            // current (an explosion, not a warm plume) may lift them.
+            let my = if vy < -2.0 {
+                -1
+            } else if vy > 0.02 {
+                1
+            } else {
+                0
+            };
             if mx != 0 || my != 0 {
                 planned.push((i, mx, my));
             }
@@ -1249,4 +1261,63 @@ pub fn load_blob(bytes: &[u8]) -> bool {
         },
         false,
     )
+}
+
+#[cfg(test)]
+mod air_tests {
+    use super::apply_air_advection;
+    use realmatter_core::cell::Cell;
+    use realmatter_core::material::MaterialState;
+
+    fn states(id: u16) -> Option<MaterialState> {
+        match id {
+            0 | 12 => Some(MaterialState::Gas),
+            24 | 2 => Some(MaterialState::Powder),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn open_air_does_not_lift_dust() {
+        let (w, h) = (9usize, 9usize);
+        let mut cells = vec![Cell::default(); w * h];
+        let i = 4 * w + 4;
+        cells[i].material = 24;
+        apply_air_advection(&mut cells, w, h, &states);
+        assert_eq!(cells[i].material, 24);
+        assert_eq!(cells.iter().filter(|c| c.material == 24).count(), 1);
+    }
+
+    #[test]
+    fn dust_still_falls_after_air_step() {
+        let (w, h) = (5usize, 6usize);
+        let mut cells = vec![Cell::default(); w * h];
+        cells[1 * w + 2].material = 24;
+        let state_of = |id| states(id);
+        let density_of = |_id| 200.0f32;
+        realmatter_world::move_powder_step(
+            &mut cells,
+            w as u32,
+            h as u32,
+            &state_of,
+            &density_of,
+            None,
+        );
+        apply_air_advection(&mut cells, w, h, &states);
+        assert_eq!(cells[2 * w + 2].material, 24, "dust should be one row lower");
+    }
+
+    #[test]
+    fn sideways_gas_blows_dust_without_lifting_it() {
+        let (w, h) = (7usize, 7usize);
+        let mut cells = vec![Cell::default(); w * h];
+        cells[3 * w + 3].material = 24;
+        cells[3 * w + 4].material = 12;
+        cells[3 * w + 4].vx = 1.0;
+        cells[2 * w + 3].material = 12;
+        cells[2 * w + 3].vy = -0.4;
+        apply_air_advection(&mut cells, w, h, &states);
+        assert_eq!(cells[3 * w + 4].material, 24, "dust slides with the sideways current");
+        assert_eq!(cells[2 * w + 3].material, 12, "a mild plume does not lift dust");
+    }
 }
