@@ -7552,33 +7552,12 @@ fn seed_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 // Batch 4c: portals, wireless, rays, pistons, stickmen fallbacks
 // ===========================================================================
 
-/// Minimal portal payload. The reference stores full `Particle`s in
-/// `Simulation::portalp[channel][direction][slot]`; we store the fields that
-/// affect the re-emitted particle.
-#[derive(Clone, Copy)]
-struct PortalPayload {
-    t: u16,
-    life: i32,
-    ctype: i32,
-    tmp: i32,
-    tmp2: i32,
-    temp: f32,
-    vx: f32,
-    vy: f32,
-}
-
-thread_local! {
-    /// `[channel][direction][slot]` — 8 directions, 80 slots, 8 channels.
-    static PORTAL: std::cell::RefCell<Vec<Option<PortalPayload>>> =
-        std::cell::RefCell::new(vec![None; 4 * 8 * 80]);
-    static WIRELESS: std::cell::RefCell<[[bool; 2]; 4]> =
-        std::cell::RefCell::new([[false; 2]; 4]);
-    static WIRELESS_DIRTY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
+// Portal payloads now live in `Sim::portal` (world layer). This keeps them
+// serialisable and independent of particle iteration order.
+use crate::portal::{PortalPayload, PORTAL_CHANNELS};
 
 const PORTAL_RX: [i32; 8] = [-1, 0, 1, 1, 1, 0, -1, -1];
 const PORTAL_RY: [i32; 8] = [-1, -1, -1, 0, 1, 1, 1, 0];
-const PORTAL_CHANNELS: usize = 4;
 
 fn portal_channel(sim: &Sim, i: usize) -> usize {
     let t = ((sim.parts[i].temp - 73.15) / 100.0 + 1.0) as i32;
@@ -7613,30 +7592,11 @@ fn prti_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
         if matches!(rt, pt::STKM | pt::STKM2 | pt::FIGH) {
             continue;
         }
-        let base = (ch * 8 + count) * 80;
-        let payload = PortalPayload {
-            t: rt,
-            life: sim.parts[id].life,
-            ctype: sim.parts[id].ctype,
-            tmp: sim.parts[id].tmp,
-            tmp2: sim.parts[id].tmp2,
-            temp: sim.parts[id].temp,
-            vx: sim.parts[id].vx,
-            vy: sim.parts[id].vy,
-        };
-        let stored = PORTAL.with(|pl| {
-            let mut pl = pl.borrow_mut();
-            for slot in 0..80 {
-                if pl[base + slot].is_none() {
-                    pl[base + slot] = Some(payload);
-                    return true;
-                }
-            }
-            false
-        });
-        if stored {
+        let payload = PortalPayload::from_particle(&sim.parts[id]);
+        if sim.portal.store(ch, count, payload) {
             if rt == pt::SPRK {
-                sim.part_change_type(id, nx, ny, sim.parts[id].ctype as i16);
+                let ct = sim.parts[id].ctype;
+                sim.part_change_type(id, nx, ny, ct as i16);
             } else {
                 sim.kill_part(id);
             }
@@ -7661,36 +7621,11 @@ fn prto_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
             continue;
         }
         let random = ((count as i32 + sim.rng.between(-1, 1) + 4) % 8) as usize;
-        let base = (ch * 8 + random) * 80;
-        let payload = PORTAL.with(|pl| {
-            let pl = pl.borrow();
-            pl[base..base + 80].iter().copied().flatten().next()
-        });
-        if let Some(p) = payload {
-            // find the slot we took it from to clear it
-            let idx = PORTAL.with(|pl| {
-                let mut pl = pl.borrow_mut();
-                for slot in 0..80 {
-                    if let Some(v) = pl[base + slot] {
-                        if v.t == p.t && v.life == p.life && v.temp == p.temp {
-                            pl[base + slot] = None;
-                            return true;
-                        }
-                    }
-                }
-                false
-            });
-            if !idx {
-                continue;
-            }
+        if let Some(p) = sim.portal.take(ch, random) {
             if let Some(np) = sim.create_part(nx, ny, p.t) {
-                sim.parts[np].life = p.life;
-                sim.parts[np].ctype = p.ctype;
-                sim.parts[np].tmp = p.tmp;
-                sim.parts[np].tmp2 = p.tmp2;
-                sim.parts[np].temp = p.temp;
-                sim.parts[np].vx = p.vx;
-                sim.parts[np].vy = p.vy;
+                p.apply_to(&mut sim.parts[np], true);
+                sim.parts[np].x = nx as f32;
+                sim.parts[np].y = ny as f32;
             }
             break;
         }
@@ -7733,35 +7668,31 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 fn wifi_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
     let ch = portal_channel(sim, i);
     sim.parts[i].tmp = ch as i32;
-    WIRELESS.with(|w| {
-        let w = w.borrow();
-        if w[ch][0] {
-            for rx in -1..=1 {
-                for ry in -1..=1 {
-                    if rx == 0 && ry == 0 {
-                        continue;
-                    }
-                    let nx = x + rx;
-                    let ny = y + ry;
-                    if !sim.in_bounds(nx, ny) {
-                        continue;
-                    }
-                    let r = sim.pmap[sim.idx(nx, ny)];
-                    if r == 0 {
-                        continue;
-                    }
-                    let id = pmap_id(r) as usize;
-                    let rt = pmap_type(r);
-                    if matches!(rt, pt::NSCN | pt::PSCN | pt::INWR) && sim.parts[id].life == 0 {
-                        sim.parts[id].ctype = rt as i32;
-                        sim.part_change_type(id, nx, ny, pt::SPRK as i16);
-                        sim.parts[id].life = 4;
-                    }
+    if sim.wireless.is_active(ch) {
+        for rx in -1..=1 {
+            for ry in -1..=1 {
+                if rx == 0 && ry == 0 {
+                    continue;
+                }
+                let nx = x + rx;
+                let ny = y + ry;
+                if !sim.in_bounds(nx, ny) {
+                    continue;
+                }
+                let r = sim.pmap[sim.idx(nx, ny)];
+                if r == 0 {
+                    continue;
+                }
+                let id = pmap_id(r) as usize;
+                let rt = pmap_type(r);
+                if matches!(rt, pt::NSCN | pt::PSCN | pt::INWR) && sim.parts[id].life == 0 {
+                    sim.parts[id].ctype = rt as i32;
+                    sim.part_change_type(id, nx, ny, pt::SPRK as i16);
+                    sim.parts[id].life = 4;
                 }
             }
         }
-        false
-    });
+    }
     for rx in -1..=1 {
         for ry in -1..=1 {
             if rx == 0 && ry == 0 {
@@ -7778,23 +7709,11 @@ fn wifi_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
             }
             let id = pmap_id(r) as usize;
             if pmap_type(r) == pt::SPRK && sim.parts[id].ctype != pt::NSCN as i32 && sim.parts[id].life >= 3 {
-                WIRELESS.with(|w| w.borrow_mut()[ch][1] = true);
+                sim.wireless.note_spark(ch);
             }
         }
     }
     0
-}
-
-/// Called once per simulation tick to advance wireless channels.
-pub fn wireless_tick() {
-    WIRELESS.with(|w| {
-        let mut w = w.borrow_mut();
-        for ch in w.iter_mut() {
-            ch[0] = ch[1];
-            ch[1] = false;
-        }
-    });
-    WIRELESS_DIRTY.with(|d| d.set(false));
 }
 
 // --- ARAY ----------------------------------------------------------------
@@ -7927,6 +7846,9 @@ fn cray_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 }
 
 // --- PSTN ----------------------------------------------------------------
+// The piston uses the shared `Sim::move_stack` / `extend_piston_arm` /
+// `retract_piston_arm` operations so obstruction handling never deletes
+// particles.
 fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
     if sim.parts[i].life != 0 {
         return 0;
@@ -7934,6 +7856,7 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
     let max_size = if sim.parts[i].tmp > 0 { sim.parts[i].tmp } else { 31 };
     let arm_limit = if sim.parts[i].tmp2 > 0 { sim.parts[i].tmp2 } else { 255 };
     let mut state = 0; // 0 inactive, 1 extend, 2 retract
+    let mut axis = (0i32, 0i32);
     for rx in -2..=2 {
         for ry in -2..=2 {
             if (rx == 0) == (ry == 0) {
@@ -7955,80 +7878,60 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                 } else {
                     state = 2;
                 }
+                axis = (rx.signum(), ry.signum());
             }
         }
     }
-    if state == 0 {
+    if state == 0 || (axis.0 == 0 && axis.1 == 0) {
         return 0;
     }
-    // Simplified piston: move the nearest particle one cell along the spark axis.
-    for rx in -1..=1 {
-        for ry in -1..=1 {
-            if (rx == 0) == (ry == 0) {
-                continue;
-            }
-            let nx = x + rx;
-            let ny = y + ry;
-            if !sim.in_bounds(nx, ny) {
-                continue;
-            }
-            let r = sim.pmap[sim.idx(nx, ny)];
-            if r == 0 {
-                continue;
-            }
-            let id = pmap_id(r) as usize;
-            if pmap_type(r) == pt::PSTN && sim.parts[id].life == 0 {
-                // walk the arm
-                let mut tx = nx + rx;
-                let mut ty = ny + ry;
-                let mut moved = 0;
-                let mut arm = 0;
-                let mut steps = 0;
-                while sim.in_bounds(tx, ty) && steps < 64 {
-                    let cell = sim.idx(tx, ty);
-                    if sim.pmap[cell] == 0 {
-                        if state == 1 && arm > 0 && moved < max_size && arm <= arm_limit {
-                            if let Some(np) = sim.create_part(tx, ty, pt::PSTN) {
-                                sim.parts[np].life = 1;
-                                moved += 1;
-                            }
-                        }
-                        break;
-                    }
-                    if pmap_type(sim.pmap[cell]) == pt::PSTN {
-                        arm += 1;
-                        if state == 1 && moved < max_size && arm <= arm_limit {
-                            // extend: create a new PSTN one step beyond
-                            if sim.pmap[cell] != 0 && tx == nx + rx && ty == ny + ry {
-                                let target_x = tx + rx;
-                                let target_y = ty + ry;
-                                if cell_free(sim, target_x, target_y) {
-                                    if let Some(np) = sim.create_part(target_x, target_y, pt::PSTN) {
-                                        sim.parts[np].life = 1;
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        break;
-                    }
-                    tx += rx;
-                    ty += ry;
-                    steps += 1;
-                }
-                let _ = moved;
-                return 0;
-            }
+    let (dx, dy) = axis;
+    // Count the arm and find its far end.
+    let mut arm = 0i32;
+    let mut end_x = x;
+    let mut end_y = y;
+    for step in 1..=arm_limit {
+        let tx = x + dx * step;
+        let ty = y + dy * step;
+        if !sim.in_bounds(tx, ty) {
+            break;
+        }
+        let r = sim.pmap_at(tx, ty);
+        if r != 0 && pmap_type(r) == pt::PSTN {
+            arm += 1;
+            end_x = tx;
+            end_y = ty;
+        } else {
+            break;
+        }
+    }
+    if state == 1 {
+        let room = (arm_limit - arm).max(0);
+        let amount = room.min(2);
+        let moved = sim.move_stack(x + dx, y + dy, dx, dy, max_size, amount);
+        if moved > 0 {
+            let created = sim.extend_piston_arm(end_x, end_y, dx, dy, moved, 1);
+            let _ = created;
+        }
+    } else if arm > 0 {
+        let removed = sim.retract_piston_arm(end_x, end_y, dx, dy, 1);
+        if removed > 0 {
+            sim.move_stack(x + dx, y + dy, -dx, -dy, max_size, 1);
         }
     }
     0
 }
 
-// --- SOAP (simplified bubble model) --------------------------------------
+// --- SOAP ----------------------------------------------------------------
+// Bubble/link physics uses the shared `Sim` link helpers (`soap_attach`,
+// `soap_detach`, `soap_link_step`). Persistent links live in `Particle::tmp`
+// and `tmp2`, exactly as the reference stores them.
 fn soap_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    const FREEZING: f32 = 248.15;
+    // 0x01 bubble on/off, 0x02 first mate, 0x04 back mate.
     if sim.parts[i].ctype & 1 == 0 {
         if pv(sim, x, y) > 0.5 || pv(sim, x, y) < -0.5 {
-            sim.parts[i].ctype = 1;
+            sim.parts[i].ctype |= 1;
             sim.parts[i].life = 10;
         }
         // Wash off nearby decoration.
@@ -8060,51 +7963,90 @@ fn soap_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                 }
             }
         }
-    } else {
-        if sim.parts[i].life > 0 && sim.parts[i].temp > 248.15 {
-            if sim.parts[i].life <= 0 {
-                sim.parts[i].ctype = 0;
+        return 0;
+    }
+
+    // Reset invalid links.
+    let front = sim.parts[i].tmp;
+    let back = sim.parts[i].tmp2;
+    let front_valid = front >= 0
+        && (front as usize) < sim.parts.len()
+        && sim.parts[front as usize].t == pt::SOAP;
+    let back_valid = back >= 0
+        && (back as usize) < sim.parts.len()
+        && sim.parts[back as usize].t == pt::SOAP;
+    if (sim.parts[i].ctype & 0x02 != 0 && !front_valid) || (sim.parts[i].ctype & 0x04 != 0 && !back_valid) {
+        sim.soap_detach(i);
+        return 0;
+    }
+
+    if sim.parts[i].life > 0 && sim.parts[i].temp > FREEZING {
+        sim.parts[i].vy = (sim.parts[i].vy - 0.1) * 0.5;
+        sim.parts[i].vx *= 0.5;
+    }
+
+    // Link to a nearby free soap if this one has no front mate.
+    if sim.parts[i].ctype & 0x02 == 0 {
+        for rx in -2..=2 {
+            for ry in -2..=2 {
+                if rx == 0 && ry == 0 {
+                    continue;
+                }
+                let nx = x + rx;
+                let ny = y + ry;
+                if !sim.in_bounds(nx, ny) {
+                    continue;
+                }
+                let r = sim.pmap[sim.idx(nx, ny)];
+                if r == 0 {
+                    continue;
+                }
+                let id = pmap_id(r) as usize;
+                if pmap_type(r) == pt::SOAP && (sim.parts[id].ctype & 1) != 0 && (sim.parts[id].ctype & 0x04) == 0 {
+                    sim.soap_attach(i, id);
+                    break;
+                }
             }
-            sim.parts[i].vy = (sim.parts[i].vy - 0.1) * 0.5;
-            sim.parts[i].vx *= 0.5;
         }
+    }
+
+    // Solve the two link constraints.
+    if sim.parts[i].ctype & 0x02 != 0 && front_valid {
+        let j = front as usize;
+        let dx = sim.parts[i].x - sim.parts[j].x;
+        let dy = sim.parts[i].y - sim.parts[j].y;
+        let k = Sim::soap_constraint(dx, dy);
+        sim.soap_link_step(i, j, k);
+    }
+    if sim.parts[i].ctype & 0x04 != 0 && back_valid {
+        let j = back as usize;
+        let dx = sim.parts[i].x - sim.parts[j].x;
+        let dy = sim.parts[i].y - sim.parts[j].y;
+        let k = Sim::soap_constraint(dx, dy);
+        sim.soap_link_step(i, j, k);
     }
     0
 }
 
 // --- STKM / STKM2 / FIGH -------------------------------------------------
-// These elements are driven by the reference's interactive player controller
-// (`Simulation::player`, `player2`, `fighters[]`). LabsMatter's engine does
-// not yet expose a player controller, so the handlers below implement the
-// passive part of their behaviour (survive, suffocate in solids, burn) and
-// are documented as BLOCKED for full parity in the inventory.
-fn stkm_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
-    stkm_common(sim, i, x, y);
+// Entity state and locomotion now live in `entity.rs` (`Sim::step_entity_at`).
+// These handlers drive that shared behaviour; Agent 3 refines element-specific
+// interactions.
+fn stkm_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> i32 {
+    sim.step_entity_at(crate::entity::Entity::Player1, i);
     0
 }
 
-fn stkm2_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
-    stkm_common(sim, i, x, y);
+fn stkm2_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> i32 {
+    sim.step_entity_at(crate::entity::Entity::Player2, i);
     0
 }
 
-fn stkm_common(sim: &mut Sim, i: usize, x: i32, y: i32) {
-    // The fighter dies when embedded in a solid it cannot breathe.
-    let under = sim.pmap_at(x, y);
-    if under != 0 {
-        let rt = pmap_type(under);
-        let p = element(rt).properties;
-        if (p & props::TYPE_SOLID) != 0 && rt != pt::INVIS {
-            sim.parts[i].life -= 1;
-            if sim.parts[i].life < 0 {
-                sim.kill_part(i);
-            }
-        }
+fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> i32 {
+    let slot = sim.parts[i].tmp.max(0) as usize;
+    if slot < crate::entity::MAX_FIGHTERS {
+        sim.step_entity_at(crate::entity::Entity::Fighter(slot), i);
     }
-}
-
-fn figh_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
-    stkm_common(sim, i, x, y);
     0
 }
 

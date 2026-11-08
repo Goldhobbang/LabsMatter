@@ -33,7 +33,9 @@ fn set_report(msg: impl Into<String>) {
 }
 
 const MAGIC: &[u8; 4] = b"LMT2";
-const FORMAT_VERSION: u16 = 2;
+/// Format 3 adds persistent portal payloads, wireless channel state and the
+/// stickman/fighter entity registry. Format 2 saves are still readable.
+const FORMAT_VERSION: u16 = 3;
 
 fn with_sim<T>(f: impl FnOnce(&mut Sim) -> T, fallback: T) -> T {
     SIM.with(|s| {

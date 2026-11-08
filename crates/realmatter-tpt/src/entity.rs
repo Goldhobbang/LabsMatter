@@ -189,14 +189,23 @@ impl Sim {
     /// Generic locomotion + collision + environmental health for a stickman or
     /// fighter head. This is the shared world behaviour; element-specific
     /// reactions stay in `updates.rs`.
-    ///
-    /// Movement is tile-based like the reference: each axis is attempted
-    /// separately through the `can_move` table and wall layer, never teleporting
-    /// through solids.
     pub fn step_entity(&mut self, which: Entity) -> StepReport {
         let Some(head) = self.entity_head(which) else {
             return StepReport::default();
         };
+        self.step_entity_at(which, head)
+    }
+
+    /// Locomotion for a specific head particle (used by `FIGH`, where several
+    /// fighters of the same type may exist).
+    ///
+    /// Movement is tile-based like the reference: each axis is attempted
+    /// separately through the `can_move` table and wall layer, never teleporting
+    /// through solids.
+    pub fn step_entity_at(&mut self, which: Entity, head: usize) -> StepReport {
+        if head >= self.parts.len() || self.parts[head].t == 0 {
+            return StepReport::default();
+        }
         let x = (self.parts[head].x + 0.5) as i32;
         let y = (self.parts[head].y + 0.5) as i32;
         let comm = self.player_state(which).map(|p| p.comm).unwrap_or(0);
@@ -244,8 +253,7 @@ impl Sim {
             moved = true;
         }
 
-        // Element power: spawn a particle in front of the entity (reference uses
-        // `pcomm` so holding the key emits at a fixed cadence).
+        // Element power: spawn a particle in front of the entity.
         if comm & input::SPAWN != 0
             && elem > 0
             && (elem as usize) < crate::elements_generated::PT_NUM

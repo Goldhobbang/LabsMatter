@@ -800,6 +800,40 @@ impl Sim {
         false
     }
 
+    // -- physics API for elements (Agent 3) -----------------------------------
+
+    /// Add a pressure impulse to an air cell (clamped to reference range).
+    pub fn add_pressure(&mut self, cx: i32, cy: i32, dp: f32) {
+        if !self.in_cell_bounds(cx, cy) {
+            return;
+        }
+        let idx = self.cell_idx(cx, cy);
+        self.pv[idx] = (self.pv[idx] + dp).clamp(MIN_PRESSURE, MAX_PRESSURE);
+    }
+
+    /// Add an air-velocity impulse to an air cell.
+    pub fn add_air_velocity(&mut self, cx: i32, cy: i32, dvx: f32, dvy: f32) {
+        if !self.in_cell_bounds(cx, cy) {
+            return;
+        }
+        let idx = self.cell_idx(cx, cy);
+        self.vx[idx] = (self.vx[idx] + dvx).clamp(MIN_PRESSURE, MAX_PRESSURE);
+        self.vy[idx] = (self.vy[idx] + dvy).clamp(MIN_PRESSURE, MAX_PRESSURE);
+    }
+
+    /// Whether wall type `w` allows airflow through it.
+    pub fn wall_allows_air(&self, w: u8) -> bool {
+        !(w == WALL_WALL
+            || w == WALL_WALLELEC
+            || w == WALL_BLOCKAIR
+            || (w == WALL_EWALL))
+    }
+
+    /// Whether wall type `w` allows heat (ambient) through it.
+    pub fn wall_allows_heat(&self, w: u8) -> bool {
+        w != WALL_WALL && w != WALL_WALLELEC && w != WALL_BLOCKAIR
+    }
+
     pub fn set_emap(&mut self, cx: i32, cy: i32) {
         if self.in_cell_bounds(cx, cy) {
             let idx = self.cell_idx(cx, cy);
