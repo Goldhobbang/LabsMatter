@@ -305,6 +305,73 @@ pub fn set_cell(x: i32, y: i32, material: u16) -> bool {
     ok
 }
 
+/// Create/replace a particle with full state. Used by copy/paste, stamps and
+/// undo so special particle state (life, ctype, tmp fields, flags, decoration)
+/// is preserved instead of being reduced to a bare material id.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn set_cell_ex(
+    x: i32,
+    y: i32,
+    t: u16,
+    life: i32,
+    ctype: i32,
+    tmp: i32,
+    tmp2: i32,
+    tmp3: i32,
+    tmp4: i32,
+    flags: u32,
+    dcolour: u32,
+    temp: f32,
+) -> bool {
+    let ok = with_sim(
+        |sim| {
+            if !sim.in_bounds(x, y) {
+                return false;
+            }
+            let cell = sim.idx(x, y);
+            let existing = if sim.photons[cell] != 0 {
+                sim.photons[cell]
+            } else {
+                sim.pmap[cell]
+            };
+            if existing != 0 {
+                let id = realmatter_tpt::pmap_id(existing) as usize;
+                if id < sim.parts.len() {
+                    sim.kill_part(id);
+                }
+            }
+            if t == 0 {
+                return true;
+            }
+            if (t as usize) >= realmatter_tpt::PT_NUM || !element(t).enabled {
+                return false;
+            }
+            let Some(pid) = sim.create_part(x, y, t) else {
+                return false;
+            };
+            let p = &mut sim.parts[pid];
+            p.life = life;
+            p.ctype = ctype;
+            p.tmp = tmp;
+            p.tmp2 = tmp2;
+            p.tmp3 = tmp3;
+            p.tmp4 = tmp4;
+            p.flags = flags;
+            p.dcolour = dcolour;
+            if temp.is_finite() {
+                p.temp = temp.clamp(MIN_TEMP, MAX_TEMP);
+            }
+            true
+        },
+        false,
+    );
+    if ok {
+        rebuild_render();
+    }
+    ok
+}
+
 /// Set a wall in the CELL containing `(x, y)`. `w == 0` erases the wall.
 #[wasm_bindgen]
 pub fn paint_wall(x: i32, y: i32, w: u8) {

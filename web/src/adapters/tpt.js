@@ -121,6 +121,43 @@ export class TptAdapter {
     }
   }
 
+  /**
+   * Restore a full particle state captured by `getCellInfo`. Used by
+   * copy/paste, stamps and undo so special fields are not discarded.
+   */
+  setCellEx(x, y, info) {
+    if (!this.mod || !info) return false;
+    try {
+      let ok;
+      if (typeof this.mod.set_cell_ex === "function") {
+        ok = !!this.mod.set_cell_ex(
+          x, y,
+          info.type | 0,
+          info.life | 0,
+          info.ctype | 0,
+          info.tmp | 0,
+          info.tmp2 | 0,
+          info.tmp3 | 0,
+          info.tmp4 | 0,
+          info.flags >>> 0,
+          info.dcolour >>> 0,
+          Number(info.temp ?? 293.15)
+        );
+      } else {
+        ok = this.setCell(x, y, info.type | 0);
+      }
+      // Restore the wall layer too (0 clears it, matching the captured state).
+      if (typeof info.wall === "number" && typeof this.mod.paint_wall === "function") {
+        const cur = typeof this.mod.get_wall === "function" ? this.mod.get_wall(x, y) : 0;
+        if (cur !== info.wall) this.mod.paint_wall(x, y, info.wall & 0xff);
+      }
+      return ok;
+    } catch (e) {
+      console.warn(e);
+      return false;
+    }
+  }
+
   paint(x, y, material, size = 1) {
     const s = Math.max(1, size | 0);
     if (s <= 1) { this.setCell(x, y, material); return; }

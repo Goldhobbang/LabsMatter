@@ -277,3 +277,35 @@ under any renderer.
 ### Inventory
 `docs/tpt-parity/inventory/application-features.md` tracks editing, simtools,
 walls, rendering, UI/shortcuts and save coverage with reference/impl/owner/status.
+
+---
+
+## K6 update
+
+### Graphics callback infrastructure
+`realmatter-tpt::graphics` mirrors `ElementGraphics.h`: `GfxPixel { mode, base
+rgba, fire rgba }` plus `pmode`/`firemode` flags. `for_particle` applies element
+colour, `PROP_HOT_GLOW`, decoration blending, and curated element rules. Agent 3
+extends `graphics::element_graphics` for the remaining reference callbacks.
+
+### Glow / fire / bloom
+`rebuild_render` fills a second RGBA8 glow buffer in the fancy view. WASM exports
+`glow_buffer_ptr/len`, `set_glow_enabled`, `glow_enabled`. The WebGL2 blit shader
+and the WebGPU fragment shader both sample the glow texture with a 4-neighbour
+box blur and add it. Walls contribute `eglow` when powered.
+
+### Display modes
+Normal / Fancy / Heat / Pressure / Velocity / Gravity (`set_view_mode` 0..5).
+Gravity reads `Sim::grav_force`. Air sub-modes remain simplified.
+
+### Editing state preservation
+`set_cell_ex(...)` restores a full particle (life/ctype/tmp..tmp4/flags/dcolour/
+temp). Copy/paste, stamps, rotate/flip and undo/redo store `getCellInfo`
+snapshots and restore through it plus `paint_wall`; special state is no longer
+reduced to a bare material id.
+
+### Verification
+Browser: TPT `TptAdapter`/`labsmatter-wasm`, 0 console errors, fancy glow buffer
+populated (85/262144 bytes for a FIRE paint), normal glow zero, gravity view,
+v3 save/load; UI copy→paste preserved FIRE decoration/life/temp. Production
+unchanged. Performance: glow adds ~0.18 ms/frame at dense 50% (128x128).

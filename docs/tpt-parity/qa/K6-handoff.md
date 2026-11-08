@@ -1,87 +1,114 @@
-# K6 Handoff — Agent B gameplay verification (element fidelity)
+# K6 Handoff — Rendering, Editing & Core Integration (Agent B)
 
-**Branch:** `agent3/chemistry-elements` → integrate into `agent1/kernel`
-**Commit:** `4285dea2456a8927834b4047bc649f5b42e5cdea`
-**Runtime:** experimental TPT engine `?engine=tpt`. Production unchanged.
-**Prior:** `K5-handoff.md` (core/editing/rendering/tools).
+**Branch:** `agent1/kernel`
+**Runtime:** experimental TPT engine via `?engine=tpt`; production unchanged.
+**Prior:** `K5-handoff.md`, `K3/K5` Agent B reports (preserved).
 
-> K6 is implementation-ready for the six element families and the SPRK rewrite.
-> It is **not** gameplay-accepted. Only Agent B can accept it.
+> K6 adds graphics-callback infrastructure, glow/fire/bloom, a gravity view, and
+> full-state editing. It is implementation-ready, not gameplay-accepted.
 
-## 1. What changed in K6
+## 1. Run
 
-| Area | Change |
-|---|---|
-| SPRK | Faithful `SPRK.cpp` port: fire update, restore durations, SWCH/pump/latch/PPIP/EMP activation, sender/receiver conduction rules |
-| PIPE/PPIP | HEAC flood to heat-conductive pipes; single-pixel init; PPIP pause/reverse from sparks |
-| PSTN | Reference direction (adjacent arm / away from spark), FRME row discovery + push, extension into empty space |
-| SOAP | Mid-chain rewiring (`ctype==7`) and lone-head splice |
-| STKM/STKM2 | Feet in `legs[4/5]`,`legs[12/13]`, torso anchor, 2-cell jump, PRTI→PRTO teleport, element power |
-| FIGH | Slot-aware head, player torso targeting, DUST default power + SPAWN rules, multi-fighter separation |
-
-## 2. Manual checks
-
-### SPRK / electrical
-1. `BTRY → METL wire`: the spark should run to the far end without random gaps.
-2. `PSCN spark → SWCH`: switch turns on (`life = 10`); `NSCN spark → SWCH` turns it off.
-3. `PSCN/NSCN/INST spark → PPIP`: pipe unpauses/pauses/reverses; border glow follows pause.
-4. Spark on `METL` next to `WATR/SLTW`: water briefly sparks then restores with the longer duration.
-5. Spark next to flammable (GAS/OIL): should ignite (reference `Element_FIRE_update`).
-
-### PIPE / PPIP
-1. Paint a PIPE line; wait for the BRCK border + red colour gradient.
-2. Put `HEAC` beside a configured pipe run: the whole run should become heat-conductive.
-3. Erase one BRCK exit; feed SAND/WATR; it should travel and exit.
-4. Spark a PPIP with `PSCN` then `NSCN`: pause state toggles; payload stops/resumes.
-5. Single isolated PIPE should become a single-pixel pipe (`0x100`).
-
-### PSTN
-1. Place `PSTN`, a `FRME` row in front, and spark with `PSCN`: the frame row should
-   move one cell and the piston should extend behind it.
-2. Lone `PSTN` with no frame: spark extends into empty space (~2 cells/frame at
-   300 K).
-3. `NSCN` spark retracts the fresh arm.
-4. `tmp3` flags: 0x01 obstacle aborts, 0x02 arm-limit clamps, 0x04/0x08 retract
-   variants.
-
-### SOAP
-1. Pressure a SOAP line: bubbles form and link into chains.
-2. Break a chain link: the reference rewiring should reconnect a lone head or
-   join two chain ends without corrupt indices.
-3. Drive SOAP into a wall/solid with life exhausted: pop and detach cleanly.
-
-### STKM / STKM2
-1. Walk left/right on BRCK: feet alternate (`legs[4/5]` vs `legs[12/13]`).
-2. Jump: leaves the ground by ~2 cells.
-3. Stand next to `PRTI` with a matching `PRTO`: the stickman teleports to the
-   PRTO side.
-4. Acid/lava kills; fire damages; element power spawns in the facing direction.
-
-### FIGH
-1. Spawn a fighter near a stickman: it should pursue and kill.
-2. Spawn two fighters: they should separate when overlapping; both act.
-3. Give the fighter a deadly element (when the UI exposes it) and confirm SPAWN
-   emissions at close range; default DUST should fall back to melee.
-
-## 3. Known remaining gaps (do not report as passing)
-- PIPE graphics emulation of the stored particle.
-- PSTN full recursive attached-structure stacks.
-- SOAP boundary edge cases.
-- STKM reference leg-particle solver (planned feet gravity/rotation).
-- FIGH multi-fighter brawling and non-default powers unverified.
-
-## 4. Build
 ```powershell
-cargo build --workspace
-cargo run -p realmatter-tpt --example list_unimpl   # 0
-cargo build -p labsmatter-wasm --target wasm32-unknown-unknown --release
-wasm-bindgen target/wasm32-unknown-unknown/release/labsmatter_wasm.wasm `
-  --out-dir web/pkg-tpt --target web --no-typescript
-cd web; python -m http.server 5173
+cd web
+python -m http.server 5173
 ```
+- Production: `http://localhost:5173/`
+- TPT: `http://localhost:5173/?engine=tpt`
 
-## 5. A3 evidence (not acceptance)
-Native: SPRK far-end propagation; SWCH on; PPIP paused; PIPE+HEAC 6 conductive;
-PSTN 1→4 + FRME 21→27; STKM jump 49→48; portal dx1/dy2; FIGH kill.
-WASM: SPRK max 16 reached far end; WIFI active ≥1 + receiver spark; PIPE intake;
-entity+fighter save/load.
+Diagnostics: `window.labsmatter.{requestedEngine, engine, adapter, wasmIdentity,
+sim, renderer}`. HUD shows the active adapter (`MISMATCH` if it disagrees with
+the URL).
+
+## 2. New in K6
+
+### Graphics callback infrastructure (`realmatter-tpt::graphics`)
+- `GfxPixel { mode, base rgba, fire/glow rgba }` and `pmode`/`firemode` flags
+  mirroring `ElementGraphics.h`.
+- `for_particle(t, p)` applies: element base colour, `PROP_HOT_GLOW` tint
+  (reference formula), per-particle decoration blend, and curated element rules
+  (FIRE/PLSM/LAVA glow, SPRK/ELEC add+spark, PHOT/NEUT add, GLOW, BRAY/ARAY,
+  TRON hue). Agent 3 extends `element_graphics` for remaining callbacks.
+
+### Glow / fire / bloom
+- WASM builds a second RGBA8 **glow buffer** in the fancy view; zero elsewhere.
+  Exports: `glow_buffer_ptr/len`, `set_glow_enabled`, `glow_enabled`.
+- WebGL2 blit shader samples the glow texture with a 4-neighbour box blur and
+  adds it (cheap bloom). WebGPU renderer has the equivalent second texture +
+  shader path (unverified here: no WebGPU adapter in this environment).
+- Walls contribute `eglow` when powered; particles contribute their fire colour.
+
+### Display modes
+- Normal (flat), **Fancy** (glow/bloom), Heat, Pressure, Velocity, **Gravity**
+  (new; `grav_force` field). `set_view_mode` clamps 0..5; UI adds a `GRAV` button.
+
+### Editing preserves full state
+- New `set_cell_ex(x,y,t,life,ctype,tmp,tmp2,tmp3,tmp4,flags,dcolour,temp)`.
+- Copy/paste, stamps, rotate/flip and undo/redo now snapshot `getCellInfo`
+  (all particle fields + wall) and restore through `set_cell_ex` + `paint_wall`.
+  Verified: FIRE copied with `dcolour=0xFF00FF00`, `life=163`, `temp=695.15`.
+
+### Tools
+- Unchanged semantics: HEAT/COOL particle-only, AIR/VAC pressure, AMBP/AMBM
+  ambient, MIX/CYCL/WIND air. PGRV/NGRV still have no browser button (A2
+  gravity-well solver dependency).
+
+## 3. Persistence
+- LMT2 v3 unchanged; decoration (`dcolour`), particle fields, walls/emap,
+  fields, settings, RNG, portal/wireless/entities all saved. Glow is derived and
+  not saved. Failed loads remain atomic.
+
+## 4. Verified by A1 (not acceptance)
+
+Build: `cargo build/test --workspace`, wasm release + bindgen, `web/scripts/build.mjs`.
+
+Node (release WASM):
+- Normal view: glow buffer all zero. Fancy: FIRE glow `[255,255,20,220]`,
+  LAVA `[255,110,20,110]`, SPRK `[255,255,120,255]`, PHOT `[120,255,255,220]`,
+  SAND zero. `set_glow_enabled(false)` → zero.
+- `set_cell_ex` round-trips FIRE type/life/ctype/temp/decoration.
+
+Browser (Chrome headless, WebGL2):
+- Identity: `TptAdapter` / `labsmatter-wasm` (prod: `WasmDirectAdapter` /
+  `realmatter-wasm`), 0 console errors, 0 shader-link warnings.
+- Fancy: glow buffer 262144 B, 85 non-empty pixels (FIRE paint). Normal: 0.
+- Gravity view renders; v3 save/load 85→85.
+- UI copy → paste preserved FIRE `type 4`, `dcolour FF00FF00`, `life 163`,
+  `temp 695.15` at the pasted offset.
+
+## 5. Performance (Node, release WASM 594 KB, 128×128, edge solid)
+
+| Scenario | Sim TPS | Sim+render TPS | Render ms/frame |
+|---|---:|---:|---:|
+| empty normal | 10,695 | 4,985 | 0.107 |
+| empty fancy | 12,599 | 5,124 | 0.116 |
+| sparse 10% normal | 3,018 | 2,040 | 0.159 |
+| sparse 10% fancy | 3,177 | 2,253 | 0.129 |
+| dense 50% normal | 740 | 653 | 0.180 |
+| dense 50% fancy | 526 | 441 | 0.365 |
+| dense 50% heat | 459 | 432 | 0.137 |
+
+Glow roughly doubles CPU render-buffer cost at dense 50% (~0.18 ms), still far
+above the 60 TPS target at this size. Browser FPS 45–60.
+
+## 6. Known limitations
+
+- WebGPU glow path implemented but **not verified** (no adapter available here).
+- Bloom is a 4-tap box blur, not a multi-pass Gaussian.
+- Air display sub-modes (AIRC/AIRW/persistent) not implemented; heat/pressure/
+  velocity/gravity only.
+- Element-specific graphics rules are curated (extension point for Agent 3);
+  not all 79 reference graphics callbacks are ported.
+- PGRV/NGRV gravity-well physics depends on Agent 2.
+- Advanced elements (PIPE/PSTN/SOAP/STKM/STKM2/FIGH) remain partial per Agent 3.
+- No independent gameplay acceptance.
+
+## 7. Retest checklist
+
+1. Fancy vs Normal: fire/lava/spark/photon glow and bloom; toggle glow.
+2. Display modes: Normal/Fancy/Heat/Pressure/Velocity/Gravity; decoration.
+3. Copy/paste/stamp/rotate/flip/undo/redo preserve life/ctype/tmp/flags/decoration/wall.
+4. Walls render and glow when powered.
+5. Tools (heat/cool/air/vac/amb/mix/cycl/wind) modify authoritative state.
+6. Save/load v3 incl. decoration; v1 import; invalid load is atomic.
+7. Dense-world FPS/TPS with glow on/off.

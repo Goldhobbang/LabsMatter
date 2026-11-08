@@ -21,10 +21,10 @@ implementation; only Agent B gameplay acceptance counts as verified.
 | Filled rectangle | modifier | Ctrl-drag filled | A1 | Done |
 | Flood fill | Ctrl+Shift click | `flood()` | A1 | Done |
 | Selection | select tool | `tool: select` | A1 | Done |
-| Copy / cut | clipboard | `copySel(clear)` | A1 | Done |
-| Paste / stamp | stamp library | stamps in `localStorage` | A1 | Done |
-| Stamp rotate / mirror | rotate/flip | `rotatePaste`/`flipPaste` | A1 | Done |
-| Undo / redo | undo stack | per-cell material log (30 deep) | A1 | Done |
+| Copy / cut | clipboard | `copySel(clear)` snapshots full `getCellInfo` | A1 | Done |
+| Paste / stamp | stamp library | stamps in `localStorage`; restore via `set_cell_ex` | A1 | Done |
+| Stamp rotate / mirror | rotate/flip | `rotatePaste`/`flipPaste` (snapshot preserved) | A1 | Done |
+| Undo / redo | undo stack | full before/after cell snapshots (30 deep) | A1 | Done |
 | Eyedropper | middle click | `sample()` | A1 | Done |
 | Zoom / pan | wheel / alt-drag | wheel / alt-drag / arrows | A1 | Done |
 | Wall paint | `Tool::DrawWalls` | wall palette id 1000+w → `paint_wall` | A1 | Done |
@@ -67,18 +67,20 @@ Rendering draws the wall base colour and blends `eglow` when `emap != 0`
 
 | Feature | LabsMatter | Status |
 |---|---|---|
-| Normal particle display | element colour per pixel | Done |
-| Fancy (heat tint) | `set_view_mode(1)` | Done |
+| Normal particle display | `graphics::for_particle` flat colour | Done |
+| Fancy (glow/bloom) | `set_view_mode(1)` + glow buffer + 4-tap bloom | Done |
 | Heat | `set_view_mode(2)` | Done |
 | Pressure | `set_view_mode(3)` | Done |
 | Velocity | `set_view_mode(4)` | Done |
-| Wall rendering | per-CELL colour + `eglow` | Done |
+| Gravity | `set_view_mode(5)` (`grav_force`) | Done |
+| Wall rendering | per-CELL colour + powered `eglow` | Done |
 | Decoration overlay | `dcolour` blended per particle | Done |
 | Grid overlay | renderer `setOverlay("grid")` | Done |
 | High-DPI | renderer DPR handling | Done |
-| WebGL2 / WebGPU | renderer factory | Done (WebGL2 verified; WebGPU by Agent B) |
-| Glow buffer | `Sim::glow` allocated, not rendered | Missing |
-| Air display sub-modes (AIRP/AIRV/AIRH/AIRC/AIRW, persistent/warp) | simplified to heat/pressure/velocity | Partial |
+| WebGL2 / WebGPU | renderer factory; both have glow texture path | Done (WebGL2 verified; WebGPU glow unverified) |
+| Glow / fire / bloom | per-particle fire colour → glow buffer → additive blur | Done (box-blur approximation) |
+| Air display sub-modes (AIRP/AIRV/AIRH/AIRC/AIRW, persistent/warp) | simplified to heat/pressure/velocity/gravity | Partial |
+| Element graphics callbacks (79 reference) | curated rules (FIRE/LAVA/SPRK/ELEC/PHOT/NEUT/GLOW/BRAY/ARAY/TRON) | Partial — Agent 3 extension point |
 
 ## 5. UI / shortcuts (`src/gui/`, README controls)
 
@@ -116,9 +118,13 @@ Rendering draws the wall base colour and blends `eglow` when `emap != 0`
 
 ## 7. Known reference differences (do not claim parity)
 
-- Glow/fire bloom not rendered; air display sub-modes simplified.
-- PGRV/NGRV gravity-well physics depends on A2.
+- Bloom is a 4-tap box blur, not a multi-pass Gaussian; WebGPU glow path is
+  implemented but unverified in this environment.
+- Air display sub-modes (AIRC/AIRW/persistent/warp) are not implemented;
+  heat/pressure/velocity/gravity only.
+- PGRV/NGRV gravity-well physics depends on A2 (no browser button).
 - Wall draw styles (streamline/fan visual) are simplified.
-- Element-specific graphics callbacks (A3) are not implemented; rendering uses
-  base element colours plus heat tint and decoration.
+- Element-specific graphics rules are curated (FIRE/LAVA/SPRK/ELEC/PHOT/NEUT/
+  GLOW/BRAY/ARAY/TRON); the remaining reference `graphics()` callbacks are an
+  Agent 3 extension point (`graphics::element_graphics`).
 - 6 element behaviours remain partial (STKM/STKM2/FIGH/PIPE/PSTN/SOAP).

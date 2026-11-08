@@ -767,20 +767,40 @@ function sample(c) {
   setState({ materialId: id, category: mat.section || mat.category || "all" });
 }
 
+// Full-cell snapshot (material + every particle field + wall) so undo, copy,
+// stamps and paste do not silently drop life/ctype/tmp/flags/decoration.
+function snapshotCell(x, y) {
+  const m = sim.getCellMaterial(x, y);
+  let info = null;
+  if (typeof sim.getCellInfo === "function") {
+    try { info = JSON.parse(sim.getCellInfo(x, y)); } catch { info = null; }
+  }
+  return { m, info };
+}
+function restoreCell(x, y, snap) {
+  if (snap && snap.info && typeof sim.setCellEx === "function") {
+    sim.setCellEx(x, y, snap.info);
+    return;
+  }
+  sim.setCell(x, y, snap ? snap.m : 0);
+}
+
 function beginLog() { strokeLog = new Map(); }
 function note(x, y) {
   if (!strokeLog) return;
   const k = x + "," + y;
-  if (!strokeLog.has(k)) strokeLog.set(k, sim.getCellMaterial(x, y));
+  if (!strokeLog.has(k)) strokeLog.set(k, snapshotCell(x, y));
 }
 function endLog(material) {
   if (!strokeLog || strokeLog.size === 0) { strokeLog = null; return; }
   const before = [];
-  for (const [k, m] of strokeLog) {
+  const after = [];
+  for (const [k, snap] of strokeLog) {
     const [x, y] = k.split(",").map(Number);
-    before.push({ x, y, m });
+    before.push({ x, y, snap });
+    after.push({ x, y, snap: snapshotCell(x, y) });
   }
-  undoStack.push({ before, material });
+  undoStack.push({ before, after, material });
   if (undoStack.length > 30) undoStack.shift();
   redoStack.length = 0;
   strokeLog = null;
@@ -788,13 +808,14 @@ function endLog(material) {
 function undo() {
   const op = undoStack.pop();
   if (!op) return;
-  for (const c of op.before) sim.setCell(c.x, c.y, c.m);
+  for (const c of op.before) restoreCell(c.x, c.y, c.snap);
   redoStack.push(op);
 }
 function redo() {
   const op = redoStack.pop();
   if (!op) return;
-  for (const c of op.before) sim.setCell(c.x, c.y, op.material);
+  const cells = op.after || op.before.map((c) => ({ x: c.x, y: c.y, snap: { m: op.material } }));
+  for (const c of cells) restoreCell(c.x, c.y, c.snap);
   undoStack.push(op);
 }
 
@@ -810,7 +831,7 @@ function grab(rect) {
   for (let y = rect.y0; y <= rect.y1; y++) {
     for (let x = rect.x0; x <= rect.x1; x++) {
       const m = sim.getCellMaterial(x, y);
-      if (m) cells.push({ dx: x - rect.x0, dy: y - rect.y0, m });
+      if (m) cells.push({ dx: x - rect.x0, dy: y - rect.y0, m, snap: snapshotCell(x, y) });
     }
   }
   return { w: rect.x1 - rect.x0 + 1, h: rect.y1 - rect.y0 + 1, cells, name: "stamp" };
@@ -832,11 +853,11 @@ function normalizeStamp(cells) {
   if (!cells.length) return cells;
   const minX = Math.min(...cells.map((c) => c.dx));
   const minY = Math.min(...cells.map((c) => c.dy));
-  return cells.map((c) => ({ dx: c.dx - minX, dy: c.dy - minY, m: c.m }));
+  return cells.map((c) => ({ dx: c.dx - minX, dy: c.dy - minY, m: c.m, snap: c.snap }));
 }
 function rotatePaste() {
   if (!paste) return;
-  paste = { ...paste, cells: normalizeStamp(paste.cells.map((c) => ({ dx: c.dy, dy: -c.dx, m: c.m }))) };
+  paste = { ...paste, cells: normalizeStamp(paste.cells.map((c) => ({ dx: c.dy, dy: -c.dx, m: c.m, snap: c.snap }))) };
 }
 function flipPaste(axis) {
   if (!paste) return;
@@ -846,14 +867,16 @@ function flipPaste(axis) {
       dx: axis === "x" ? -c.dx : c.dx,
       dy: axis === "y" ? -c.dy : c.dy,
       m: c.m,
+      snap: c.snap,
     }))),
   };
 }
 function placeStamp(x, y, data) {
   beginLog();
   for (const c of data.cells) {
-    note(x + c.dx, y + c.dy);
-    sim.setCell(x + c.dx, y + c.dy, c.m);
+    const px = x + c.dx, py = y + c.dy;
+    note(px, py);
+    restoreCell(px, py, c.snap || { m: c.m });
   }
   endLog(data.cells[0] ? data.cells[0].m : 0);
 }

@@ -522,6 +522,29 @@ export function set_cell(x, y, material) {
 }
 
 /**
+ * Create/replace a particle with full state. Used by copy/paste, stamps and
+ * undo so special particle state (life, ctype, tmp fields, flags, decoration)
+ * is preserved instead of being reduced to a bare material id.
+ * @param {number} x
+ * @param {number} y
+ * @param {number} t
+ * @param {number} life
+ * @param {number} ctype
+ * @param {number} tmp
+ * @param {number} tmp2
+ * @param {number} tmp3
+ * @param {number} tmp4
+ * @param {number} flags
+ * @param {number} dcolour
+ * @param {number} temp
+ * @returns {boolean}
+ */
+export function set_cell_ex(x, y, t, life, ctype, tmp, tmp2, tmp3, tmp4, flags, dcolour, temp) {
+    const ret = wasm.set_cell_ex(x, y, t, life, ctype, tmp, tmp2, tmp3, tmp4, flags, dcolour, temp);
+    return ret !== 0;
+}
+
+/**
  * @param {number} mode
  */
 export function set_convection_mode(mode) {
