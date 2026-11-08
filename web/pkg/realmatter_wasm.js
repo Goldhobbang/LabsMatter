@@ -198,6 +198,16 @@ export function set_newtonian(on) {
 }
 
 /**
+ * Stickman controls. Bits: 1 left, 2 right, 4 jump, 8 use element.
+ * Slot 0 is STKM, slot 1 is STK2. Existing browser keys are not rebound.
+ * @param {number} slot
+ * @param {number} bits
+ */
+export function set_player_input(slot, bits) {
+    wasm.set_player_input(slot, bits);
+}
+
+/**
  * 0 material, 1 fancy (heat tint), 2 heat, 3 pressure, 4 velocity.
  * Colors come from the live cell fields, not from invented values.
  * @param {number} mode
@@ -449,7 +459,7 @@ async function __wbg_init_once(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('realmatter_wasm_bg.wasm?sim=9', import.meta.url);
+        module_or_path = new URL('realmatter_wasm_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

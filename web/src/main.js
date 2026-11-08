@@ -85,6 +85,32 @@ function setAppState(state, msg) {
   }
 }
 
+function pushStickInput() {
+  const mod = sim && sim.mod;
+  if (!mod || typeof mod.set_player_input !== "function") return;
+  let a = 0;
+  if (stickHeld.has("KeyJ")) a |= 1;
+  if (stickHeld.has("Semicolon")) a |= 2;
+  if (stickHeld.has("KeyI")) a |= 4;
+  if (stickHeld.has("KeyO")) a |= 8;
+  let b = 0;
+  if (stickHeld.has("Numpad4")) b |= 1;
+  if (stickHeld.has("Numpad6")) b |= 2;
+  if (stickHeld.has("Numpad8")) b |= 4;
+  if (stickHeld.has("Numpad5")) b |= 8;
+  try {
+    mod.set_player_input(0, a);
+    mod.set_player_input(1, b);
+  } catch (e) { /* input export is optional on older wasm */ }
+}
+const stickHeld = new Set();
+window.addEventListener("keydown", (e) => {
+  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+  stickHeld.add(e.code);
+});
+window.addEventListener("keyup", (e) => stickHeld.delete(e.code));
+window.addEventListener("blur", () => stickHeld.clear());
+
 function loop(now) {
   const frameDt = Math.min(0.25, (now - lastFrame) / 1000);
   lastFrame = now;
@@ -94,6 +120,7 @@ function loop(now) {
     simAccum += frameDt * (s.speed || 1);
     let steps = 0;
     while (simAccum >= fixed && steps < 8) {
+      pushStickInput();
       sim.step(fixed);
       simAccum -= fixed;
       steps++;
@@ -615,6 +642,7 @@ function runAction(hit) {
     case "pause": setState({ playing: !s.playing }); break;
     case "step":
       setState({ playing: false });
+      pushStickInput();
       sim.step(1 / 60);
       break;
     case "search": $("material-search").focus(); $("material-search").select(); break;
