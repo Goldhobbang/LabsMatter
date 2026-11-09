@@ -1,6 +1,8 @@
 // Production WebGPU renderer: blits the live WASM RGBA8 simulation buffer
 // to the canvas through a GPU texture. Zoom/pan are applied as a UV
 // transform in the fragment shader; no CPU-side pixel work per frame.
+// NOTE (env): WebGPU glow/bloom is implemented but hardware-unverified in this
+// environment (no adapter). Runtime behavior is unchanged.
 
 const WGSL = /* wgsl */ `
 struct Params {
