@@ -9573,8 +9573,21 @@ fn stickman_element_power(sim: &mut Sim, i: usize, x: i32, y: i32, comm: u8, ele
     };
     let tx = x + dx;
     let ty = y;
-    if sim.pmap_at(tx, ty) != 0 || sim.wall_blocks(tx, ty, pt::STKM) {
+    // Reference STKM.cpp (spawn action): if target is a solid particle, spark
+    // instead of spawning the element. Do not create in solid wall/invalid.
+    if !sim.in_bounds(tx, ty) || sim.wall_blocks(tx, ty, pt::STKM) {
         return false;
+    }
+    let r = sim.pmap_at(tx, ty);
+    if r != 0 {
+        let rt = pmap_type(r);
+        if (element(rt).properties & props::TYPE_SOLID) != 0 {
+            // Reference-like fallback for solid obstacle in spawn direction.
+            let _ = sim.create_part(tx, ty, pt::SPRK);
+            return true;
+        }
+        // Occupied by non-solid: attempt create at preferred facing cell only;
+        // do not overwrite. Reference passes -1 (no ring fallback).
     }
     if let Some(np) = sim.create_part(tx, ty, elem as u16) {
         let def = element(elem as u16);
