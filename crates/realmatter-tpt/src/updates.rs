@@ -8526,7 +8526,13 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32
                 let nx = x + rx;
                 let ny = y + ry;
                 if cell_free(sim, nx, ny) {
-                    sim.create_part(nx, ny, pt::BRCK);
+                    // Reference: PIPE.cpp L281-285 — PPIP-created BRCK border gets tmp = 1.
+                    let brck = sim.create_part(nx, ny, pt::BRCK);
+                    if sim.parts[i].t == pt::PPIP {
+                        if let Some(bi) = brck {
+                            sim.parts[bi].tmp = 1;
+                        }
+                    }
                 }
             }
         }
