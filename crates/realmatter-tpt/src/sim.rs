@@ -58,6 +58,16 @@ pub fn restrict_flt(v: f32, lo: f32, hi: f32) -> f32 {
     }
 }
 
+#[inline]
+pub fn remainder_p(x: f32, y: f32) -> f32 {
+    let r = x - (x / y).round() * y;
+    if r < 0.0 {
+        r + y
+    } else {
+        r
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EdgeMode {
     Void = 0,
@@ -413,6 +423,29 @@ impl Sim {
     /// Create a particle of type `t` at pixel `(x, y)`. Returns the index, or
     /// `None` when out of bounds / no free slot.
     pub fn create_part(&mut self, x: i32, y: i32, t: u16) -> Option<usize> {
+        // In Loop mode a particle created in the outer CELL margin is wrapped to
+        // its counterpart, mirroring `do_move`/`remainder_p`.
+        let (x, y) = if self.settings.edge_mode == EdgeMode::Loop {
+            let mut x = x;
+            let mut y = y;
+            let w = self.width as f32;
+            let h = self.height as f32;
+            if x < CELL as i32 || x >= self.width as i32 - CELL as i32 {
+                x = (remainder_p(x as f32 - CELL as f32 + 0.5, w - CELL as f32 * 2.0)
+                    + CELL as f32
+                    - 0.5
+                    + 0.5) as i32;
+            }
+            if y < CELL as i32 || y >= self.height as i32 - CELL as i32 {
+                y = (remainder_p(y as f32 - CELL as f32 + 0.5, h - CELL as f32 * 2.0)
+                    + CELL as f32
+                    - 0.5
+                    + 0.5) as i32;
+            }
+            (x, y)
+        } else {
+            (x, y)
+        };
         if !self.in_bounds(x, y) || t == 0 || (t as usize) >= PT_NUM {
             return None;
         }
@@ -766,6 +799,31 @@ impl Sim {
                     self.bmap[y * cx + (cx - 1)] = 0;
                 }
             }
+        }
+        // In Loop mode particles that ended up in the outer CELL margin must be
+        // wrapped to their counterpart (reference `remainder_p`), mirroring
+        // `do_move`/`plan_move`. This keeps saves / mode switches consistent.
+        if self.settings.edge_mode == EdgeMode::Loop {
+            let w = self.width as f32;
+            let h = self.height as f32;
+            for p in self.parts.iter_mut() {
+                if p.t == 0 {
+                    continue;
+                }
+                let xi = (p.x + 0.5) as i32;
+                let yi = (p.y + 0.5) as i32;
+                if xi < CELL as i32 || xi >= self.width as i32 - CELL as i32 {
+                    p.x = remainder_p(p.x - CELL as f32 + 0.5, w - CELL as f32 * 2.0)
+                        + CELL as f32
+                        - 0.5;
+                }
+                if yi < CELL as i32 || yi >= self.height as i32 - CELL as i32 {
+                    p.y = remainder_p(p.y - CELL as f32 + 0.5, h - CELL as f32 * 2.0)
+                        + CELL as f32
+                        - 0.5;
+                }
+            }
+            self.recalc();
         }
         self.refresh_air_block_maps();
     }

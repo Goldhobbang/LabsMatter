@@ -44,6 +44,31 @@ impl Sim {
         }
         // 5. Tick counter.
         self.tick = self.tick.wrapping_add(1);
+        // 6a. In Loop mode, particles that ended up in the outer CELL margin are
+        //     wrapped to their counterpart (reference `remainder_p`) before the
+        //     pmap rebuild, so they are not left (and later killed) in the
+        //     margin.
+        if self.settings.edge_mode == crate::sim::EdgeMode::Loop {
+            let w = self.width as f32;
+            let h = self.height as f32;
+            for p in self.parts.iter_mut() {
+                if p.t == 0 {
+                    continue;
+                }
+                let xi = (p.x + 0.5) as i32;
+                let yi = (p.y + 0.5) as i32;
+                if xi < CELL as i32 || xi >= self.width as i32 - CELL as i32 {
+                    p.x = crate::sim::remainder_p(p.x - CELL as f32 + 0.5, w - CELL as f32 * 2.0)
+                        + CELL as f32
+                        - 0.5;
+                }
+                if yi < CELL as i32 || yi >= self.height as i32 - CELL as i32 {
+                    p.y = crate::sim::remainder_p(p.y - CELL as f32 + 0.5, h - CELL as f32 * 2.0)
+                        + CELL as f32
+                        - 0.5;
+                }
+            }
+        }
         // 6. Rebuild pmap and apply life decay.
         self.recalc_and_life();
         // 7. Wall / ambient block maps.
@@ -155,18 +180,66 @@ impl Sim {
             if t == 0 {
                 continue;
             }
-            let x = (self.parts[i].x + 0.5) as i32;
-            let y = (self.parts[i].y + 0.5) as i32;
+            let mut x = (self.parts[i].x + 0.5) as i32;
+            let mut y = (self.parts[i].y + 0.5) as i32;
 
             // Off-screen kill.
-            if x < CELL as i32
+            let in_margin = x < CELL as i32
                 || y < CELL as i32
                 || x >= self.width as i32 - CELL as i32
-                || y >= self.height as i32 - CELL as i32
-            {
+                || y >= self.height as i32 - CELL as i32;
+            if in_margin {
                 if self.settings.edge_mode != crate::sim::EdgeMode::Loop {
                     self.kill_part(i);
                     continue;
+                }
+                // Loop mode: wrap particles in the outer CELL margin using the
+                // reference `remainder_p`, keeping pmap in sync.
+                let w = self.width as f32;
+                let h = self.height as f32;
+                let old_x = x;
+                let old_y = y;
+                if x < CELL as i32 || x >= self.width as i32 - CELL as i32 {
+                    self.parts[i].x = crate::sim::remainder_p(
+                        self.parts[i].x - CELL as f32 + 0.5,
+                        w - CELL as f32 * 2.0,
+                    ) + CELL as f32
+                        - 0.5;
+                }
+                if y < CELL as i32 || y >= self.height as i32 - CELL as i32 {
+                    self.parts[i].y = crate::sim::remainder_p(
+                        self.parts[i].y - CELL as f32 + 0.5,
+                        h - CELL as f32 * 2.0,
+                    ) + CELL as f32
+                        - 0.5;
+                }
+                x = (self.parts[i].x + 0.5) as i32;
+                y = (self.parts[i].y + 0.5) as i32;
+                if old_x != x || old_y != y {
+                    if self.in_bounds(old_x, old_y) {
+                        let old_cell = self.idx(old_x, old_y);
+                        if self.pmap[old_cell] != 0
+                            && crate::sim::pmap_id(self.pmap[old_cell]) as usize == i
+                        {
+                            self.pmap[old_cell] = 0;
+                        }
+                        if self.photons[old_cell] != 0
+                            && crate::sim::pmap_id(self.photons[old_cell]) as usize == i
+                        {
+                            self.photons[old_cell] = 0;
+                        }
+                    }
+                    if self.in_bounds(x, y) {
+                        let cell = self.idx(x, y);
+                        let tt = self.parts[i].t;
+                        if (crate::element::element(tt).properties & crate::elements_generated::props::TYPE_ENERGY)
+                            != 0
+                        {
+                            self.photons[cell] = crate::sim::pmap_pack(i as u32, tt);
+                        } else if tt != 0 {
+                            self.pmap[cell] = crate::sim::pmap_pack(i as u32, tt);
+                        }
+                    }
                 }
             }
             if !self.in_bounds(x, y) {
