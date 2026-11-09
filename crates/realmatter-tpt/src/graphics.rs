@@ -194,17 +194,31 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
             out.g = ((hue + 2.094).sin().mul_add(127.0, 128.0) as i32).clamp(0, 255) as u8;
             out.b = ((hue + 4.188).sin().mul_add(127.0, 128.0) as i32).clamp(0, 255) as u8;
         }
-        // PIPE / PPIP: emulate the stored particle's colour, otherwise show the
+        // PIPE / PPIP: emulate the stored particle's graphics (reference
+        // `Element_PIPE_graphics` + `props_pipe_to_part`), otherwise show the
         // reference colour state (red/green/blue) or the base pipe colour.
+        // STKM/STKM2/FIGH keep the pipe appearance (reference returns 0).
         pt::PIPE | pt::PPIP => {
             use crate::elements_generated::PT_NUM;
             let ct = p.ctype;
-            if ct > 0 && (ct as usize) < PT_NUM && element(ct as u16).enabled {
-                let (r, g, b) = rgb(element(ct as u16).colour);
-                out.r = r;
-                out.g = g;
-                out.b = b;
-                out.mode = pmode::FLAT;
+            let emulatable = ct > 0
+                && (ct as usize) < PT_NUM
+                && element(ct as u16).enabled
+                && !matches!(
+                    ct as u16,
+                    pt::STKM | pt::STKM2 | pt::FIGH | pt::PIPE | pt::PPIP
+                );
+            if emulatable {
+                // Synthesize the stored payload as a temporary particle and
+                // render it with the shared graphics contract (colour, hot-glow,
+                // element-specific rules). Particle deco is carried on the pipe
+                // itself (PFLAG_PARTICLE_DECO) and is blended after this match.
+                let mut stored = Particle::new(ct as u16, p.x, p.y);
+                stored.temp = p.temp;
+                stored.life = p.tmp2;
+                stored.tmp = p.tmp3;
+                stored.ctype = p.tmp4;
+                *out = for_particle(ct as u16, &stored);
             } else {
                 match p.tmp & 0x000C_0000 {
                     0x0004_0000 => {
@@ -237,8 +251,11 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
                 }
             }
             if t == pt::PPIP && p.tmp & 0x0200_0000 != 0 {
-                out.mode = pmode::FLAT | pmode::BLEND;
-                out.a = 150; // paused
+                // Paused PPIP: reference uses a blended/transparent appearance.
+                out.mode |= pmode::FLAT | pmode::BLEND;
+                if out.a > 150 || out.a == 0 || out.a == 255 {
+                    out.a = 150;
+                }
             }
         }
         // LCRY: brightness tracks the charge level (reference `tmp2`).

@@ -9924,19 +9924,19 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
         let dy = ty - y;
         let d2 = dx * dx + dy * dy;
         if d2 < 600 {
-            // Reference: use the element power when it is deadly, radioactive,
-            // hot/cold, or a lightning/neutron power.
+            // Reference: use the element power when it is LIGH/NEUT, deadly or
+            // radioactive, or has a hot/cold default temperature (>=323K/<=243K).
+            // See `Element_FIGH` in the pinned reference (`FIGH.cpp`).
             let valid = elem > 0 && (elem as usize) < crate::elements_generated::PT_NUM;
             if valid {
                 let def = element(elem as u16);
-                // Reference `Element_FIGH`: dangerous power when it is lightning,
-                // deadly/radioactive AND a gas/part/liquid, or hot/cold (373/173).
-                let deadly_or_rad = (def.properties & (props::PROP_DEADLY | props::PROP_RADIOACTIVE)) != 0;
-                let is_particle_type = (def.properties & (props::TYPE_GAS | props::TYPE_PART | props::TYPE_LIQUID)) != 0;
+                let deadly_or_rad =
+                    (def.properties & (props::PROP_DEADLY | props::PROP_RADIOACTIVE)) != 0;
                 let dangerous = elem == pt::LIGH as i32
-                    || (deadly_or_rad && is_particle_type)
-                    || def.default_temp >= 373.15
-                    || def.default_temp <= 173.15;
+                    || elem == pt::NEUT as i32
+                    || deadly_or_rad
+                    || def.default_temp >= 323.15
+                    || def.default_temp <= 243.15;
                 if dangerous {
                     comm |= ent_input::SPAWN;
                 }
