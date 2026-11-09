@@ -8446,6 +8446,8 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32
             }
 
             // Intake from a neighbouring particle (direction seeds the flow field).
+            // Reference PIPE.cpp:241-243: check pmap, fall back to photons when empty
+            // so TYPE_ENERGY particles (e.g. PHOT) can be ingested.
     if sim.parts[i].ctype == 0 {
         'intake: for rx in -1..=1 {
             for ry in -1..=1 {
@@ -8457,7 +8459,10 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32
                 if !sim.in_bounds(nx, ny) {
                     continue;
                 }
-                let r = sim.pmap_at(nx, ny);
+                let mut r = sim.pmap_at(nx, ny);
+                if r == 0 {
+                    r = sim.photons[sim.idx(nx, ny)];
+                }
                 if r == 0 {
                     continue;
                 }
