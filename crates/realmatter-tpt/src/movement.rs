@@ -690,7 +690,9 @@ impl Sim {
                         let (ovx, ovy) = (self.parts[i].vx, self.parts[i].vy);
                         self.parts[i].vx = ovy;
                         self.parts[i].vy = ovx;
-                        if self.do_move(i, cx, cy, step_x as f32, step_y as f32) != 0 {
+                        let refracted_x = cx + self.parts[i].vx.signum() as i32;
+                        let refracted_y = cy + self.parts[i].vy.signum() as i32;
+                        if self.do_move(i, cx, cy, refracted_x as f32, refracted_y as f32) != 0 {
                             cx = round_pos(self.parts[i].x);
                             cy = round_pos(self.parts[i].y);
                             continue;
@@ -741,7 +743,9 @@ impl Sim {
                     let (ovx, ovy) = (self.parts[i].vx, self.parts[i].vy);
                     self.parts[i].vx = ovy;
                     self.parts[i].vy = ovx;
-                    if self.do_move(i, x, y, nx as f32, ny as f32) == 0 {
+                    let refracted_x = round_pos(self.parts[i].x + self.parts[i].vx);
+                    let refracted_y = round_pos(self.parts[i].y + self.parts[i].vy);
+                    if self.do_move(i, x, y, refracted_x as f32, refracted_y as f32) == 0 {
                         self.parts[i].vx = ovx;
                         self.parts[i].vy = ovy;
                         self.kill_part(i);
