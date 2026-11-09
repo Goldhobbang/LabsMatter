@@ -8165,6 +8165,36 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
                         sim.parts[id].flags |= PFLAG_NORMALSPEED as u32;
                     }
                     pipe_push(sim, id, count + 1, original);
+                } else if rt == pt::PRTI {
+                    // Reference PIPE.cpp:601-615 (single-pixel push): pass into PRTI.
+                    let ch = portal_channel(sim, id);
+                    let dir = count.max(0) as usize % crate::portal::PORTAL_DIRECTIONS;
+                    let payload = crate::portal::PortalPayload {
+                        t: sim.parts[i].ctype as u16,
+                        life: sim.parts[i].tmp2,
+                        ctype: sim.parts[i].tmp4,
+                        x: nx as f32,
+                        y: ny as f32,
+                        vx: 0.0,
+                        vy: 0.0,
+                        temp: sim.parts[i].temp,
+                        tmp: sim.parts[i].tmp3,
+                        tmp2: 0,
+                        tmp3: 0,
+                        tmp4: 0,
+                        flags: 0,
+                        dcolour: 0,
+                    };
+                    if sim.portal.store(ch, dir, payload) {
+                        sim.parts[i].ctype = 0;
+                    }
+                }
+            } else if sim.parts[i].ctype != 0 {
+                // Reference PIPE.cpp:616-625 (single-pixel push): auto-release at
+                // open end in the stored direction.
+                let t = sim.parts[i].ctype as u16;
+                if let Some(np) = sim.create_part(nx, ny, t) {
+                    pipe_to_part(sim, i, np);
                 }
             }
         }
