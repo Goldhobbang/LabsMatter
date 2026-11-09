@@ -9320,13 +9320,20 @@ fn stickman_feet_grounded(sim: &Sim, x: i32, y: i32) -> bool {
     false
 }
 
-fn stickman_set_feet(st: &mut PlayerState, x: i32, y: i32, moving: bool) {
+fn stickman_set_feet_targets(
+    sim: &Sim,
+    legs: &mut [f32; 16],
+    frames: i32,
+    x: i32,
+    y: i32,
+    moving: bool,
+) {
     // Reference feet live in legs[4..6] and legs[12..14]; legs[2..4] is the
     // torso anchor used by FIGH target selection.
-    st.legs[2] = x as f32;
-    st.legs[3] = y as f32;
+    legs[2] = x as f32;
+    legs[3] = y as f32;
     let phase: f32 = if moving {
-        if ((st.frames / 4) & 1) == 1 {
+        if ((frames / 4) & 1) == 1 {
             1.0
         } else {
             -1.0
@@ -9334,10 +9341,22 @@ fn stickman_set_feet(st: &mut PlayerState, x: i32, y: i32, moving: bool) {
     } else {
         0.0
     };
-    st.legs[4] = x as f32 - 1.0 + phase.max(0.0);
-    st.legs[5] = y as f32 + 1.0;
-    st.legs[12] = x as f32 + 1.0 + phase.min(0.0);
-    st.legs[13] = y as f32 + 1.0;
+    // Obvious case vs reference movement/collision: avoid placing feet into
+    // occupied solid/invalid targets or walls (conservative; no spring solver).
+    // `stickman_can_occupy` treats dead/absent particles and solids/walls as invalid.
+    let candidates = [
+        (x as f32 - 1.0 + phase.max(0.0), y as f32 + 1.0, 4usize, 5usize),
+        (x as f32 + 1.0 + phase.min(0.0), y as f32 + 1.0, 12usize, 13usize),
+    ];
+    for (fxf, fyf, ix, iy) in candidates {
+        let fx = (fxf + 0.5) as i32;
+        let fy = (fyf + 0.5) as i32;
+        if stickman_can_occupy(sim, fx, fy) {
+            legs[ix] = fxf;
+            legs[iy] = fyf;
+        }
+        // else keep previous foot position (conservative).
+    }
 }
 
 /// Set a stickman's element power from a touched particle, mirroring
@@ -9764,12 +9783,17 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     let moving = comm_adj & (ent_input::LEFT | ent_input::RIGHT) != 0;
     let nx = (sim.parts[i].x + 0.5) as i32;
     let ny = (sim.parts[i].y + 0.5) as i32;
-    let feet = if let Some(st) = sim.player_state_mut(which) {
-        stickman_set_feet(st, nx, ny, moving);
-        stickman_legs(st, report.grounded, moving);
-        (st.legs[4] as i32, st.legs[5] as i32, st.legs[12] as i32, st.legs[13] as i32)
-    } else {
-        (0, 0, 0, 0)
+    let feet = {
+        let frames = sim.player_state(which).map(|p| p.frames as i32).unwrap_or(0);
+        let mut legs = sim.player_state(which).map(|p| p.legs).unwrap_or([0.0; 16]);
+        stickman_set_feet_targets(sim, &mut legs, frames, nx, ny, moving);
+        if let Some(st) = sim.player_state_mut(which) {
+            st.legs = legs;
+            stickman_legs(st, report.grounded, moving);
+            (st.legs[4] as i32, st.legs[5] as i32, st.legs[12] as i32, st.legs[13] as i32)
+        } else {
+            (0, 0, 0, 0)
+        }
     };
     if i < sim.parts.len() && sim.parts[i].t != 0 {
         stickman_interact(sim, i, feet.0, feet.1, which);
@@ -10011,7 +10035,7 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
     // Multi-fighter separation: nudge fighters that share a cell.
     let r = sim.pmap_at(x, y);
     if r != 0 && pmap_id(r) as usize != i && pmap_type(r) == pt::FIGH {
-        comm |= if (i & 1) == 0 {
+        comm_adj |= if (i & 1) == 0 {
             ent_input::LEFT
         } else {
             ent_input::RIGHT
@@ -10026,9 +10050,12 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
     let moving = comm_adj & (ent_input::LEFT | ent_input::RIGHT) != 0;
     let nx = (sim.parts[i].x + 0.5) as i32;
     let ny = (sim.parts[i].y + 0.5) as i32;
+    let frames = sim.player_state(which).map(|p| p.frames as i32).unwrap_or(0);
+    let mut legs = sim.player_state(which).map(|p| p.legs).unwrap_or([0.0; 16]);
+    stickman_set_feet_targets(sim, &mut legs, frames, nx, ny, moving);
     if let Some(st) = sim.player_state_mut(which) {
+        st.legs = legs;
         stickman_legs(st, true, moving);
-        stickman_set_feet(st, nx, ny, moving);
     }
     0
 }
