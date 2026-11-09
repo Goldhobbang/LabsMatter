@@ -48,10 +48,13 @@ export class WebGL2Renderer {
     canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
       this._lost = true;
+      // Drop GL resources from the lost context so restore doesn't bind stale handles.
       this._rgbaTex = null;
+      this._glowTex = null;
       this._blit = null;
       this._texSize = null;
       this._upload = null;
+      this._glowUpload = null;
       console.error("WebGL context lost. The WASM simulation was not replaced. Waiting for the context to restore.");
     }, { passive: false });
     canvas.addEventListener('webglcontextrestored', () => {

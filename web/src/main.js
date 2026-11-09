@@ -581,14 +581,18 @@ function buildAirBuffer(mode) {
   const w = size.w | 0;
   const h = size.h | 0;
   if (w <= 0 || h <= 0) return null;
+  // Reuse across frames: clear only when the cell size changes so stale pixels
+  // cannot survive a world resize. Fixed-size worlds skip the fill.
   const key = w + "x" + h;
-  if (!_airBuf || _airBuf.length !== w * h * 4 || _airBufKey !== key) {
+  if (!_airBuf || _airBuf.length !== w * h * 4) {
     _airBuf = new Uint8Array(w * h * 4);
+    _airBufKey = "";
+  }
+  if (_airBufKey !== key) {
+    _airBuf.fill(0);
     _airBufKey = key;
   }
   const buf = _airBuf;
-  // Clear so stale cells cannot survive a world resize or mode switch.
-  buf.fill(0);
   const isVel = mode === 6; // AIRC velocity
   const cxCount = Math.ceil(w / AIR_CELL);
   const cyCount = Math.ceil(h / AIR_CELL);
@@ -600,14 +604,15 @@ function buildAirBuffer(mode) {
       if (isVel) {
         const vx = (typeof sim.getCellVx === "function") ? sim.getCellVx(px, py) : 0;
         const vy = (typeof sim.getCellVy === "function") ? sim.getCellVy(px, py) : 0;
-        const s = Math.hypot(vx, vy);
-        const k = Math.min(1, Math.max(0, s / 4));
+        const speed = Math.hypot(vx, vy);
+        const k = Math.min(1, Math.max(0, speed / 4));
         r = 40 + k * 215;
         g = 180 - k * 100;
         b = 80;
       } else {
-        const p = (typeof sim.getCellPressure === "function") ? sim.getCellPressure(px, py) : 0;
-        const k = Math.min(1, Math.max(0, (p + 8) / 16));
+        // Use local alias: naming this `p` would shadow the loop index over x.
+        const pressure = (typeof sim.getCellPressure === "function") ? sim.getCellPressure(px, py) : 0;
+        const k = Math.min(1, Math.max(0, (pressure + 8) / 16));
         r = 40 + k * 200;
         g = 80 + (0.5 - Math.abs(k - 0.5)) * 120;
         b = 200 - k * 160;
