@@ -9,8 +9,18 @@ use crate::element::{element, is_type};
 use crate::elements_generated::pt;
 use crate::elements_generated::props;
 use crate::particle::flags;
+use crate::portal::PortalPayload;
 use std::cell::RefCell;
 use crate::sim::{pmap_id, pmap_pack, pmap_type, Sim, CELL, ISTP, MAX_VELOCITY, PMAPMASK};
+
+// Reference `portal_rx/portal_ry` (Simulation.h).
+const PORTAL_RX: [i32; 8] = [-1, 0, 1, 1, 1, 0, -1, -1];
+const PORTAL_RY: [i32; 8] = [-1, -1, -1, 0, 1, 1, 1, 0];
+
+#[inline]
+fn isign(v: i32) -> i32 {
+    if v > 0 { 1 } else if v < 0 { -1 } else { 0 }
+}
 
 pub struct PlanResult {
     pub fin_x: i32,
@@ -170,27 +180,161 @@ impl Sim {
         }
 
         if e == 0 {
-            // Energy particles transfer heat and impart properties.
+            // Blocked: energy particles may conduct heat or be captured (TPT try_move).
             if !is_type(t, props::TYPE_ENERGY) {
                 return 0;
+            }
+            let rid: Option<usize> = if r != 0 {
+                let id = pmap_id(r) as usize;
+                if id < self.parts.len() && self.parts[id].t != 0 {
+                    Some(id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let rt = rid.map(|id| self.parts[id].t).unwrap_or(0);
+            // PHOT heat conduction (reference: !legacy_enable && PHOT && r).
+            if self.settings.heat_sim && t == pt::PHOT {
+                if let Some(id) = rid {
+                    if rt == pt::COAL || rt == pt::BCOL {
+                        self.parts[id].temp = self.parts[i].temp;
+                    }
+                    if (rt as usize) < crate::elements_generated::PT_NUM
+                        && rt != pt::FILT
+                        && !self.is_heat_insulator(id)
+                    {
+                        let t1 = self.parts[i].temp;
+                        let t2 = self.parts[id].temp;
+                        let avg = ((t1 + t2) * 0.5).clamp(0.0, 9999.0);
+                        self.parts[i].temp = avg;
+                        self.parts[id].temp = avg;
+                    }
+                }
+            } else if (t == pt::NEUT || t == pt::ELEC)
+                && matches!(rt, x if x == pt::CLNE || x == pt::PCLN || x == pt::BCLN || x == pt::PBCN)
+            {
+                // Stamp clone ctype from the blocked energy particle if empty.
+                if let Some(id) = rid {
+                    if self.parts[id].ctype == 0 {
+                        self.parts[id].ctype = t as i32;
+                    }
+                }
+            }
+            if rt == pt::PRTI {
+                // TYPE_ENERGY capture into PRTI/portal (TPT try_move).
+                if let Some(prti_id) = rid {
+                    let mut count = 0usize;
+                    for c in 0..8usize {
+                        if isign(x - nx) == isign(PORTAL_RX[c]) && isign(y - ny) == isign(PORTAL_RY[c]) {
+                            count = c;
+                            break;
+                        }
+                    }
+                    count %= 8;
+                    let mut ch = ((self.parts[prti_id].temp - 73.15) / 100.0 + 1.0) as i32;
+                    if ch >= crate::portal::PORTAL_CHANNELS as i32 {
+                        ch = crate::portal::PORTAL_CHANNELS as i32 - 1;
+                    } else if ch < 0 {
+                        ch = 0;
+                    }
+                    self.parts[prti_id].tmp = ch;
+                    let payload = PortalPayload::from_particle(&self.parts[i]);
+                    if self.portal.store(ch as usize, count, payload) {
+                        self.kill_part(i);
+                    }
+                }
             }
             return 0;
         }
 
         if e == 2 {
-            // Same-space: photon heat conduction into the target (TPT try_move).
-            if t == pt::PHOT && r != 0 {
+            // Same-space interactions (TPT try_move). Only clearly mapped, safe cases.
+            let rid: Option<usize> = if r != 0 {
                 let id = pmap_id(r) as usize;
-                let rt = self.parts[id].t;
-                if rt == pt::COAL || rt == pt::BCOL {
-                    self.parts[id].temp = self.parts[i].temp;
+                if id < self.parts.len() && self.parts[id].t != 0 {
+                    Some(id)
+                } else {
+                    None
                 }
-                if rt != pt::FILT && !self.is_heat_insulator(id) {
-                    let t1 = self.parts[i].temp;
-                    let t2 = self.parts[id].temp;
-                    let avg = ((t1 + t2) * 0.5).clamp(0.0, 9999.0);
-                    self.parts[i].temp = avg;
-                    self.parts[id].temp = avg;
+            } else {
+                None
+            };
+            let rt = rid.map(|id| self.parts[id].t).unwrap_or(0);
+            if t == pt::PHOT {
+                if let Some(id) = rid {
+                    // Heat conduction (preserve existing behavior; also done on pass-through in TPT?).
+                    if rt == pt::COAL || rt == pt::BCOL {
+                        self.parts[id].temp = self.parts[i].temp;
+                    }
+                    if rt != pt::FILT && !self.is_heat_insulator(id) {
+                        let t1 = self.parts[i].temp;
+                        let t2 = self.parts[id].temp;
+                        let avg = ((t1 + t2) * 0.5).clamp(0.0, 9999.0);
+                        self.parts[i].temp = avg;
+                        self.parts[id].temp = avg;
+                    }
+                    match rt {
+                        x if x == pt::INVIS => {
+                            let cx = nx / CELL as i32;
+                            let cy = ny / CELL as i32;
+                            let pv = if self.in_cell_bounds(cx, cy) {
+                                self.pv[self.cell_idx(cx, cy)]
+                            } else {
+                                0.0
+                            };
+                            let pr = if self.parts[id].tmp > 0 { self.parts[id].tmp as f32 } else { 4.0 };
+                            if pv >= -pr && pv <= pr {
+                                self.part_change_type(i, x as i32, y as i32, pt::NEUT as i16);
+                                if self.parts[i].t == pt::NEUT {
+                                    self.parts[i].ctype = 0;
+                                }
+                            }
+                        }
+                        x if x == pt::BIZR || x == pt::BIZRG || x == pt::BIZRS => {
+                            self.part_change_type(i, x as i32, y as i32, pt::ELEC as i16);
+                            if self.parts[i].t == pt::ELEC {
+                                self.parts[i].ctype = 0;
+                            }
+                        }
+                        x if x == pt::H2 => {
+                            if (self.parts[i].tmp & 0x1) == 0 {
+                                self.part_change_type(i, x as i32, y as i32, pt::PROT as i16);
+                                if self.parts[i].t == pt::PROT {
+                                    self.parts[i].ctype = 0;
+                                    self.parts[i].tmp2 = 0x1;
+                                }
+                                // ELEC at mover's old position (TPT: create_part(ID(r), x, y, PT_ELEC)).
+                                if let Some(_j) = self.create_part(x as i32, y as i32, pt::ELEC) {}
+                                return 1;
+                            }
+                        }
+                        x if x == pt::GPMP => {
+                            if self.parts[id].life == 0 {
+                                let gt = (self.parts[id].temp - 273.15) as i32;
+                                self.part_change_type(i, x as i32, y as i32, pt::GRVT as i16);
+                                if self.parts[i].t == pt::GRVT {
+                                    self.parts[i].tmp = gt;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else if t == pt::NEUT {
+                // Cherenkov (PHOT creation) omitted: no create_cherenkov_photon helper; behavior-preserving no-op.
+                let _ = (rt, rid);
+            } else if t == pt::ELEC {
+                if rt == pt::GLOW {
+                    self.part_change_type(i, x, y, pt::PHOT as i16);
+                    if self.parts[i].t == pt::PHOT {
+                        self.parts[i].ctype = 0x3FFF_FFFF;
+                    }
+                }
+            } else if t == pt::PROT {
+                if rt == pt::INVIS {
+                    self.part_change_type(i, x, y, pt::NEUT as i16);
                 }
             }
             return 1;
