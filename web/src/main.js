@@ -573,13 +573,22 @@ function setView(mode) {
 }
 
 const AIR_CELL = 4;
+let _airBuf = null;
+let _airBufKey = "";
 function buildAirBuffer(mode) {
   if (!sim) return null;
   const size = sim.getWorldSize();
   const w = size.w | 0;
   const h = size.h | 0;
   if (w <= 0 || h <= 0) return null;
-  const buf = new Uint8Array(w * h * 4);
+  const key = w + "x" + h;
+  if (!_airBuf || _airBuf.length !== w * h * 4 || _airBufKey !== key) {
+    _airBuf = new Uint8Array(w * h * 4);
+    _airBufKey = key;
+  }
+  const buf = _airBuf;
+  // Clear so stale cells cannot survive a world resize or mode switch.
+  buf.fill(0);
   const isVel = mode === 6; // AIRC velocity
   const cxCount = Math.ceil(w / AIR_CELL);
   const cyCount = Math.ceil(h / AIR_CELL);
@@ -978,8 +987,9 @@ function openStamps() {
 }
 
 function shot() {
-  const buf = sim.readRenderBuffer();
+  const s = getState();
   const { w, h } = sim.getWorldSize();
+  const buf = isAirView(s.view) ? buildAirBuffer(s.view) : sim.readRenderBuffer();
   if (!buf) return;
   const c = document.createElement("canvas");
   c.width = w; c.height = h;

@@ -102,7 +102,7 @@ export class WebGL2Renderer {
     if (this._lost || !gl || !buf || gw <= 0 || gh <= 0) { this.lastRenderMs = performance.now()-t0; return; }
     const w = this.canvas.width, h = this.canvas.height;
     if (w < 1 || h < 1) { this.lastRenderMs = performance.now()-t0; return; }
-    gl.clearColor(0.02,0.03,0.06,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clearColor(0.02,0.024,0.04,1); gl.clear(gl.COLOR_BUFFER_BIT);
     // The previous frame left TEXTURE1 active for the glow bind; re-select the
     // base unit before uploading the colour texture.
     gl.activeTexture(gl.TEXTURE0);
@@ -177,25 +177,29 @@ out vec4 o;
 void main(){
   vec2 uv=(vUV-uOff)/max(uScale, vec2(1e-6));
   if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.) discard;
-  vec4 c=texture(uT, uv);
-  // Cheap 4-neighbour box blur of the glow buffer (bloom). Always sampled so
-  // the branch stays uniform; strength 0 disables the effect for normal mode.
-  // Larger box-blur kernel (5x5) for a softer bloom. Always sampled so the
-  // branch stays uniform; strength 0 disables the effect for normal mode.
-  vec3 gl = vec3(0.0);
-  for (int ky = -2; ky <= 2; ky++) {
-    for (int kx = -2; kx <= 2; kx++) {
-      gl += texture(uG, uv + vec2(float(kx) * uTexel.x, float(ky) * uTexel.y)).rgb;
+  // Snap to the owning cell centre, matching the WebGPU path, so nearest
+  // sampling cannot drift by up to half a cell at texture edges.
+  vec2 cell=uv*uWorld;
+  vec2 sc=clamp(floor(cell), vec2(0.0), uWorld-vec2(1.0));
+  vec2 suv=(sc+0.5)/uWorld;
+  vec4 c=texture(uT, suv);
+  // Larger box-blur kernel (5x5) for a softer bloom, sampling around the same
+  // snapped cell centre for backend parity with WebGPU.
+  vec3 glv = vec3(0.0);
+  if (uGlowStrength > 0.0) {
+    for (int ky = -2; ky <= 2; ky++) {
+      for (int kx = -2; kx <= 2; kx++) {
+        glv += texture(uG, suv + vec2(float(kx) * uTexel.x, float(ky) * uTexel.y)).rgb;
+      }
     }
+    glv /= 25.0;
+    c.rgb += glv * uGlowStrength;
   }
-  gl /= 25.0;
-  c.rgb += gl * uGlowStrength;
   o=c;
   if(uGrid>=1.0){
-    vec2 cell=uv*uWorld;
     vec2 g=fract(cell/uGrid);
     float w=max(fwidth(cell.x)/uGrid, 0.05);
-    if(g.x<w||g.y<w) o=vec4(mix(o.rgb, vec3(0.8), 0.45), 1.0);
+    if(g.x<w||g.y<w) o=vec4(mix(o.rgb, vec3(0.82,0.86,0.9), 0.35), 1.0);
   }
 }`);
       gl.compileShader(fs);
@@ -242,7 +246,7 @@ void main(){
     const gl = this.gl;
     if (this._lost || !gl || !snapshot) { this.lastRenderMs = performance.now()-t0; return; }
     const w = this.canvas.width, h = this.canvas.height; if (w < 1 || h < 1) { this.lastRenderMs = performance.now()-t0; return; }
-    gl.clearColor(0.02,0.03,0.06,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clearColor(0.02,0.024,0.04,1); gl.clear(gl.COLOR_BUFFER_BIT);
 
     const gw=snapshot.width,gh=snapshot.height,grid=snapshot.grid,temp=snapshot.temp;
     const zoom=camera.zoom||1, cellPx=4*zoom, offX=camera.x, offY=camera.y;

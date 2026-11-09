@@ -53,16 +53,20 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let c = textureSample(simTex, simSamp, uv);
   let show = select(false, c.a > 0.003, inside);
   var base = select(p.bg, vec4<f32>(c.rgb, 1.0), show);
-  // Additive glow with a larger 5x5 box-blur kernel (bloom).
+  // Additive glow with a larger 5x5 box-blur kernel (bloom). Only sampled when
+  // a glow buffer is active (strength > 0) so a stale/empty texture cannot
+  // tint the frame and no work is spent when bloom is disabled.
   var gl = vec3<f32>(0.0);
-  for (var ky: i32 = -2; ky <= 2; ky = ky + 1) {
-    for (var kx: i32 = -2; kx <= 2; kx = kx + 1) {
-      let off = vec2<f32>(f32(kx) * p.glowTexel.x, f32(ky) * p.glowTexel.y);
-      gl += textureSample(glowTex, simSamp, uv + off).rgb;
+  if (p.glowStrength > 0.0) {
+    for (var ky: i32 = -2; ky <= 2; ky = ky + 1) {
+      for (var kx: i32 = -2; kx <= 2; kx = kx + 1) {
+        let off = vec2<f32>(f32(kx) * p.glowTexel.x, f32(ky) * p.glowTexel.y);
+        gl += textureSample(glowTex, simSamp, uv + off).rgb;
+      }
     }
+    gl /= 25.0;
+    base = vec4<f32>(base.rgb + gl * p.glowStrength, base.a);
   }
-  gl /= 25.0;
-  base = vec4<f32>(base.rgb + gl * p.glowStrength, base.a);
   let gridSpacing = max(p.grid, 1.0);
   let f = fract(cell / gridSpacing);
   let edge = (f.x < 0.08) || (f.y < 0.08);
@@ -84,6 +88,7 @@ export class WebGPURenderer {
     this.simTex = null;
     this.glowTex = null;
     this._blackGlow = null;
+    this._glowActive = false;
     this.glowW = 0;
     this.glowH = 0;
     this.texW = 0;
@@ -240,8 +245,9 @@ export class WebGPURenderer {
       );
       // Optional additive glow buffer.
       const glow = opts && opts.glow;
+      const wantGlow = !!(glow && glow.length >= n);
       let glowStrength = 0.0;
-      if (glow && glow.length >= n) {
+      if (wantGlow) {
         this._ensureGlow(gw, gh);
         if (!this._glowUpload || this._glowUpload.length !== n) this._glowUpload = new Uint8Array(n);
         this._glowUpload.set(glow.subarray(0, n));
@@ -261,6 +267,18 @@ export class WebGPURenderer {
           { width: gw, height: gh }
         );
         glowStrength = opts && opts.glowStrength != null ? opts.glowStrength : 1.0;
+      }
+      // Keep the bind group's glow texture in sync with glow availability so a
+      // disabled/absent glow buffer can never reuse stale emissive data.
+      if (wantGlow !== this._glowActive) {
+        if (!wantGlow) {
+          if (this.glowTex) { try { this.glowTex.destroy(); } catch {} }
+          this.glowTex = null;
+          this.glowW = 0;
+          this.glowH = 0;
+        }
+        this._glowActive = wantGlow;
+        this._rebuildBindGroup();
       }
       const zoom = camera.zoom || 1;
       const cellPx = 4 * zoom;
