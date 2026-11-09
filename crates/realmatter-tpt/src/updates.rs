@@ -9841,6 +9841,9 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     if i < sim.parts.len() && sim.parts[i].t != 0 {
         stickman_interact(sim, i, feet.2, feet.3, which);
     }
+    if i < sim.parts.len() && sim.parts[i].t != 0 {
+        sim.parts[i].ctype = sim.player_state(which).map(|p| p.elem).unwrap_or(0);
+    }
     0
 }
 
@@ -10096,6 +10099,9 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
     if let Some(st) = sim.player_state_mut(which) {
         st.legs = legs;
         stickman_legs(st, true, moving);
+    }
+    if i < sim.parts.len() && sim.parts[i].t == pt::FIGH {
+        sim.parts[i].ctype = sim.player_state(which).map(|p| p.elem).unwrap_or(0);
     }
     0
 }
