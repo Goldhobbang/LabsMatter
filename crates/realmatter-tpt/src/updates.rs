@@ -4680,6 +4680,67 @@ fn crmc_create(sim: &mut Sim, i: usize, _x: i32, _y: i32, _t: i32, _v: i32) {
 }
 
 // --- HEAC ----------------------------------------------------------------
+/// Reference `CheckLine`: returns true when the segment between `(x1,y1)` and
+/// `(x2,y2)` is blocked by a heat insulator. Used by `HEAC` to provide
+/// line-of-sight heat equalisation.
+fn heac_check_line(sim: &Sim, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+    let mut reverse_xy = (y2 - y1).abs() > (x2 - x1).abs();
+    let mut x1 = x1;
+    let mut y1 = y1;
+    let mut x2 = x2;
+    let mut y2 = y2;
+    if reverse_xy {
+        let t = x1; x1 = y1; y1 = t;
+        let t = x2; x2 = y2; y2 = t;
+    }
+    if x1 > x2 {
+        let t = x1; x1 = x2; x2 = t;
+        let t = y1; y1 = y2; y2 = t;
+    }
+    let dx = x2 - x1;
+    let dy = (y2 - y1).abs();
+    let mut e = 0.0f32;
+    let de = if dx != 0 {
+        dy as f32 / dx as f32
+    } else {
+        0.0
+    };
+    let mut y = y1;
+    let sy = if y1 < y2 { 1 } else { -1 };
+    for x in x1..=x2 {
+        let r = if reverse_xy {
+            sim.pmap_at(y, x)
+        } else {
+            sim.pmap_at(x, y)
+        };
+        if r != 0 {
+            let id = pmap_id(r) as usize;
+            if id < sim.parts.len() && sim.is_heat_insulator(id) {
+                return true;
+            }
+        }
+        e += de;
+        if e >= 0.5 {
+            y += sy;
+            if if y1 < y2 { y <= y2 } else { y >= y2 } {
+                let r = if reverse_xy {
+                    sim.pmap_at(y, x)
+                } else {
+                    sim.pmap_at(x, y)
+                };
+                if r != 0 {
+                    let id = pmap_id(r) as usize;
+                    if id < sim.parts.len() && sim.is_heat_insulator(id) {
+                        return true;
+                    }
+                }
+            }
+            e -= 1.0;
+        }
+    }
+    false
+}
+
 fn heac_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
     let rad = 4;
     let mut c_heat = 0.0f32;
@@ -4696,8 +4757,23 @@ fn heac_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
             if !sim.in_bounds(nx, ny) {
                 continue;
             }
+            if heac_check_line(sim, x, y, nx, ny) {
+                continue;
+            }
+            // pmap particle at target.
             if let Some(id) = sim.id_at(nx, ny) {
                 if !sim.is_heat_insulator(id) {
+                    let hc = sim.heat_capacity_of(id);
+                    c_heat += sim.parts[id].temp * hc;
+                    hc_total += hc;
+                }
+            }
+            // photon (energy) particle at target.
+            let cell = sim.idx(nx, ny);
+            let r = sim.photons[cell];
+            if r != 0 {
+                let id = pmap_id(r) as usize;
+                if id < sim.parts.len() && !sim.is_heat_insulator(id) {
                     let hc = sim.heat_capacity_of(id);
                     c_heat += sim.parts[id].temp * hc;
                     hc_total += hc;
@@ -4720,8 +4796,19 @@ fn heac_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                 if !sim.in_bounds(nx, ny) {
                     continue;
                 }
+                if heac_check_line(sim, x, y, nx, ny) {
+                    continue;
+                }
                 if let Some(id) = sim.id_at(nx, ny) {
                     if !sim.is_heat_insulator(id) {
+                        sim.parts[id].temp = pt;
+                    }
+                }
+                let cell = sim.idx(nx, ny);
+                let r = sim.photons[cell];
+                if r != 0 {
+                    let id = pmap_id(r) as usize;
+                    if id < sim.parts.len() && !sim.is_heat_insulator(id) {
                         sim.parts[id].temp = pt;
                     }
                 }
@@ -8153,6 +8240,23 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
 /// `0x8` bit for pipe heat insulation, while the reference flag is `0x1`
 /// (`PFLAG_CAN_CONDUCT`); set both so the flood works end to end.
 fn pipe_flood_can_conduct(sim: &mut Sim, x0: i32, y0: i32) {
+    // Reference `Element_PPIP_flood_trigger` with sparkedBy == PT_HEAC.
+    let r0 = sim.pmap_at(x0, y0);
+    if r0 == 0 {
+        return;
+    }
+    let id0 = pmap_id(r0) as usize;
+    if id0 >= sim.parts.len() {
+        return;
+    }
+    let start_type = pmap_type(r0);
+    if start_type != pt::PIPE && start_type != pt::PPIP {
+        return;
+    }
+    // Already conductive: nothing to do (reference checks `parts[...].tmp & prop`).
+    if sim.parts[id0].tmp & (PFLAG_CAN_CONDUCT | 0x8) != 0 {
+        return;
+    }
     let mut stack = vec![(x0, y0)];
     let mut seen = std::collections::HashSet::new();
     while let Some((x, y)) = stack.pop() {
@@ -8164,8 +8268,12 @@ fn pipe_flood_can_conduct(sim: &mut Sim, x0: i32, y0: i32) {
             continue;
         }
         let id = pmap_id(r) as usize;
+        if id >= sim.parts.len() {
+            continue;
+        }
         let rt = pmap_type(r);
-        if rt != pt::PIPE && rt != pt::PPIP {
+        // HEAC flood only marks pipes of the same type as the starting pipe.
+        if rt != start_type {
             continue;
         }
         sim.parts[id].tmp |= PFLAG_CAN_CONDUCT | 0x8;
@@ -9643,9 +9751,18 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     let moving = comm_adj & (ent_input::LEFT | ent_input::RIGHT) != 0;
     let nx = (sim.parts[i].x + 0.5) as i32;
     let ny = (sim.parts[i].y + 0.5) as i32;
-    if let Some(st) = sim.player_state_mut(which) {
+    let feet = if let Some(st) = sim.player_state_mut(which) {
         stickman_set_feet(st, nx, ny, moving);
         stickman_legs(st, report.grounded, moving);
+        (st.legs[4] as i32, st.legs[5] as i32, st.legs[12] as i32, st.legs[13] as i32)
+    } else {
+        (0, 0, 0, 0)
+    };
+    if i < sim.parts.len() && sim.parts[i].t != 0 {
+        stickman_interact(sim, i, feet.0, feet.1, which);
+    }
+    if i < sim.parts.len() && sim.parts[i].t != 0 {
+        stickman_interact(sim, i, feet.2, feet.3, which);
     }
     0
 }
@@ -9812,9 +9929,15 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
             let valid = elem > 0 && (elem as usize) < crate::elements_generated::PT_NUM;
             if valid {
                 let def = element(elem as u16);
-                let deadly = (def.properties & (props::PROP_DEADLY | props::PROP_RADIOACTIVE)) != 0;
-                let extreme = def.default_temp >= 323.0 || def.default_temp <= 243.0;
-                if elem == pt::LIGH as i32 || elem == pt::NEUT as i32 || deadly || extreme {
+                // Reference `Element_FIGH`: dangerous power when it is lightning,
+                // deadly/radioactive AND a gas/part/liquid, or hot/cold (373/173).
+                let deadly_or_rad = (def.properties & (props::PROP_DEADLY | props::PROP_RADIOACTIVE)) != 0;
+                let is_particle_type = (def.properties & (props::TYPE_GAS | props::TYPE_PART | props::TYPE_LIQUID)) != 0;
+                let dangerous = elem == pt::LIGH as i32
+                    || (deadly_or_rad && is_particle_type)
+                    || def.default_temp >= 373.15
+                    || def.default_temp <= 173.15;
+                if dangerous {
                     comm |= ent_input::SPAWN;
                 }
             }
