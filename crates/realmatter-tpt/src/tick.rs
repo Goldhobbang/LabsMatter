@@ -87,6 +87,24 @@ impl Sim {
                 self.simulate_gol();
             }
         }
+        // 9. Global WIRE previous-state snapshot (ref: Simulation.cpp:3835-3853).
+        //    Before particle updates, snapshot each WIRE's ctype into tmp so all
+        //    WIRE updates in this tick read a consistent previous state.
+        if self.element_count[crate::elements_generated::pt::WIRE as usize] > 0 {
+            let wire = crate::elements_generated::pt::WIRE;
+            for cell in 0..self.pmap.len() {
+                let r = self.pmap[cell];
+                if r == 0 {
+                    continue;
+                }
+                if crate::sim::pmap_type(r) == wire {
+                    let id = crate::sim::pmap_id(r) as usize;
+                    if id < self.parts.len() && self.parts[id].t == wire {
+                        self.parts[id].tmp = self.parts[id].ctype;
+                    }
+                }
+            }
+        }
     }
 
     /// `AfterSim`.
