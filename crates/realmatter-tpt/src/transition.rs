@@ -474,6 +474,34 @@ impl Sim {
                 }
             }
         }
+        // Newtonian gravity: particles with mass (tmp) and heavy elements affect
+        // gravity wells. Heavy elements without an explicit mass update receive
+        // a default mass derived from their weight. This runs in transition
+        // (not updates) so it stays within the owned module boundary.
+        {
+            let cx = x / CELL as i32;
+            let cy = y / CELL as i32;
+            if self.in_cell_bounds(cx, cy) {
+                let vc = self.cell_idx(cx, cy);
+                let def = element(t);
+                let heavy = def.weight >= 80;
+                let has_grav_mass_update = matches!(
+                    t,
+                    pt::NWHL | pt::GRVT | pt::GPMP | pt::BOMB | pt::GBMB | pt::FRAY
+                );
+                if !has_grav_mass_update {
+                    if self.parts[i].tmp != 0 {
+                        self.grav_mass[vc] += 0.001 * self.parts[i].tmp as f32;
+                    } else if heavy {
+                        if self.parts[i].tmp == 0 {
+                            self.parts[i].tmp = def.weight;
+                        }
+                        self.grav_mass[vc] += 0.001 * def.weight as f32;
+                    }
+                }
+            }
+        }
+
         // Horizontal liquid equalization (water_equal_test).
         let ti = self.parts[i].t;
         if self.settings.water_equal_test

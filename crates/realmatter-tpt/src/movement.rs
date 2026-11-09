@@ -10,7 +10,8 @@ use crate::elements_generated::pt;
 use crate::elements_generated::props;
 use crate::particle::flags;
 use crate::sim::{
-    pmap_id, pmap_pack, pmap_type, Sim, CELL, ISTP, MAX_VELOCITY, PMAPMASK,
+    pmap_id, pmap_pack, pmap_type, Sim, CELL, ISTP, MAX_VELOCITY, PMAPMASK, MIN_PRESSURE,
+    MAX_PRESSURE,
 };
 
 pub struct PlanResult {
@@ -266,6 +267,26 @@ impl Sim {
         if result != 0 {
             if !self.move_particle(i, x, y, nxf, nyf) {
                 return -1;
+            }
+            // Shock propagation: a moving particle nudges pressure in its
+            // cell and the four orthogonal neighbours (air/liquid).
+            let ccx = nx / CELL as i32;
+            let ccy = ny / CELL as i32;
+            if self.in_cell_bounds(ccx, ccy) {
+                let vci = self.cell_idx(ccx, ccy);
+                let p = self.pv[vci];
+                for (rx, ry) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let ncx = ccx + rx;
+                    let ncy = ccy + ry;
+                    if !self.in_cell_bounds(ncx, ncy) {
+                        continue;
+                    }
+                    let nci = self.cell_idx(ncx, ncy);
+                    let np = self.pv[nci];
+                    let delta = (p - np) * 0.08;
+                    self.pv[nci] = (self.pv[nci] + delta).clamp(MIN_PRESSURE, MAX_PRESSURE);
+                    self.pv[vci] = (self.pv[vci] - delta).clamp(MIN_PRESSURE, MAX_PRESSURE);
+                }
             }
         }
         result
@@ -645,7 +666,31 @@ impl Sim {
             for _ in 0..steps.min(64) {
                 let step_x = cx + vx.signum() as i32;
                 let step_y = cy + vy.signum() as i32;
-                if self.do_move(i, cx, cy, step_x as f32, step_y as f32) == 0 {
+                let moved = self.do_move(i, cx, cy, step_x as f32, step_y as f32);
+                if moved == 0 {
+                    // Basic refraction at a material boundary: try swapping the
+                    // velocity components once before giving up.
+                    let target = if self.in_bounds(step_x, step_y) {
+                        pmap_type(self.pmap[self.idx(step_x, step_y)])
+                    } else {
+                        0
+                    };
+                    if target == pt::GLAS
+                        || target == pt::BGLA
+                        || target == pt::WATR
+                        || target == pt::ICEI
+                    {
+                        let (ovx, ovy) = (self.parts[i].vx, self.parts[i].vy);
+                        self.parts[i].vx = ovy;
+                        self.parts[i].vy = ovx;
+                        if self.do_move(i, cx, cy, step_x as f32, step_y as f32) != 0 {
+                            cx = round_pos(self.parts[i].x);
+                            cy = round_pos(self.parts[i].y);
+                            continue;
+                        }
+                        self.parts[i].vx = ovx;
+                        self.parts[i].vy = ovy;
+                    }
                     break;
                 }
                 cx = round_pos(self.parts[i].x);
@@ -684,6 +729,16 @@ impl Sim {
                 if rt == pt::GLAS && self.rng.chance(1, 10) {
                     self.parts[i].vx = -self.parts[i].vx;
                     self.parts[i].vy = -self.parts[i].vy;
+                } else if rt == pt::GLAS || rt == pt::WATR || rt == pt::ICEI {
+                    // Basic refraction: bend the neutron path instead of dying.
+                    let (ovx, ovy) = (self.parts[i].vx, self.parts[i].vy);
+                    self.parts[i].vx = ovy;
+                    self.parts[i].vy = ovx;
+                    if self.do_move(i, x, y, nx as f32, ny as f32) == 0 {
+                        self.parts[i].vx = ovx;
+                        self.parts[i].vy = ovy;
+                        self.kill_part(i);
+                    }
                 } else {
                     self.kill_part(i);
                 }
