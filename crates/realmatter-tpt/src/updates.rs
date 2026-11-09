@@ -9593,7 +9593,7 @@ fn stickman_interact(sim: &mut Sim, i: usize, x: i32, y: i32, which: Entity) {
         return;
     }
     // BHOL / NBHL
-    if (rt == pt::BHOL || rt == pt::NBHL) {
+    if rt == pt::BHOL || rt == pt::NBHL {
         if sim.settings.heat_sim && id < sim.parts.len() {
             sim.parts[id].temp = restrict_flt(sim.parts[id].temp + sim.parts[i].temp / 2.0, MIN_TEMP, MAX_TEMP);
         }
@@ -9968,12 +9968,12 @@ fn figh_allowed(sim: &Sim, _i: usize, _x: i32, _y: i32, _t: i32) -> bool {
 }
 
 fn figh_change_type(sim: &mut Sim, i: usize, _x: i32, _y: i32, from: i32, to: i32) {
+    // Reference FIGH.cpp changeType (163-173): on `to == PT_FIGH` allocate a
+    // fighter slot and register `NewFighter`; on leaving FIGH, `Free` the slot.
     if to == pt::FIGH as i32 {
-        if sim.parts[i].tmp < 0 {
-            match figh_alloc_slot(sim) {
-                Some(slot) => sim.parts[i].tmp = slot as i32,
-                None => sim.kill_part(i),
-            }
+        match figh_alloc_slot(sim) {
+            Some(slot) => sim.parts[i].tmp = slot as i32,
+            None => sim.kill_part(i),
         }
     } else if from == pt::FIGH as i32 {
         let slot = sim.parts[i].tmp.max(0) as usize;
