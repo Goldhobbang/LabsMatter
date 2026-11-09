@@ -1,6 +1,7 @@
 //! `TransitionPhase`: heat conduction, phase changes and pressure transitions.
 
 use crate::element::{element, is_element};
+use crate::particle::flags;
 use crate::elements_generated::pt;
 use crate::elements_generated::props;
 use crate::sim::{pmap_id, pmap_type, restrict_flt, Sim, CELL, MAX_TEMP, MIN_TEMP, NT, ST};
@@ -471,6 +472,19 @@ impl Sim {
                     }
                     transition_occurred = true;
                 }
+            }
+        }
+        // Horizontal liquid equalization (water_equal_test).
+        let ti = self.parts[i].t;
+        if self.settings.water_equal_test
+            && ti != 0
+            && (element(ti).properties & props::TYPE_LIQUID) != 0
+            && element(ti).falldown == 2
+        {
+            let ex = (self.parts[i].x + 0.5) as i32;
+            let ey = (self.parts[i].y + 0.5) as i32;
+            if self.flood_water(i, ex, ey) {
+                self.parts[i].flags |= flags::SKIPMOVE;
             }
         }
         let _ = &mut x;

@@ -7,6 +7,7 @@ use crate::air::{
 };
 use crate::element::element;
 use crate::elements_generated::props;
+use crate::particle::flags;
 use crate::sim::{pmap_id, pmap_type, restrict_flt, Sim, CELL, MAX_TEMP, MIN_TEMP};
 
 #[derive(Clone, Copy, Debug)]
@@ -323,6 +324,10 @@ impl Sim {
                 continue;
             }
             if self.parts[i].vx == 0.0 && self.parts[i].vy == 0.0 {
+                continue;
+            }
+            if self.parts[i].flags & flags::SKIPMOVE != 0 {
+                self.parts[i].flags &= !flags::SKIPMOVE;
                 continue;
             }
             self.movement_phase(i);

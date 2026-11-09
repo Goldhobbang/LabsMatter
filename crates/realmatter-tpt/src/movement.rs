@@ -713,6 +713,142 @@ impl Sim {
         }
         let _ = def;
     }
+
+    /// Horizontal liquid equalization (`water_equal_test` / `flood_water`).
+    ///
+    /// Port of `Simulation::flood_water`: when a connected body of liquid
+    /// (Falldown == 2) has empty space above part of it, teleport the particle
+    /// into that gap so the surface levels out. Deterministic (no RNG).
+    pub fn flood_water(&mut self, i: usize, original_x: i32, original_y: i32) -> bool {
+        if !self.settings.water_equal_test {
+            return false;
+        }
+        if original_x < 0 || original_y < 0 || original_x >= self.width as i32 || original_y >= self.height as i32 {
+            return false;
+        }
+        let t = self.parts[i].t;
+        if t == 0 {
+            return false;
+        }
+        if element(t).falldown != 2 {
+            return false;
+        }
+        let start_cell = self.idx(original_x, original_y);
+        if self.pmap[start_cell] == 0 {
+            return false;
+        }
+
+        let mut bitmap = vec![0u8; self.width * self.height];
+        let mut stack: Vec<(i32, i32)> = Vec::new();
+        stack.push((original_x, original_y));
+
+        while let Some((x, y)) = stack.pop() {
+            if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+                continue;
+            }
+            let base = self.idx(x, y);
+            if bitmap[base] != 0 {
+                continue;
+            }
+
+            // Horizontal span of connected liquid on this row.
+            let mut x1 = x;
+            let mut x2 = x;
+            while x1 >= CELL as i32 {
+                let left = x1 - 1;
+                if left < 0 {
+                    break;
+                }
+                let cell = self.idx(left, y);
+                let rt = pmap_type(self.pmap[cell]);
+                if element(rt).falldown != 2 || bitmap[cell] != 0 {
+                    break;
+                }
+                x1 = left;
+            }
+            while x2 < self.width as i32 - CELL as i32 {
+                let right = x2 + 1;
+                if right >= self.width as i32 {
+                    break;
+                }
+                let cell = self.idx(right, y);
+                let rt = pmap_type(self.pmap[cell]);
+                if element(rt).falldown != 2 || bitmap[cell] != 0 {
+                    break;
+                }
+                x2 = right;
+            }
+
+            // Mark the span and try to fill a gap above it.
+            for xx in x1..=x2 {
+                if xx < 0 || xx >= self.width as i32 {
+                    continue;
+                }
+                let cell = self.idx(xx, y);
+                bitmap[cell] = 1;
+                if (y - 1) > original_y {
+                    let ny = y - 1;
+                    if ny >= 0 && ny < self.height as i32 {
+                        let target = self.idx(xx, ny);
+                        if self.pmap[target] == 0 {
+                            // Deterministic choice: first empty cell in [xx, x2].
+                            let mut chosen: Option<i32> = None;
+                            if self.eval_move(t, xx, ny) != 0 {
+                                chosen = Some(xx);
+                            } else {
+                                for cand in (xx + 1)..=x2 {
+                                    if cand < 0 || cand >= self.width as i32 {
+                                        break;
+                                    }
+                                    let tc = self.idx(cand, ny);
+                                    if self.pmap[tc] == 0 && self.eval_move(t, cand, ny) != 0 {
+                                        chosen = Some(cand);
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(cx) = chosen {
+                                let res = self.do_move(i, original_x, original_y, cx as f32, ny as f32);
+                                if res != 0 {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Explore connected liquid above/below.
+            if y >= CELL as i32 + 1 {
+                for xx in x1..=x2 {
+                    if xx < 0 || xx >= self.width as i32 {
+                        continue;
+                    }
+                    let up = y - 1;
+                    let cell = self.idx(xx, up);
+                    let rt = pmap_type(self.pmap[cell]);
+                    if element(rt).falldown == 2 && bitmap[cell] == 0 {
+                        stack.push((xx, up));
+                    }
+                }
+            }
+            if y < self.height as i32 - CELL as i32 - 1 {
+                for xx in x1..=x2 {
+                    if xx < 0 || xx >= self.width as i32 {
+                        continue;
+                    }
+                    let down = y + 1;
+                    let cell = self.idx(xx, down);
+                    let rt = pmap_type(self.pmap[cell]);
+                    if element(rt).falldown == 2 && bitmap[cell] == 0 {
+                        stack.push((xx, down));
+                    }
+                }
+            }
+        }
+
+        false
+    }
 }
 
 // Keep the imported wall constants referenced so unused warnings stay quiet on
