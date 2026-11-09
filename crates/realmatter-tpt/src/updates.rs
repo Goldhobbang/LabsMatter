@@ -302,7 +302,7 @@ fn add_pv(sim: &mut Sim, x: i32, y: i32, v: f32) {
     }
 }
 
-/// Iterate the 5×5 neighbourhood like the reference element loops.
+/// Iterate the 5x5 neighbourhood like the reference element loops.
 macro_rules! for_neighbours {
     ($sim:expr, $x:expr, $y:expr, $rx:ident, $ry:ident, $nx:ident, $ny:ident, $body:block) => {
         for $rx in -2i32..=2 {
@@ -648,7 +648,7 @@ fn fuel_update(_sim: &mut Sim, _i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -
 
 /// Reference `Simulation::FloodINST`: spark every connected `INST` cell.
 /// We use a 4-connected flood (the reference scanline adds special handling for
-/// 1-px wire crossings; the observable result — the whole wire sparks — matches).
+/// 1-px wire crossings; the observable result ? the whole wire sparks ? matches).
 fn flood_inst(sim: &mut Sim, sx: i32, sy: i32) {
     let mut stack = vec![(sx, sy)];
     let mut seen = std::collections::HashSet::new();
@@ -2350,7 +2350,7 @@ fn glas_create(sim: &mut Sim, i: usize, x: i32, y: i32, _t: i32, _v: i32) {
 }
 
 // ---------------------------------------------------------------------------
-// YEST: yeast. Converts to DYST near DYST; grows at 30–44 °C.
+// YEST: yeast. Converts to DYST near DYST; grows at 30?44 °C.
 // ---------------------------------------------------------------------------
 
 fn yest_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
@@ -9232,6 +9232,181 @@ fn stickman_set_feet(st: &mut PlayerState, x: i32, y: i32, moving: bool) {
     st.legs[13] = y as f32 + 1.0;
 }
 
+/// Set a stickman's element power from a touched particle, mirroring
+/// `Element_STKM_set_element`.
+fn stickman_set_element(st: &mut PlayerState, elem: i32) {
+    use crate::elements_generated::props;
+    let def = element(elem as u16);
+    if def.falldown != 0
+        || (def.properties & (props::TYPE_GAS | props::TYPE_LIQUID | props::TYPE_ENERGY)) != 0
+        || elem == pt::LOLZ as i32
+        || elem == pt::LOVE as i32
+    {
+        if !st.rocket_boots || elem != pt::PLSM as i32 {
+            st.elem = elem;
+            st.fan = false;
+        }
+    }
+    if elem == pt::TESC as i32 || elem == pt::LIGH as i32 {
+        st.elem = pt::LIGH as i32;
+        st.fan = false;
+    }
+}
+
+/// Kill a stickman head, mirroring `die()` in `STKM.cpp`.
+fn stickman_die(sim: &mut Sim, st: &mut PlayerState, i: usize, which: Entity) {
+    if st.fan {
+        let cx = ((sim.parts[i].x + 0.5) as i32) / CELL as i32;
+        let cy = ((sim.parts[i].y + 0.5) as i32) / CELL as i32;
+        if sim.in_cell_bounds(cx, cy) {
+            let _idx = sim.cell_idx(cx, cy); sim.pv[_idx] += 64.0;
+        }
+    } else {
+        let x = (sim.parts[i].x + 0.5) as i32;
+        let y = (sim.parts[i].y + 0.5) as i32;
+        let elem = st.elem;
+        if elem > 0 && (elem as usize) < crate::elements_generated::PT_NUM {
+            for r in -2..=1i32 {
+                sim.create_part(x + r, y - 2, elem as u16);
+                sim.create_part(x + r + 1, y + 2, elem as u16);
+                sim.create_part(x - 2, y + r + 1, elem as u16);
+                sim.create_part(x + 2, y + r, elem as u16);
+            }
+        }
+    }
+    sim.kill_part(i);
+    if let Some(s) = sim.player_state_mut(which) {
+        s.spwn = 0;
+        s.comm = 0;
+        s.pcomm = 0;
+    }
+    let _ = st;
+}
+
+/// Leg / particle interaction, mirroring `Element_STKM_interact`.
+fn stickman_interact(sim: &mut Sim, i: usize, x: i32, y: i32, which: Entity) {
+    use crate::elements_generated::props;
+    if i >= sim.parts.len() || sim.parts[i].t == 0 {
+        return;
+    }
+    if !sim.in_bounds(x, y) {
+        return;
+    }
+    let r = sim.pmap_at(x, y);
+    if r == 0 {
+        return;
+    }
+    let id = pmap_id(r) as usize;
+    if id >= sim.parts.len() {
+        return;
+    }
+    let rt = pmap_type(r);
+    let mut damage = 0i32;
+    // SPRK
+    {
+        let st_elem = sim.player_state(which).map(|s| s.elem).unwrap_or(0);
+        if rt == pt::SPRK && st_elem != pt::LIGH as i32 {
+            damage += sim.rng.between(32, 51);
+        }
+    }
+    // heat
+    let heat_damage = {
+        let is_ins = sim.is_heat_insulator(id);
+        let temp = sim.parts[id].temp;
+        let rocket = sim.player_state(which).map(|s| s.rocket_boots).unwrap_or(false);
+        let elem = sim.player_state(which).map(|s| s.elem).unwrap_or(0);
+        if !is_ins && ((elem != pt::LIGH as i32 && temp >= 323.0) || temp <= 243.0)
+            && !(rocket && rt == pt::PLSM)
+        {
+            true
+        } else {
+            false
+        }
+    };
+    if heat_damage {
+        damage += 2;
+        if let Some(st) = sim.player_state_mut(which) {
+            st.accs[3] -= 1.0;
+        }
+    }
+    // deadly
+    let def = element(rt);
+    if (def.properties & props::PROP_DEADLY) != 0 {
+        if rt == pt::ACID {
+            damage += 5;
+        } else {
+            damage += 1;
+        }
+    }
+    // radioactive
+    if (def.properties & props::PROP_RADIOACTIVE) != 0 {
+        damage += 1;
+    }
+    if damage > 0 {
+        let life = sim.parts[i].life;
+        if damage > life {
+            if let Some(mut st) = sim.player_state(which).cloned() {
+                stickman_die(sim, &mut st, i, which);
+            }
+            return;
+        } else {
+            sim.parts[i].life -= damage;
+        }
+    }
+    if i >= sim.parts.len() || sim.parts[i].t == 0 {
+        return;
+    }
+    // PRTI portal
+    if rt == pt::PRTI {
+        let ch = portal_channel(sim, id);
+        sim.parts[id].tmp = ch as i32;
+        let payload = crate::portal::PortalPayload::from_particle(&sim.parts[i]);
+        if sim.portal.store(ch, 1, payload) {
+            sim.kill_part(i);
+            if let Some(st) = sim.player_state_mut(which) {
+                st.spwn = 1;
+            }
+            return;
+        }
+    }
+    if i >= sim.parts.len() || sim.parts[i].t == 0 {
+        return;
+    }
+    // BHOL / NBHL
+    if (rt == pt::BHOL || rt == pt::NBHL) {
+        if sim.settings.heat_sim && id < sim.parts.len() {
+            sim.parts[id].temp = restrict_flt(sim.parts[id].temp + sim.parts[i].temp / 2.0, MIN_TEMP, MAX_TEMP);
+        }
+        sim.kill_part(i);
+        if let Some(st) = sim.player_state_mut(which) {
+            st.spwn = 0;
+            st.comm = 0;
+            st.pcomm = 0;
+        }
+        return;
+    }
+    // VOID / PVOD
+    if rt == pt::VOID || (rt == pt::PVOD && sim.parts[id].life == 10) {
+        let ctype = sim.parts[id].ctype;
+        let kill = if ctype == 0 {
+            true
+        } else {
+            let eq = ctype == sim.parts[i].t as i32;
+            let bit = (sim.parts[id].tmp & 1) != 0;
+            eq != bit
+        };
+        if kill {
+            sim.kill_part(i);
+            if let Some(st) = sim.player_state_mut(which) {
+                st.spwn = 0;
+                st.comm = 0;
+                st.pcomm = 0;
+            }
+            return;
+        }
+    }
+}
+
 /// Reference stickman portal interaction: a head standing on `PRTI` emerges
 /// next to a `PRTO` on the same channel (approximation of the portal payload
 /// path used by `STKM_interact`).
@@ -9311,6 +9486,36 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     }
     let x = (sim.parts[i].x + 0.5) as i32;
     let y = (sim.parts[i].y + 0.5) as i32;
+
+    // Element power acquisition from touched particles.
+    let ctype = sim.parts[i].ctype;
+    if let Some(st) = sim.player_state_mut(which) {
+        if !st.fan && ctype != 0 && crate::transition::is_element_or_none(ctype) {
+            stickman_set_element(st, ctype);
+        }
+    }
+
+    // Temperature handling.
+    if sim.parts[i].temp < 243.0 {
+        sim.parts[i].life -= 1;
+    }
+    if sim.parts[i].temp < 309.6 && sim.parts[i].temp >= 243.0 {
+        sim.parts[i].temp += 1.0;
+    }
+
+    let fan_before = sim.player_state(which).map(|p| p.fan).unwrap_or(false);
+    let pv_high = if sim.in_cell_bounds(x / CELL as i32, y / CELL as i32) {
+        sim.pv[sim.cell_idx(x / CELL as i32, y / CELL as i32)] >= 4.5
+    } else {
+        false
+    };
+    if sim.parts[i].life < 1 || (pv_high && !fan_before) {
+        if let Some(mut st) = sim.player_state(which).cloned() {
+            stickman_die(sim, &mut st, i, which);
+        }
+        return 1;
+    }
+
     let (lethal, damage) = entity_hazard(sim, x, y);
     if lethal {
         sim.kill_part(i);
@@ -9330,6 +9535,70 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
             }
             return 1;
         }
+    }
+
+    // Head-neighbourhood element acquisition / fan / rocket boots.
+    for rx in -2i32..=2 {
+        for ry in -2i32..=2 {
+            if rx == 0 && ry == 0 {
+                continue;
+            }
+            let nx = x + rx;
+            let ny = y + ry;
+            if nx < 0 || ny <= 0 || nx >= sim.width as i32 || ny >= sim.height as i32 {
+                continue;
+            }
+            let mut r = sim.pmap_at(nx, ny);
+            if r == 0 {
+                r = sim.photons[sim.idx(nx, ny)];
+            }
+            if r != 0 {
+                let rt = pmap_type(r);
+                if !fan_before {
+                    if crate::transition::is_element_or_none(rt as i32) {
+                        let ctype = rt as i32;
+                        if let Some(st) = sim.player_state_mut(which) {
+                            if !st.fan {
+                                stickman_set_element(st, ctype);
+                            }
+                        }
+                    }
+                }
+                if rt == pt::PLNT && sim.parts[i].life < 100 {
+                    if sim.parts[i].life <= 95 {
+                        sim.parts[i].life += 5;
+                    } else {
+                        sim.parts[i].life = 100;
+                    }
+                    sim.kill_part(pmap_id(r) as usize);
+                }
+                if rt == pt::NEUT {
+                    if sim.parts[i].life <= 100 {
+                        sim.parts[i].life -= (102 - sim.parts[i].life) / 2;
+                    } else {
+                        sim.parts[i].life = (sim.parts[i].life as f32 * 0.9) as i32;
+                    }
+                    sim.kill_part(pmap_id(r) as usize);
+                }
+            }
+            let w = sim.wall_at(nx, ny);
+            if w == 5 {
+                if let Some(st) = sim.player_state_mut(which) {
+                    st.fan = true;
+                }
+            } else if w == 12 {
+                if let Some(st) = sim.player_state_mut(which) {
+                    st.rocket_boots = false;
+                }
+            } else if w == 14 {
+                if let Some(st) = sim.player_state_mut(which) {
+                    st.rocket_boots = true;
+                }
+            }
+        }
+    }
+    if i >= sim.parts.len() || sim.parts[i].t == 0 {
+        return 1;
     }
 
     // Portal teleport.
