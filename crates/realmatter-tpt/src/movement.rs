@@ -9,6 +9,7 @@ use crate::element::{element, is_type};
 use crate::elements_generated::pt;
 use crate::elements_generated::props;
 use crate::particle::flags;
+use std::cell::RefCell;
 use crate::sim::{
     pmap_id, pmap_pack, pmap_type, Sim, CELL, ISTP, MAX_VELOCITY, PMAPMASK, MIN_PRESSURE,
     MAX_PRESSURE,
@@ -39,6 +40,12 @@ fn remainder_p(x: f32, y: f32) -> f32 {
     } else {
         r
     }
+}
+
+thread_local! {
+    /// Reusable visited-generation buffer for `flood_water`. Avoids a
+    /// full world-sized zeroing allocation on every liquid particle.
+    static FLOOD_VISITED: RefCell<(Vec<u32>, u32)> = RefCell::new((Vec::new(), 1));
 }
 
 impl Sim {
@@ -793,16 +800,34 @@ impl Sim {
             return false;
         }
 
-        let mut bitmap = vec![0u8; self.width * self.height];
-        let mut stack: Vec<(i32, i32)> = Vec::new();
-        stack.push((original_x, original_y));
+        // Reuse a process-global visited buffer keyed by a generation counter so
+        // we do not reallocate/zero a full world-sized bitmap per call. The
+        // observed visited set is identical to the previous `Vec<u8>` bitmap.
+        FLOOD_VISITED.with(|flood_cell| {
+            let mut flood_state = flood_cell.borrow_mut();
+            let needed = self.width * self.height;
+            if flood_state.0.len() < needed {
+                flood_state.0.resize(needed, 0);
+            }
+            flood_state.1 = flood_state.1.wrapping_add(1);
+            if flood_state.1 == 0 {
+                for v in flood_state.0.iter_mut() {
+                    *v = 0;
+                }
+                flood_state.1 = 1;
+            }
+            let gen = flood_state.1;
+            let visited = &mut flood_state.0;
 
-        while let Some((x, y)) = stack.pop() {
+            let mut stack: Vec<(i32, i32)> = Vec::new();
+            stack.push((original_x, original_y));
+
+            while let Some((x, y)) = stack.pop() {
             if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
                 continue;
             }
             let base = self.idx(x, y);
-            if bitmap[base] != 0 {
+            if visited[base] == gen {
                 continue;
             }
 
@@ -816,7 +841,7 @@ impl Sim {
                 }
                 let cell = self.idx(left, y);
                 let rt = pmap_type(self.pmap[cell]);
-                if element(rt).falldown != 2 || bitmap[cell] != 0 {
+                if element(rt).falldown != 2 || visited[cell] == gen {
                     break;
                 }
                 x1 = left;
@@ -828,7 +853,7 @@ impl Sim {
                 }
                 let cell = self.idx(right, y);
                 let rt = pmap_type(self.pmap[cell]);
-                if element(rt).falldown != 2 || bitmap[cell] != 0 {
+                if element(rt).falldown != 2 || visited[cell] == gen {
                     break;
                 }
                 x2 = right;
@@ -840,7 +865,7 @@ impl Sim {
                     continue;
                 }
                 let cell = self.idx(xx, y);
-                bitmap[cell] = 1;
+                visited[cell] = gen;
                 if (y - 1) > original_y {
                     let ny = y - 1;
                     if ny >= 0 && ny < self.height as i32 {
@@ -882,7 +907,7 @@ impl Sim {
                     let up = y - 1;
                     let cell = self.idx(xx, up);
                     let rt = pmap_type(self.pmap[cell]);
-                    if element(rt).falldown == 2 && bitmap[cell] == 0 {
+                    if element(rt).falldown == 2 && visited[cell] != gen {
                         stack.push((xx, up));
                     }
                 }
@@ -895,7 +920,7 @@ impl Sim {
                     let down = y + 1;
                     let cell = self.idx(xx, down);
                     let rt = pmap_type(self.pmap[cell]);
-                    if element(rt).falldown == 2 && bitmap[cell] == 0 {
+                    if element(rt).falldown == 2 && visited[cell] != gen {
                         stack.push((xx, down));
                     }
                 }
@@ -903,6 +928,7 @@ impl Sim {
         }
 
         false
+        })
     }
 }
 

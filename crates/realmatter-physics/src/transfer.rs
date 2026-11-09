@@ -43,7 +43,10 @@ pub fn transfer_energy(
             if cap <= 0.0 {
                 continue;
             }
-            for (dx, dy) in [(-1i32,0i32),(1,0),(0,-1),(0,1)] {
+            // Each unordered neighbor pair is processed exactly once. Iterating
+            // all four directions from every cell double-counts every pair
+            // (and, because `temps` is snapshotted, the passes do not cancel).
+            for (dx, dy) in [(1i32, 0i32), (0i32, 1i32)] {
                 let nx = x as i32 + dx;
                 let ny = y as i32 + dy;
                 if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
