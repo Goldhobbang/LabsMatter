@@ -180,12 +180,76 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
             out.fb = out.b;
             out.fa = 200;
         }
-        pt::BRAY | pt::ARAY => {
+        pt::BRAY => {
+            // Wavelength stored in ctype (reference BRAY graphics).
+            // tmp==0: fading ray; tmp==1: dimmer; tmp==2: fixed red highlight.
+            let trans = if p.tmp == 2 {
+                out.r = 255;
+                out.g = 150;
+                out.b = 50;
+                (p.life.saturating_mul(100)).min(255) as u8
+            } else {
+                let wl = p.ctype & 0x3FFF_FFFF;
+                if wl != 0 {
+                    let (mut r, mut g, mut b) = (0i32, 0i32, 0i32);
+                    for x in 0..12 {
+                        r += (wl >> (x + 18)) & 1;
+                        b += (wl >> x) & 1;
+                    }
+                    for x in 0..12 {
+                        g += (wl >> (x + 9)) & 1;
+                    }
+                    let scale = 624 / (r + g + b + 1);
+                    out.r = (r * scale).clamp(0, 255) as u8;
+                    out.g = (g * scale).clamp(0, 255) as u8;
+                    out.b = (b * scale).clamp(0, 255) as u8;
+                }
+                if p.tmp == 1 {
+                    (p.life / 4).clamp(0, 255) as u8
+                } else {
+                    (p.life.saturating_mul(7)).min(255) as u8
+                }
+            };
+            out.mode = pmode::BLEND | pmode::GLOW;
+            out.fr = out.r;
+            out.fg = out.g;
+            out.fb = out.b;
+            out.fa = trans;
+        }
+        pt::ARAY => {
             out.mode = pmode::FLAT | pmode::ADD | firemode::ADD;
             out.fr = out.r;
             out.fg = out.g;
             out.fb = out.b;
             out.fa = 200;
+        }
+        // FILT: wavelength from ctype, or derived from temperature (reference).
+        pt::FILT => {
+            let wl = if p.ctype & 0x3FFF_FFFF != 0 {
+                p.ctype & 0x3FFF_FFFF
+            } else {
+                let temp_bin = ((p.temp - 273.0) * 0.025) as i32;
+                let temp_bin = temp_bin.clamp(0, 25);
+                0x1F_i32 << temp_bin
+            };
+            let (mut r, mut g, mut b) = (0i32, 0i32, 0i32);
+            for x in 0..12 {
+                r += (wl >> (x + 18)) & 1;
+                b += (wl >> x) & 1;
+            }
+            for x in 0..12 {
+                g += (wl >> (x + 9)) & 1;
+            }
+            let scale = 624 / (r + g + b + 1);
+            out.r = (r * scale).clamp(0, 255) as u8;
+            out.g = (g * scale).clamp(0, 255) as u8;
+            out.b = (b * scale).clamp(0, 255) as u8;
+            out.a = if (1..=4).contains(&p.life) {
+                (127 + p.life * 30).min(255) as u8
+            } else {
+                127
+            };
+            out.mode = pmode::BLEND;
         }
         pt::TRON => {
             // Hue stored in tmp bits 7..16 (reference TRON graphics).
