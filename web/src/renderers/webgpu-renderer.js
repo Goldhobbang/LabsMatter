@@ -53,13 +53,15 @@ fn fs(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
   let c = textureSample(simTex, simSamp, uv);
   let show = select(false, c.a > 0.003, inside);
   var base = select(p.bg, vec4<f32>(c.rgb, 1.0), show);
-  // Additive glow with a cheap 4-neighbour box blur (bloom).
-  var gl = textureSample(glowTex, simSamp, uv).rgb;
-  gl += textureSample(glowTex, simSamp, uv + vec2<f32>(p.glowTexel.x, 0.0)).rgb;
-  gl += textureSample(glowTex, simSamp, uv - vec2<f32>(p.glowTexel.x, 0.0)).rgb;
-  gl += textureSample(glowTex, simSamp, uv + vec2<f32>(0.0, p.glowTexel.y)).rgb;
-  gl += textureSample(glowTex, simSamp, uv - vec2<f32>(0.0, p.glowTexel.y)).rgb;
-  gl *= 0.2;
+  // Additive glow with a larger 5x5 box-blur kernel (bloom).
+  var gl = vec3<f32>(0.0);
+  for (var ky: i32 = -2; ky <= 2; ky = ky + 1) {
+    for (var kx: i32 = -2; kx <= 2; kx = kx + 1) {
+      let off = vec2<f32>(f32(kx) * p.glowTexel.x, f32(ky) * p.glowTexel.y);
+      gl += textureSample(glowTex, simSamp, uv + off).rgb;
+    }
+  }
+  gl /= 25.0;
   base = vec4<f32>(base.rgb + gl * p.glowStrength, base.a);
   let gridSpacing = max(p.grid, 1.0);
   let f = fract(cell / gridSpacing);

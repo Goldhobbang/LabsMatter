@@ -35,7 +35,7 @@ let tickSamples = 0;
 let tickWindow = 0;
 let measuredTps = 0;
 const SHAPES = ["circle", "square", "triangle"];
-const VIEWS = ["Normal", "Fancy", "Heat", "Pressure", "Velocity", "Gravity"];
+const VIEWS = ["Normal", "Fancy", "Heat", "Pressure", "Velocity", "Gravity", "Air velocity (AIRC)", "Air pressure (AIRW)"];
 
 async function boot() {
   setAppState("loading", "Starting simulation…");
@@ -62,12 +62,12 @@ async function boot() {
         secondaryId: 0,
         view: getState().view || 0,
       });
-      sim.setViewMode(getState().view || 0);
+      if (!isAirView(getState().view || 0)) { try { sim.setViewMode(getState().view || 0); } catch (e) { console.warn(e); } }
     } else {
       const wd = new WasmDirectAdapter();
       await wd.init();
       sim = wd;
-      sim.setViewMode(getState().view || 0);
+      if (!isAirView(getState().view || 0)) { try { sim.setViewMode(getState().view || 0); } catch (e) { console.warn(e); } }
     }
   } catch (e) {
     setAppState("error", (ENGINE === "tpt" ? "TPT runtime failed: " : "WASM failed: ") + (e?.message || e));
@@ -176,16 +176,23 @@ function loop(now) {
     renderer.setOverlay("gridSize", s.gridSize || 0);
   }
   try {
-    const buf = sim.readRenderBuffer();
     const size = sim.getWorldSize();
-    if (buf && size.w > 0) {
-      // Fancy view publishes an additive glow buffer for bloom. Normal/field
-      // views pass no glow so the blit strength stays zero.
-      let glow = null;
-      if (s.view === 1 && typeof sim.readGlowBuffer === "function") {
-        try { glow = sim.readGlowBuffer(); } catch { glow = null; }
+    if (size.w > 0 && size.h > 0) {
+      let buf = null;
+      if (isAirView(s.view)) {
+        buf = buildAirBuffer(s.view);
+      } else {
+        buf = sim.readRenderBuffer();
       }
-      renderer.renderRGBA(buf, size.w, size.h, s.camera, glow ? { glow, glowStrength: 1.0 } : {});
+      if (buf) {
+        // Fancy view publishes an additive glow buffer for bloom. Normal/field
+        // views pass no glow so the blit strength stays zero.
+        let glow = null;
+        if (s.view === 1 && typeof sim.readGlowBuffer === "function") {
+          try { glow = sim.readGlowBuffer(); } catch { glow = null; }
+        }
+        renderer.renderRGBA(buf, size.w, size.h, s.camera, glow ? { glow, glowStrength: 1.0 } : {});
+      }
     }
   } catch (e) { console.warn(e); }
   drawOverlay();
@@ -555,9 +562,60 @@ function applyDecoAt(x, y) {
   } catch (e) { console.warn(e); }
 }
 
+function isAirView(mode) { return mode === 6 || mode === 7; }
 function setView(mode) {
   setState({ view: mode });
-  sim.setViewMode(mode);
+  // Air sub-modes (AIRC/AIRW) are rendered on the frontend from
+  // get_cell_pressure/vx/vy; the WASM core has no matching view index.
+  if (!isAirView(mode)) {
+    try { sim.setViewMode(mode); } catch (e) { console.warn(e); }
+  }
+}
+
+const AIR_CELL = 4;
+function buildAirBuffer(mode) {
+  if (!sim) return null;
+  const size = sim.getWorldSize();
+  const w = size.w | 0;
+  const h = size.h | 0;
+  if (w <= 0 || h <= 0) return null;
+  const buf = new Uint8Array(w * h * 4);
+  const isVel = mode === 6; // AIRC velocity
+  const cxCount = Math.ceil(w / AIR_CELL);
+  const cyCount = Math.ceil(h / AIR_CELL);
+  for (let cy = 0; cy < cyCount; cy++) {
+    for (let cx = 0; cx < cxCount; cx++) {
+      const px = cx * AIR_CELL;
+      const py = cy * AIR_CELL;
+      let r = 0, g = 0, b = 0;
+      if (isVel) {
+        const vx = (typeof sim.getCellVx === "function") ? sim.getCellVx(px, py) : 0;
+        const vy = (typeof sim.getCellVy === "function") ? sim.getCellVy(px, py) : 0;
+        const s = Math.hypot(vx, vy);
+        const k = Math.min(1, Math.max(0, s / 4));
+        r = 40 + k * 215;
+        g = 180 - k * 100;
+        b = 80;
+      } else {
+        const p = (typeof sim.getCellPressure === "function") ? sim.getCellPressure(px, py) : 0;
+        const k = Math.min(1, Math.max(0, (p + 8) / 16));
+        r = 40 + k * 200;
+        g = 80 + (0.5 - Math.abs(k - 0.5)) * 120;
+        b = 200 - k * 160;
+      }
+      r = r | 0; g = g | 0; b = b | 0;
+      for (let yy = 0; yy < AIR_CELL && py + yy < h; yy++) {
+        for (let xx = 0; xx < AIR_CELL && px + xx < w; xx++) {
+          const idx = ((py + yy) * w + (px + xx)) * 4;
+          buf[idx] = r;
+          buf[idx + 1] = g;
+          buf[idx + 2] = b;
+          buf[idx + 3] = 255;
+        }
+      }
+    }
+  }
+  return buf;
 }
 
 function wirePointer() {

@@ -180,12 +180,15 @@ void main(){
   vec4 c=texture(uT, uv);
   // Cheap 4-neighbour box blur of the glow buffer (bloom). Always sampled so
   // the branch stays uniform; strength 0 disables the effect for normal mode.
-  vec3 gl = texture(uG, uv).rgb;
-  gl += texture(uG, uv + vec2(uTexel.x, 0.0)).rgb;
-  gl += texture(uG, uv - vec2(uTexel.x, 0.0)).rgb;
-  gl += texture(uG, uv + vec2(0.0, uTexel.y)).rgb;
-  gl += texture(uG, uv - vec2(0.0, uTexel.y)).rgb;
-  gl *= 0.2;
+  // Larger box-blur kernel (5x5) for a softer bloom. Always sampled so the
+  // branch stays uniform; strength 0 disables the effect for normal mode.
+  vec3 gl = vec3(0.0);
+  for (int ky = -2; ky <= 2; ky++) {
+    for (int kx = -2; kx <= 2; kx++) {
+      gl += texture(uG, uv + vec2(float(kx) * uTexel.x, float(ky) * uTexel.y)).rgb;
+    }
+  }
+  gl /= 25.0;
   c.rgb += gl * uGlowStrength;
   o=c;
   if(uGrid>=1.0){
