@@ -70,6 +70,11 @@ fn default_weight() -> f32 {
 pub trait MaterialRegistry: Send + Sync {
     fn get(&self, id: MaterialId) -> Option<&MaterialProps>;
     fn len(&self) -> usize;
+    /// Enumerate all registered material properties (sorted by id is not
+    /// required, but implementations should return a stable order).
+    fn all_props(&self) -> Vec<MaterialProps> {
+        Vec::new()
+    }
     fn is_empty(&self) -> bool {
         self.len() == 0
     }

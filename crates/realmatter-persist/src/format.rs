@@ -426,15 +426,18 @@ pub fn to_world(save: &SaveData) -> Result<World, String> {
 }
 
 pub fn migrate(blob: &[u8], version: u32) -> Result<Vec<u8>, String> {
-    if version == FORMAT_VERSION {
-        return Ok(blob.to_vec());
-    }
     if version < MIN_SUPPORTED_VERSION {
         return Err(format!("version {version} too old to migrate"));
     }
-    Err(format!(
-        "no migration path from version {version} to {FORMAT_VERSION}"
-    ))
+    if version > FORMAT_VERSION {
+        return Err(format!(
+            "version {version} newer than supported {FORMAT_VERSION}"
+        ));
+    }
+    // v1 -> v2 is additive (decoration layer); the on-disk layout is otherwise
+    // identical and `decode` keys off the original version number, so no byte
+    // rewriting is required.
+    Ok(blob.to_vec())
 }
 
 pub fn compress_bytes(data: &[u8]) -> Result<Vec<u8>, String> {

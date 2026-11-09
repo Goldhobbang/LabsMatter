@@ -67,6 +67,7 @@ impl PersistEngine {
     ) -> Result<Vec<u8>> {
         self.sequence += 1;
         let mut save = format::SaveData::from_world(world, label, self.sequence, false, 0);
+        save.materials = self.materials.all_props();
         save.deco = deco;
         format::encode(&save).map_err(|e| RealmatterError::Serialization(e))
     }
@@ -81,6 +82,7 @@ impl PersistEngine {
     ) -> Result<Vec<u8>> {
         self.sequence += 1;
         let mut save = format::SaveData::from_world(world, label, self.sequence, true, parent_sequence);
+        save.materials = self.materials.all_props();
         save.chunks.retain(|(c, _)| dirty_chunks.contains(c));
         format::encode(&save).map_err(|e| RealmatterError::Serialization(e))
     }
@@ -89,7 +91,10 @@ impl PersistEngine {
     pub fn load_blob(&self, bytes: &[u8]) -> Result<World> {
         let raw = format::decompress_blob(bytes).map_err(|e| RealmatterError::Serialization(e))?;
         let _ = format::migrate(&raw, format::FORMAT_VERSION).map_err(|e| RealmatterError::Serialization(e))?;
-        let save = format::decode(&raw).map_err(|e| RealmatterError::Serialization(e))?;
+        let mut save = format::decode(&raw).map_err(|e| RealmatterError::Serialization(e))?;
+        if save.materials.is_empty() {
+            save.materials = self.materials.all_props();
+        }
         let world = format::to_world(&save).map_err(|e| RealmatterError::Serialization(e))?;
         Ok(world)
     }
@@ -123,7 +128,8 @@ impl PersistEngine {
     }
 
     pub fn apply_extension_materials(&mut self, ext: &[MaterialProps]) -> std::result::Result<(), String> {
-        let merged = merge_extensions_props(&[], ext).map_err(|errs| {
+        let base = self.materials.all_props();
+        let merged = merge_extensions_props(&base, ext).map_err(|errs| {
             errs.iter()
                 .map(|e| e.to_string())
                 .collect::<Vec<_>>()
@@ -166,6 +172,9 @@ impl realmatter_core::material::MaterialRegistry for SimpleMaterialRegistry {
     }
     fn len(&self) -> usize {
         self.by_id.len()
+    }
+    fn all_props(&self) -> Vec<MaterialProps> {
+        self.by_id.values().cloned().collect()
     }
 }
 

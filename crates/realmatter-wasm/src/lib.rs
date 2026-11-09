@@ -57,6 +57,9 @@ impl MaterialRegistry for StaticRegistry {
     fn len(&self) -> usize {
         self.props.len()
     }
+    fn all_props(&self) -> Vec<MaterialProps> {
+        self.props.clone()
+    }
 }
 
 /// Material table indexed by material id, for the physics/chemistry slice
