@@ -81,9 +81,20 @@ impl PersistEngine {
         label: Option<String>,
     ) -> Result<Vec<u8>> {
         self.sequence += 1;
+        // Prefer the caller-provided dirty set; fall back to the world's own
+        // dirty tracking so simulation-only changes are never dropped.
+        let mut dirty = dirty_chunks.clone();
+        if dirty.is_empty() {
+            dirty = world.dirty_chunks().copied().collect();
+        }
+        // Make sure the world remembers these chunks before `from_world`
+        // drains the dirty set, so per-chunk dirty flags are recorded.
+        for cc in &dirty {
+            world.mark_chunk_dirty(*cc);
+        }
         let mut save = format::SaveData::from_world(world, label, self.sequence, true, parent_sequence);
         save.materials = self.materials.all_props();
-        save.chunks.retain(|(c, _)| dirty_chunks.contains(c));
+        save.chunks.retain(|(c, _)| dirty.contains(c));
         format::encode(&save).map_err(|e| RealmatterError::Serialization(e))
     }
 

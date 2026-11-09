@@ -146,11 +146,29 @@ impl World {
         &self.cells
     }
 
-    /// Mutable cell slice. Callers must invoke [`World::mark_dirty`] for
-    /// regions they modify so dirty tracking stays accurate.
+    /// Mutable cell slice. Physics/simulation phases mutate cells in place
+    /// through this slice, so every chunk is marked dirty up front to keep
+    /// dirty tracking (and incremental saves) consistent with the actual
+    /// modifications. Callers that need finer control can still use
+    /// [`World::cell_mut`] for single-cell writes.
     #[inline]
     pub fn cells_mut(&mut self) -> &mut [Cell] {
+        self.mark_all_dirty();
         &mut self.cells
+    }
+
+    /// Mark every chunk in the world dirty.
+    pub fn mark_all_dirty(&mut self) {
+        for cy in 0..self.config.chunks_y() {
+            for cx in 0..self.config.chunks_x() {
+                self.dirty_chunks.insert(ChunkCoord::new(cx as i32, cy as i32));
+            }
+        }
+    }
+
+    /// Mark a whole chunk (by coord) dirty, regardless of cell bounds.
+    pub fn mark_chunk_dirty(&mut self, cc: ChunkCoord) {
+        self.dirty_chunks.insert(cc);
     }
 
     /// Mark the chunk containing `(x, y)` dirty (no-op if out of bounds).
@@ -188,6 +206,7 @@ impl World {
     /// Clear `UPDATED` flags, age lifetimes, remove dead cells.
     /// Must run once per tick (finalize phase) in row-major order.
     pub fn finalize_tick(&mut self) {
+        self.mark_all_dirty();
         for cell in self.cells.iter_mut() {
             cell.set_flag(cell_flags::UPDATED, false);
             if cell.lifetime > 0.0 {

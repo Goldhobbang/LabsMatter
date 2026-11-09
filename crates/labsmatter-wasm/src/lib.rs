@@ -1327,6 +1327,9 @@ impl<'a> Reader<'a> {
     fn f32(&mut self) -> Result<f32, String> {
         Ok(f32::from_le_bytes(self.take(4)?.try_into().unwrap()))
     }
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
 }
 
 /// Serialize the current world (format v2). Empty vec if uninitialized.
@@ -1424,6 +1427,17 @@ pub fn save_blob() -> Vec<u8> {
                 put_player(&mut out, f);
             }
             put_i32(&mut out, sim.figh_count);
+
+            // --- backward-compatible trailing state -----------------------
+            // Appended after the v3 payload so older readers that stop at
+            // figh_count keep working. Restored opportunistically in
+            // decode_blob via Reader::remaining().
+            out.push(sim.settings.convection_mode as u8);
+            put_u32(&mut out, sim.gol_counter);
+            put_i32(&mut out, sim.emp_decor);
+            out.push(sim.settings.water_equal_test as u8);
+            put_f32(&mut out, sim.settings.vorticity_coeff);
+
             out
         },
         Vec::new(),
@@ -1784,6 +1798,32 @@ fn decode_blob(bytes: &[u8]) -> Result<Sim, String> {
             sim.fighters.push(read_player(&mut r)?);
         }
         sim.figh_count = r.i32()?;
+    }
+
+    // Opportunistic trailing state (convection mode, gol counter, emp_decor,
+    // water-equal flag, vorticity coeff). Present only in saves written by
+    // newer builds; older blobs simply leave these at their defaults.
+    if r.remaining() >= 1 {
+        sim.settings.convection_mode = match r.u8().unwrap_or(0) {
+            1 => ConvectionMode::Legacy,
+            2 => ConvectionMode::Boussinesq,
+            _ => ConvectionMode::None,
+        };
+    }
+    if r.remaining() >= 4 {
+        sim.gol_counter = r.u32().unwrap_or(sim.gol_counter);
+    }
+    if r.remaining() >= 4 {
+        sim.emp_decor = r.i32().unwrap_or(sim.emp_decor);
+    }
+    if r.remaining() >= 1 {
+        sim.settings.water_equal_test = r.u8().unwrap_or(0) != 0;
+    }
+    if r.remaining() >= 4 {
+        let v = r.f32().unwrap_or(sim.settings.vorticity_coeff);
+        if v.is_finite() {
+            sim.settings.vorticity_coeff = v;
+        }
     }
 
     // Re-establish the edge-mode wall ring from the restored setting (reference
