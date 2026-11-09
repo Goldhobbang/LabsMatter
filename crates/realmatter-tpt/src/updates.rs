@@ -8085,7 +8085,8 @@ fn pipe_to_part(sim: &mut Sim, pipe: usize, part: usize) {
     }
 }
 
-/// Store a live particle into a pipe, preserving type/life/tmp/ctype/temp.
+/// Store a live particle into a pipe (reference
+/// `Element_PIPE_transfer_part_to_pipe` in `PIPE.cpp`).
 fn part_to_pipe(sim: &mut Sim, part: usize, pipe: usize) {
     let t = sim.parts[part].t;
     if t == 0 {
@@ -8097,7 +8098,14 @@ fn part_to_pipe(sim: &mut Sim, part: usize, pipe: usize) {
     let ctype = sim.parts[part].ctype;
     let deco = sim.parts[part].dcolour;
     sim.parts[pipe].ctype = t as i32;
-    sim.parts[pipe].temp = temp;
+    sim.parts[pipe].temp = if sim.parts[pipe].tmp & PFLAG_CAN_CONDUCT == 0 {
+        temp
+    } else {
+        let c_pipe = element(sim.parts[pipe].t).heat_capacity;
+        let c_part = element(t).heat_capacity;
+        let denom = c_part + c_pipe;
+        if denom == 0.0 { temp } else { (c_part * temp + c_pipe * sim.parts[pipe].temp) / denom }
+    };
     sim.parts[pipe].tmp2 = life;
     sim.parts[pipe].tmp3 = tmp;
     sim.parts[pipe].tmp4 = ctype;
@@ -8107,7 +8115,8 @@ fn part_to_pipe(sim: &mut Sim, part: usize, pipe: usize) {
     }
 }
 
-/// Transfer a stored payload between adjacent pipes.
+/// Transfer a stored payload between adjacent pipes (reference
+/// `transfer_pipe_to_pipe` in `PIPE.cpp`).
 fn pipe_to_pipe(sim: &mut Sim, src: usize, dest: usize) {
     let ctype = sim.parts[src].ctype;
     let temp = sim.parts[src].temp;
@@ -8118,7 +8127,18 @@ fn pipe_to_pipe(sim: &mut Sim, src: usize, dest: usize) {
     let particle_deco = sim.parts[src].tmp & PFLAG_PARTICLE_DECO != 0;
     sim.parts[src].ctype = 0;
     sim.parts[dest].ctype = ctype;
-    sim.parts[dest].temp = temp;
+    sim.parts[dest].temp = if sim.parts[dest].tmp & PFLAG_CAN_CONDUCT == 0 {
+        temp
+    } else {
+        let c_src = if ctype > 0 && (ctype as usize) < crate::elements_generated::PT_NUM {
+            element(ctype as u16).heat_capacity
+        } else {
+            1.0
+        };
+        let c_dest = element(sim.parts[dest].t).heat_capacity;
+        let denom = c_src + c_dest;
+        if denom == 0.0 { temp } else { (c_src * temp + c_dest * sim.parts[dest].temp) / denom }
+    };
     sim.parts[dest].tmp2 = life;
     sim.parts[dest].tmp3 = tmp;
     sim.parts[dest].tmp4 = ctype2;
@@ -8130,6 +8150,33 @@ fn pipe_to_pipe(sim: &mut Sim, src: usize, dest: usize) {
         sim.parts[src].dcolour = 0;
         sim.parts[src].tmp &= !PFLAG_PARTICLE_DECO;
     }
+}
+
+/// Transfer STOR payload into a PIPE/PPIP (reference `transfer_pipe_to_pipe`
+/// with `STOR=true` in `PIPE.cpp`).
+fn stor_to_pipe(sim: &mut Sim, stor: usize, pipe: usize) {
+    let stored = sim.parts[stor].tmp;
+    let temp = sim.parts[stor].temp;
+    let life = sim.parts[stor].tmp2;
+    let tmp = sim.parts[stor].tmp3;
+    let ctype = sim.parts[stor].tmp4;
+    sim.parts[stor].tmp = 0;
+    sim.parts[pipe].ctype = stored;
+    sim.parts[pipe].temp = if sim.parts[pipe].tmp & PFLAG_CAN_CONDUCT == 0 {
+        temp
+    } else {
+        let c_src = if stored > 0 && (stored as usize) < crate::elements_generated::PT_NUM {
+            element(stored as u16).heat_capacity
+        } else {
+            1.0
+        };
+        let c_dest = element(sim.parts[pipe].t).heat_capacity;
+        let denom = c_src + c_dest;
+        if denom == 0.0 { temp } else { (c_src * temp + c_dest * sim.parts[pipe].temp) / denom }
+    };
+    sim.parts[pipe].tmp2 = life;
+    sim.parts[pipe].tmp3 = tmp;
+    sim.parts[pipe].tmp4 = ctype;
 }
 
 /// Reference `PIPE::pushParticle` (depth limited to 2 hops per frame), with a
@@ -8335,7 +8382,7 @@ fn pipe_flood_can_conduct(sim: &mut Sim, x0: i32, y0: i32) {
     ppip_flood_trigger(sim, x0, y0, pt::HEAC);
 }
 
-fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32 {
+fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, surround_space: i32, nt: i32) -> i32 {
     // Sanitize stored type.
     if sim.parts[i].ctype != 0
         && ((sim.parts[i].ctype as usize) >= crate::elements_generated::PT_NUM
@@ -8468,85 +8515,50 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32
                 pipe_flood_can_conduct(sim, x, y);
             }
         } else {
-            // Normal transport.
+            // Normal transport (reference PIPE.cpp:226-234).
             if sim.parts[i].flags as i32 & PFLAG_NORMALSPEED != 0 {
                 sim.parts[i].flags &= !(PFLAG_NORMALSPEED as u32);
             } else {
                 pipe_push(sim, i, 0, i);
             }
 
-            // Intake from a neighbouring particle (direction seeds the flow field).
-            // Reference PIPE.cpp:241-243: check pmap, fall back to photons when empty
-            // so TYPE_ENERGY particles (e.g. PHOT) can be ingested.
-    if sim.parts[i].ctype == 0 {
-        'intake: for rx in -1..=1 {
-            for ry in -1..=1 {
-                if rx == 0 && ry == 0 {
-                    continue;
-                }
+            // Reference PIPE.cpp:235-265: with neighbours present, pick one random
+            // offset for end-release/intake (single random selection, not a scan).
+            if nt != 0 {
+                let rnd = (sim.rng.gen() & 7) as usize;
+                let (rx, ry) = PIPE_OFFSETS[rnd];
                 let nx = x + rx;
                 let ny = y + ry;
-                if !sim.in_bounds(nx, ny) {
-                    continue;
-                }
-                let mut r = sim.pmap_at(nx, ny);
-                if r == 0 {
-                    r = sim.photons[sim.idx(nx, ny)];
-                }
-                if r == 0 {
-                    continue;
-                }
-                let id = pmap_id(r) as usize;
-                let rt = pmap_type(r);
-                let p = element(rt).properties;
-                if (p & (props::TYPE_PART | props::TYPE_LIQUID | props::TYPE_GAS | props::TYPE_ENERGY)) != 0 {
-                    if rt == pt::SOAP {
-                        sim.soap_detach(id);
+                if sim.in_bounds(nx, ny) {
+                    let mut r = sim.pmap_at(nx, ny);
+                    if r == 0 {
+                        r = sim.photons[sim.idx(nx, ny)];
                     }
-                    part_to_pipe(sim, id, i);
-                    if let Some(idx) = PIPE_OFFSETS.iter().position(|&(ox, oy)| ox == rx && oy == ry) {
-                        pipe_set_dir(&mut sim.parts[i].tmp, PIPE_OPPOSITE[idx]);
-                    }
-                    sim.kill_part(id);
-                    break 'intake;
-                }
-                if rt == pt::STOR {
-                    let stored = sim.parts[id].tmp;
-                    if stored > 0 && (stored as usize) < crate::elements_generated::PT_NUM {
-                        let st = element(stored as u16).properties;
-                        if (st & (props::TYPE_PART | props::TYPE_LIQUID | props::TYPE_GAS | props::TYPE_ENERGY)) != 0 {
-                            // STOR uses the same storage format.
-                            let temp = sim.parts[id].temp;
-                            let life = sim.parts[id].tmp2;
-                            let tmp = sim.parts[id].tmp3;
-                            let ctype = sim.parts[id].tmp4;
-                            sim.parts[i].ctype = stored;
-                            sim.parts[i].temp = temp;
-                            sim.parts[i].tmp2 = life;
-                            sim.parts[i].tmp3 = tmp;
-                            sim.parts[i].tmp4 = ctype;
-                            sim.parts[id].tmp = 0;
-                            if let Some(idx) = PIPE_OFFSETS.iter().position(|&(ox, oy)| ox == rx && oy == ry) {
-                                pipe_set_dir(&mut sim.parts[i].tmp, PIPE_OPPOSITE[idx]);
-                            }
-                            break 'intake;
+                    if surround_space > 0 && r == 0 && sim.parts[i].ctype != 0 {
+                        // Creating at end (reference PIPE.cpp:244-251).
+                        let t = sim.parts[i].ctype as u16;
+                        if let Some(np) = sim.create_part(nx, ny, t) {
+                            pipe_to_part(sim, i, np);
                         }
-                    }
-                }
-            }
-        }
-    } else if nt != 0 {
-                // Emit at an open neighbour.
-                let mut rnd = sim.rng.gen();
-                let idx = (rnd & 7) as usize;
-                rnd >>= 3;
-                let (rx, ry) = PIPE_OFFSETS[idx];
-                let nx = x + rx;
-                let ny = y + ry;
-                if cell_free(sim, nx, ny) {
-                    let t = sim.parts[i].ctype as u16;
-                    if let Some(np) = sim.create_part(nx, ny, t) {
-                        pipe_to_part(sim, i, np);
+                    } else if sim.parts[i].ctype == 0 && r != 0 {
+                        let id = pmap_id(r) as usize;
+                        let rt = pmap_type(r);
+                        let p = element(rt).properties;
+                        if (p & (props::TYPE_PART | props::TYPE_LIQUID | props::TYPE_GAS | props::TYPE_ENERGY)) != 0 {
+                            if rt == pt::SOAP {
+                                sim.soap_detach(id);
+                            }
+                            part_to_pipe(sim, id, i);
+                            sim.kill_part(id);
+                        } else if rt == pt::STOR {
+                            let stored = sim.parts[id].tmp;
+                            if stored > 0 && (stored as usize) < crate::elements_generated::PT_NUM {
+                                let st = element(stored as u16).properties;
+                                if (st & (props::TYPE_PART | props::TYPE_LIQUID | props::TYPE_GAS | props::TYPE_ENERGY)) != 0 {
+                                    stor_to_pipe(sim, id, i);
+                                }
+                            }
+                        }
                     }
                 }
             }
