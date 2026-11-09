@@ -179,6 +179,7 @@ pub fn create_fn(t: u16) -> Option<CreateFn> {
         pt::PHOT => phot_create,
         pt::TRON => tron_create,
         pt::PTNM => ptnm_create,
+        pt::FIGH => figh_create,
         _ => return None,
     })
 }
@@ -187,12 +188,16 @@ pub fn create_allowed_fn(t: u16) -> Option<CreateAllowedFn> {
     Some(match t {
         pt::STKM => stkm_allowed,
         pt::STKM2 => stkm2_allowed,
+        pt::FIGH => figh_allowed,
         _ => return None,
     })
 }
 
-pub fn change_type_fn(_t: u16) -> Option<ChangeTypeFn> {
-    None
+pub fn change_type_fn(t: u16) -> Option<ChangeTypeFn> {
+    Some(match t {
+        pt::FIGH => figh_change_type,
+        _ => return None,
+    })
 }
 
 pub fn ctype_draw_fn(t: u16) -> Option<CtypeDrawFn> {
@@ -8779,32 +8784,22 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
         if sim.in_bounds(fx, fy) {
             let fr = sim.pmap_at(fx, fy);
             if fr != 0 && pmap_type(fr) == pt::FRME {
-                // The row axis is perpendicular to the piston direction.
-                let (px, py) = if dx != 0 { (0, 1) } else { (1, 0) };
-                let mut row = vec![(fx, fy)];
-                for sign in [-1i32, 1i32] {
-                    let mut step = 1;
-                    loop {
-                        let tx = fx + px * sign * step;
-                        let ty = fy + py * sign * step;
-                        if !sim.in_bounds(tx, ty) {
-                            break;
-                        }
-                        let r = sim.pmap_at(tx, ty);
-                        if r == 0 || pmap_type(r) != pt::FRME {
-                            break;
-                        }
-                        row.push((tx, ty));
-                        step += 1;
+                // Discover the whole 4-connected FRME component (recursive
+                // stack): arbitrary attached frame structures are displaced as a
+                // single rigid unit instead of only the contiguous perpendicular
+                // row.
+                let comp = frme_component(sim, fx, fy);
+                let moved_frame = push_frme_component(sim, fx, fy, dx, dy, piston_count);
+                if !moved_frame {
+                    if ext_obstacle {
+                        return 0;
                     }
-                }
-                let mut any_moved = false;
-                for (tx, ty) in &row {
-                    let moved_frame = sim.move_stack(*tx, *ty, dx, dy, max_size, piston_count);
-                    if moved_frame > 0 {
-                        any_moved = true;
-                        // Particles resting on top of the frame move with it.
-                        let (sx, sy) = if dx != 0 { (0, -1) } else { (-1, 0) };
+                } else {
+                    // Particles resting on top of the displaced frame move with
+                    // it. Each resting stack is probed independently so several
+                    // layers of particles travel together.
+                    let (sx, sy) = if dx != 0 { (0, -1) } else { (-1, 0) };
+                    for (tx, ty) in &comp {
                         let above_x = tx + sx;
                         let above_y = ty + sy;
                         if sim.pmap_at(above_x, above_y) != 0 {
@@ -8814,11 +8809,8 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                                 return 0;
                             }
                         }
-                    } else if ext_obstacle {
-                        return 0;
                     }
                 }
-                let _ = any_moved;
             }
         }
         let moved = sim.move_stack(x + dx, y + dy, dx, dy, max_size, piston_count);
@@ -8848,6 +8840,32 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
         }
     }
     0
+}
+
+/// Wrapped particle delta for SOAP constraints, honouring edge-loop boundaries
+/// (reference `Element_SOAP_neighourLoop`).
+fn soap_delta(sim: &Sim, a: usize, b: usize) -> (f32, f32) {
+    let mut dx = sim.parts[a].x - sim.parts[b].x;
+    let mut dy = sim.parts[a].y - sim.parts[b].y;
+    if sim.settings.edge_mode == crate::sim::EdgeMode::Loop {
+        let hx = sim.width as f32 / 2.0 - crate::sim::CELL as f32;
+        let hy = sim.height as f32 / 2.0 - crate::sim::CELL as f32;
+        let span_x = sim.width as f32 - 2.0 * crate::sim::CELL as f32;
+        let span_y = sim.height as f32 - 2.0 * crate::sim::CELL as f32;
+        if dx >= hx {
+            dx -= span_x;
+        }
+        if dy >= hy {
+            dy -= span_y;
+        }
+        if dx < -hx {
+            dx += span_x;
+        }
+        if dy < -hy {
+            dy += span_y;
+        }
+    }
+    (dx, dy)
 }
 
 // --- SOAP ----------------------------------------------------------------
@@ -9072,16 +9090,14 @@ fn soap_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
     // First-order constraint.
     if sim.parts[i].ctype & 0x02 != 0 && front_valid {
         let j = front as usize;
-        let dx = sim.parts[i].x - sim.parts[j].x;
-        let dy = sim.parts[i].y - sim.parts[j].y;
+        let (dx, dy) = soap_delta(sim, i, j);
         let k = Sim::soap_constraint(dx, dy);
         sim.soap_link_step(i, j, k);
         // Second-order: neighbour's neighbour when both ends are chained.
         if sim.parts[j].ctype & 0x02 != 0 && (sim.parts[j].ctype & 1) != 0 && sim.parts[j].tmp >= 0 {
             let ii = sim.parts[j].tmp as usize;
             if ii < sim.parts.len() && sim.parts[ii].t == pt::SOAP {
-                let dx = sim.parts[ii].x - sim.parts[j].x;
-                let dy = sim.parts[ii].y - sim.parts[j].y;
+                let (dx, dy) = soap_delta(sim, ii, j);
                 let k2 = 81.0 / (dx * dx + dy * dy + 81.0) - 0.5;
                 sim.parts[j].vx -= dx * k2 * 0.5;
                 sim.parts[j].vy -= dy * k2 * 0.5;
@@ -9135,6 +9151,14 @@ fn entity_hazard(sim: &Sim, x: i32, y: i32) -> (bool, i32) {
     (lethal, damage)
 }
 
+/// Tile-based leg solver (accepted parity).
+///
+/// The reference `STKM.cpp` resolves feet with a gravity/rotation particle
+/// solver. This implementation keeps locomotion tile-based: feet are stored at
+/// the reference indices `legs[4]/[5]` and `legs[12]/[13]`, the torso anchor
+/// at `legs[2]/[3]`, and leg phase is derived from the frame counter. This is
+/// sufficient for movement, jumping, portals and hazards and is intentionally
+/// documented as the accepted (non-reference) solver.
 fn stickman_legs(st: &mut PlayerState, grounded: bool, moving: bool) {
     if grounded && moving {
         let phase = ((st.frames / 4) & 1) as f32;
@@ -9377,6 +9401,70 @@ fn fighter_die(sim: &mut Sim, i: usize, slot: usize) {
     }
 }
 
+/// Allocate a fighter slot on creation (reference `Element_FIGH_Alloc` /
+/// `Element_FIGH_NewFighter`). Without this a freshly created FIGH particle
+/// would keep the default `tmp == 0` and never be registered, so multi-fighter
+/// worlds could not distinguish heads.
+fn figh_alloc_slot(sim: &mut Sim) -> Option<usize> {
+    if sim.figh_count >= crate::entity::MAX_FIGHTERS as i32 {
+        return None;
+    }
+    let slot = match sim.fighters.iter().position(|f| f.spwn == 0) {
+        Some(s) => s,
+        None => {
+            if sim.fighters.len() < crate::entity::MAX_FIGHTERS {
+                sim.fighters.push(crate::entity::PlayerState::default());
+                sim.fighters.len() - 1
+            } else {
+                return None;
+            }
+        }
+    };
+    if let Some(f) = sim.fighters.get_mut(slot) {
+        f.spwn = 1;
+        f.elem = pt::DUST as i32;
+        f.comm = 0;
+        f.pcomm = 0;
+        f.frames = 0;
+        f.legs = [0.0; 16];
+        f.accs = [0.0; 8];
+    }
+    sim.figh_count += 1;
+    Some(slot)
+}
+
+fn figh_create(sim: &mut Sim, i: usize, _x: i32, _y: i32, _t: i32, _nt: i32) {
+    match figh_alloc_slot(sim) {
+        Some(slot) => {
+            sim.parts[i].tmp = slot as i32;
+        }
+        None => {
+            sim.kill_part(i);
+        }
+    }
+}
+
+fn figh_allowed(sim: &Sim, _i: usize, _x: i32, _y: i32, _t: i32) -> bool {
+    sim.figh_count < crate::entity::MAX_FIGHTERS as i32
+}
+
+fn figh_change_type(sim: &mut Sim, i: usize, _x: i32, _y: i32, from: i32, to: i32) {
+    if to == pt::FIGH as i32 {
+        if sim.parts[i].tmp < 0 {
+            match figh_alloc_slot(sim) {
+                Some(slot) => sim.parts[i].tmp = slot as i32,
+                None => sim.kill_part(i),
+            }
+        }
+    } else if from == pt::FIGH as i32 {
+        let slot = sim.parts[i].tmp.max(0) as usize;
+        if slot < sim.fighters.len() && sim.fighters[slot].spwn != 0 {
+            sim.fighters[slot].spwn = 0;
+            sim.figh_count = (sim.figh_count - 1).max(0);
+        }
+    }
+}
+
 fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> i32 {
     if i >= sim.parts.len() || sim.parts[i].t == 0 {
         return 0;
@@ -9461,6 +9549,14 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
                     comm |= ent_input::SPAWN;
                 }
             }
+            // Facing direction is retained in close range so element powers that
+            // are actually spawned (via `stickman_element_power`) travel toward
+            // the targeted stickman instead of being dropped on the fighter.
+            if dx >= 0 {
+                comm |= ent_input::RIGHT;
+            } else {
+                comm |= ent_input::LEFT;
+            }
             // Fallback melee when no element power is configured.
             if comm & ent_input::SPAWN == 0 {
                 for (idx, p) in sim.parts.iter().enumerate() {
@@ -9499,6 +9595,14 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
         comm |= ent_input::LEFT;
     }
 
+    // Element power: spawn the fighter's configured element with the proper
+    // velocity (energy particles receive facing velocity) instead of relying on
+    // the generic spawn path, which would drop them on the fighter's cell.
+    let mut comm_adj = comm;
+    if stickman_element_power(sim, i, x, y, comm, elem) {
+        comm_adj &= !ent_input::SPAWN;
+    }
+
     // Multi-fighter separation: nudge fighters that share a cell.
     let r = sim.pmap_at(x, y);
     if r != 0 && pmap_id(r) as usize != i && pmap_type(r) == pt::FIGH {
@@ -9511,10 +9615,10 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
 
     if let Some(st) = sim.player_state_mut(which) {
         st.pcomm = st.comm;
-        st.comm = comm;
+        st.comm = comm_adj;
     }
     sim.step_entity_at(which, i);
-    let moving = comm & (ent_input::LEFT | ent_input::RIGHT) != 0;
+    let moving = comm_adj & (ent_input::LEFT | ent_input::RIGHT) != 0;
     let nx = (sim.parts[i].x + 0.5) as i32;
     let ny = (sim.parts[i].y + 0.5) as i32;
     if let Some(st) = sim.player_state_mut(which) {

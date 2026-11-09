@@ -251,8 +251,18 @@ impl Sim {
         if i >= self.parts.len() || j >= self.parts.len() {
             return;
         }
-        let dx = self.parts[i].x - self.parts[j].x;
-        let dy = self.parts[i].y - self.parts[j].y;
+        let mut dx = self.parts[i].x - self.parts[j].x;
+        let mut dy = self.parts[i].y - self.parts[j].y;
+        if self.settings.edge_mode == crate::sim::EdgeMode::Loop {
+            let hx = self.width as f32 / 2.0 - CELL as f32;
+            let hy = self.height as f32 / 2.0 - CELL as f32;
+            let span_x = self.width as f32 - 2.0 * CELL as f32;
+            let span_y = self.height as f32 - 2.0 * CELL as f32;
+            if dx >= hx { dx -= span_x; }
+            if dy >= hy { dy -= span_y; }
+            if dx < -hx { dx += span_x; }
+            if dy < -hy { dy += span_y; }
+        }
         let d = stiffness;
         self.parts[j].vx -= dx * d;
         self.parts[j].vy -= dy * d;
