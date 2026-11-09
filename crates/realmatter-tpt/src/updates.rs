@@ -8259,7 +8259,7 @@ fn ppip_flood_trigger(sim: &mut Sim, x0: i32, y0: i32, sparked_by: u16) {
         pt::PSCN => PPIP_TRIGGER_ON << 3,
         pt::NSCN => PPIP_TRIGGER_OFF << 3,
         pt::INST => PPIP_TRIGGER_REVERSE << 3,
-        pt::HEAC => PFLAG_CAN_CONDUCT | 0x8, // engine also honors 0x8 for pipe heat insulation
+        pt::HEAC => PFLAG_CAN_CONDUCT,
         _ => 0,
     };
     if prop == 0 {
