@@ -8330,8 +8330,17 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32
         }
         if sim.parts[i].tmp & PPIP_TRIGGER_REVERSE != 0 {
             sim.parts[i].tmp ^= PPIP_REVERSED;
+            // Switch colors so it goes in reverse (reference PIPE.cpp).
             if (sim.parts[i].tmp & PFLAG_COLORS) != PFLAG_COLOR_GREEN {
                 sim.parts[i].tmp ^= PFLAG_COLOR_GREEN;
+            }
+            // Swap single-pixel pipe direction (reference PIPE.cpp).
+            if sim.parts[i].tmp & 0x100 != 0 {
+                let coords = (sim.parts[i].tmp >> 13) & 0xF;
+                let coords2 = (sim.parts[i].tmp >> 9) & 0xF;
+                sim.parts[i].tmp &= !0x1FE00;
+                sim.parts[i].tmp |= coords << 9;
+                sim.parts[i].tmp |= coords2 << 13;
             }
         }
         sim.parts[i].tmp &= !PPIP_TRIGGERS;

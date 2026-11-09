@@ -220,6 +220,9 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
                 stored.ctype = p.tmp4;
                 *out = for_particle(ct as u16, &stored);
             } else {
+                // Reference `Element_PIPE_graphics`: when no valid stored type is
+                // shown, display the pipe's flow color state (fixed RGBs) or the
+                // element's base color. PPIP uses a different base color (0x444466).
                 match p.tmp & 0x000C_0000 {
                     0x0004_0000 => {
                         out.r = 50;
@@ -237,14 +240,16 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
                         out.b = 50;
                     }
                     _ => {
-                        out.r = 68;
-                        out.g = 68;
-                        out.b = 68;
+                        if t == pt::PPIP {
+                            out.r = 68;
+                            out.g = 68;
+                            out.b = 102;
+                        } else {
+                            out.r = 68;
+                            out.g = 68;
+                            out.b = 68;
+                        }
                     }
-                }
-                if t == pt::PPIP {
-                    out.r = out.r.saturating_add(20);
-                    out.b = out.b.saturating_add(34);
                 }
                 if p.tmp & 0x0002_0000 != 0 {
                     out.a = 128; // initializing
