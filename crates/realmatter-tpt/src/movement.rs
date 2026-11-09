@@ -10,10 +10,7 @@ use crate::elements_generated::pt;
 use crate::elements_generated::props;
 use crate::particle::flags;
 use std::cell::RefCell;
-use crate::sim::{
-    pmap_id, pmap_pack, pmap_type, Sim, CELL, ISTP, MAX_VELOCITY, PMAPMASK, MIN_PRESSURE,
-    MAX_PRESSURE,
-};
+use crate::sim::{pmap_id, pmap_pack, pmap_type, Sim, CELL, ISTP, MAX_VELOCITY, PMAPMASK};
 
 pub struct PlanResult {
     pub fin_x: i32,
@@ -271,30 +268,8 @@ impl Sim {
             return 0;
         }
         let result = self.try_move(i, x, y, nx, ny);
-        if result != 0 {
-            if !self.move_particle(i, x, y, nxf, nyf) {
-                return -1;
-            }
-            // Shock propagation: a moving particle nudges pressure in its
-            // cell and the four orthogonal neighbours (air/liquid).
-            let ccx = nx / CELL as i32;
-            let ccy = ny / CELL as i32;
-            if self.in_cell_bounds(ccx, ccy) {
-                let vci = self.cell_idx(ccx, ccy);
-                let p = self.pv[vci];
-                for (rx, ry) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
-                    let ncx = ccx + rx;
-                    let ncy = ccy + ry;
-                    if !self.in_cell_bounds(ncx, ncy) {
-                        continue;
-                    }
-                    let nci = self.cell_idx(ncx, ncy);
-                    let np = self.pv[nci];
-                    let delta = (p - np) * 0.08;
-                    self.pv[nci] = (self.pv[nci] + delta).clamp(MIN_PRESSURE, MAX_PRESSURE);
-                    self.pv[vci] = (self.pv[vci] - delta).clamp(MIN_PRESSURE, MAX_PRESSURE);
-                }
-            }
+        if result != 0 && !self.move_particle(i, x, y, nxf, nyf) {
+            return -1;
         }
         result
     }

@@ -156,31 +156,6 @@ impl Sim {
             }
         }
 
-        // --- shock propagation: pressure waves through air/liquid neighbors ---
-        // A simple, deterministic ripple: strong pressure differences bleed
-        // into the four orthogonal neighbours, modelling shock fronts.
-        for y in 1..cy - 1 {
-            for x in 1..cx - 1 {
-                let idx = y * cx + x;
-                let p = self.pv[idx];
-                if p.abs() < 1.0 {
-                    continue;
-                }
-                for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
-                    let nx = x as i32 + dx;
-                    let ny = y as i32 + dy;
-                    if nx < 1 || ny < 1 || nx >= cx as i32 - 1 || ny >= cy as i32 - 1 {
-                        continue;
-                    }
-                    let nidx = ny as usize * cx + nx as usize;
-                    let np = self.pv[nidx];
-                    let delta = (p - np) * 0.12;
-                    self.pv[nidx] = (self.pv[nidx] + delta).clamp(MIN_PRESSURE, MAX_PRESSURE);
-                    self.pv[idx] = (self.pv[idx] - delta).clamp(MIN_PRESSURE, MAX_PRESSURE);
-                }
-            }
-        }
-
         // --- advect + confine vorticity into the double buffers -----------
         let vort = self.settings.vorticity_coeff;
         let fan_active = self.bmap.iter().any(|w| *w == WALL_FAN);
