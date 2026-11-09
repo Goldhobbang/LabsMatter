@@ -807,13 +807,14 @@ fn sprk_update(sim: &mut Sim, i: usize, x: i32, y: i32, surround_space: i32, nt:
                 continue;
             }
             pt::PPIP => {
+                // Reference SPRK.cpp: at life==3, PSCN/NSCN/INST flood-trigger
+                // connected PPIP/PIPE (staged bits, promoted before consumption).
                 if life == 3 && !insu {
-                    if sender == pt::NSCN as i32 {
-                        sim.parts[id].tmp |= PPIP_TRIGGER_OFF;
-                    } else if sender == pt::PSCN as i32 {
-                        sim.parts[id].tmp |= PPIP_TRIGGER_ON;
-                    } else if sender == pt::INST as i32 {
-                        sim.parts[id].tmp |= PPIP_TRIGGER_REVERSE;
+                    if sender == pt::NSCN as i32
+                        || sender == pt::PSCN as i32
+                        || sender == pt::INST as i32
+                    {
+                        ppip_flood_trigger(sim, nx, ny, sender as u16);
                     }
                 }
                 continue;
@@ -8161,7 +8162,7 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
                     let d = PIPE_OPPOSITE[(coords & 7) as usize];
                     pipe_set_dir(&mut sim.parts[id].tmp, d);
                     if id > original {
-                        sim.parts[id].tmp |= PFLAG_NORMALSPEED;
+                        sim.parts[id].flags |= PFLAG_NORMALSPEED as u32;
                     }
                     pipe_push(sim, id, count + 1, original);
                 }
@@ -8204,7 +8205,7 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
             let d = PIPE_OPPOSITE[idx];
             pipe_set_dir(&mut sim.parts[id].tmp, d);
             if id > original {
-                sim.parts[id].tmp |= PFLAG_NORMALSPEED;
+                sim.parts[id].flags |= PFLAG_NORMALSPEED as u32;
             }
             pipe_push(sim, id, count + 1, original);
             return;
@@ -8235,12 +8236,13 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
     }
 }
 
-/// Reference `PPIP_flood_trigger` for `HEAC`: mark every pipe connected to
-/// this one as heat-conductive. The engine's `transition_phase` checks the
-/// `0x8` bit for pipe heat insulation, while the reference flag is `0x1`
-/// (`PFLAG_CAN_CONDUCT`); set both so the flood works end to end.
-fn pipe_flood_can_conduct(sim: &mut Sim, x0: i32, y0: i32) {
-    // Reference `Element_PPIP_flood_trigger` with sparkedBy == PT_HEAC.
+/// Reference `Element_PPIP_flood_trigger` (`PPIP.cpp`). Flood-fill connected
+/// PIPE/PPIP (or same-type for HEAC) and stage trigger/conduct flags in `tmp`.
+/// Trigger flags are staged in bits 28..30 (`PPIP_TRIGGER_* << 3`) so they are
+/// promoted before consumption; promotion matches reference AfterSim global
+/// `ppip_changed` behavior but is applied per-PPIP in `pipe_update` to avoid
+/// editing `sim.rs`/tick (documented deviation).
+fn ppip_flood_trigger(sim: &mut Sim, x0: i32, y0: i32, sparked_by: u16) {
     let r0 = sim.pmap_at(x0, y0);
     if r0 == 0 {
         return;
@@ -8253,8 +8255,21 @@ fn pipe_flood_can_conduct(sim: &mut Sim, x0: i32, y0: i32) {
     if start_type != pt::PIPE && start_type != pt::PPIP {
         return;
     }
-    // Already conductive: nothing to do (reference checks `parts[...].tmp & prop`).
-    if sim.parts[id0].tmp & (PFLAG_CAN_CONDUCT | 0x8) != 0 {
+    let prop: i32 = match sparked_by {
+        pt::PSCN => PPIP_TRIGGER_ON << 3,
+        pt::NSCN => PPIP_TRIGGER_OFF << 3,
+        pt::INST => PPIP_TRIGGER_REVERSE << 3,
+        pt::HEAC => PFLAG_CAN_CONDUCT | 0x8, // engine also honors 0x8 for pipe heat insulation
+        _ => 0,
+    };
+    if prop == 0 {
+        return;
+    }
+    // Reference: triggers only affect PPIP (HEAC also affects PIPE of same type).
+    if start_type != pt::PPIP && sparked_by != pt::HEAC {
+        return;
+    }
+    if sim.parts[id0].tmp & prop != 0 {
         return;
     }
     let mut stack = vec![(x0, y0)];
@@ -8272,15 +8287,22 @@ fn pipe_flood_can_conduct(sim: &mut Sim, x0: i32, y0: i32) {
             continue;
         }
         let rt = pmap_type(r);
-        // HEAC flood only marks pipes of the same type as the starting pipe.
         if rt != start_type {
             continue;
         }
-        sim.parts[id].tmp |= PFLAG_CAN_CONDUCT | 0x8;
+        if sim.parts[id].tmp & prop == 0 {
+            sim.parts[id].tmp |= prop;
+        }
         for (dx, dy) in PIPE_OFFSETS {
             stack.push((x + dx, y + dy));
         }
     }
+}
+
+/// Reference `PPIP_flood_trigger` for `HEAC`: mark every pipe connected to
+/// this one as heat-conductive.
+fn pipe_flood_can_conduct(sim: &mut Sim, x0: i32, y0: i32) {
+    ppip_flood_trigger(sim, x0, y0, pt::HEAC);
 }
 
 fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32 {
@@ -8290,6 +8312,15 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, nt: i32) -> i32
             || !element(sim.parts[i].ctype as u16).enabled)
     {
         sim.parts[i].ctype = 0;
+    }
+
+    // Reference AfterSim `ppip_changed`: promote staged trigger bits
+    // (0xE0000000 >> 3 -> 0x1C000000) for PPIP. Applied per-PPIP here because
+    // this task avoids editing sim.rs/tick.rs (deviation from global AfterSim).
+    if sim.parts[i].t == pt::PPIP && (sim.parts[i].tmp & 0xE000_0000u32 as i32) != 0 {
+        let staged = sim.parts[i].tmp & 0xE000_0000u32 as i32;
+        sim.parts[i].tmp |= (staged as u32 >> 3) as i32;
+        sim.parts[i].tmp &= !(0xE000_0000u32 as i32);
     }
 
     // ---- PPIP trigger flags ------------------------------------------
