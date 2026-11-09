@@ -178,12 +178,20 @@ impl Sim {
         }
 
         if e == 2 {
-            // Same-space: photon heat conduction into the target.
+            // Same-space: photon heat conduction into the target (TPT try_move).
             if t == pt::PHOT && r != 0 {
                 let id = pmap_id(r) as usize;
-                let t1 = self.parts[i].temp;
-                let t2 = self.parts[id].temp;
-                self.parts[id].temp = ((t1 + t2) * 0.5).clamp(0.0, 9999.0);
+                let rt = self.parts[id].t;
+                if rt == pt::COAL || rt == pt::BCOL {
+                    self.parts[id].temp = self.parts[i].temp;
+                }
+                if rt != pt::FILT && !self.is_heat_insulator(id) {
+                    let t1 = self.parts[i].temp;
+                    let t2 = self.parts[id].temp;
+                    let avg = ((t1 + t2) * 0.5).clamp(0.0, 9999.0);
+                    self.parts[i].temp = avg;
+                    self.parts[id].temp = avg;
+                }
             }
             return 1;
         }

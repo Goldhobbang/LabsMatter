@@ -12,9 +12,10 @@ impl Sim {
     pub fn is_heat_insulator(&self, i: usize) -> bool {
         let p = &self.parts[i];
         let def = element(p.t);
+        const PFLAG_CAN_CONDUCT: i32 = 0x0000_0001;
         def.heat_conduct == 0
             || (p.t == pt::HSWC && p.life != 10)
-            || ((p.t == pt::PIPE || p.t == pt::PPIP) && (p.tmp & 0x8) == 0)
+            || ((p.t == pt::PIPE || p.t == pt::PPIP) && (p.tmp & PFLAG_CAN_CONDUCT) == 0)
     }
 
     /// `SimulationData::HeatCapacityOf`.
@@ -77,6 +78,7 @@ impl Sim {
                 let mut surround_hconduct = [i; 8];
                 let mut hc_total = 0.0f32;
                 let mut c_heat = 0.0f32;
+                let i_tmp = self.parts[i].tmp;
                 for (j, r) in n.surround.iter().enumerate() {
                     if *r == 0 {
                         continue;
@@ -85,8 +87,7 @@ impl Sim {
                     if rid >= self.parts.len() || rid == i {
                         continue;
                     }
-                    let rt = pmap_type(*r);
-                    if !self.can_conduct(t, rt) {
+                    if !self.can_conduct_neighbor(t, i_tmp, rid) {
                         continue;
                     }
                     surround_hconduct[j] = rid;
@@ -520,8 +521,12 @@ impl Sim {
         transition_occurred
     }
 
-    fn can_conduct(&self, t: u16, rt: u16) -> bool {
-        if rt == 0 || self.is_heat_insulator_by_type(rt) {
+    /// Neighbor heat-conduction eligibility, matching TPT `Simulation.cpp`
+    /// heat transfer: checks instance `IsHeatInsulator(parts[ID(r)])` and the
+    /// element-pair exceptions (including HSWC-FILT tmp==1).
+    fn can_conduct_neighbor(&self, t: u16, i_tmp: i32, rid: usize) -> bool {
+        let rt = self.parts[rid].t;
+        if rt == 0 || self.is_heat_insulator(rid) {
             return false;
         }
         if t == pt::FILT && (rt == pt::BRAY || rt == pt::BIZR || rt == pt::BIZRG) {
@@ -533,12 +538,12 @@ impl Sim {
         if (t == pt::ELEC && rt == pt::DEUT) || (t == pt::DEUT && rt == pt::ELEC) {
             return false;
         }
+        if (t == pt::HSWC && rt == pt::FILT && i_tmp == 1)
+            || (t == pt::FILT && rt == pt::HSWC && self.parts[rid].tmp == 1)
+        {
+            return false;
+        }
         true
-    }
-
-    fn is_heat_insulator_by_type(&self, t: u16) -> bool {
-        let def = element(t);
-        def.heat_conduct == 0 || (t == pt::HSWC) || ((t == pt::PIPE || t == pt::PPIP))
     }
 
     #[inline]

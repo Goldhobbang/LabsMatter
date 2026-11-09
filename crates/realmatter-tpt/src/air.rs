@@ -523,13 +523,17 @@ impl Sim {
             }
         }
         // Particles that conduct heat poorly also block ambient heat.
+        // Reference: Air::ApproximateBlockAirMaps uses IsHeatInsulator(parts[i])
+        // (instance-aware: HSWC life!=10, PIPE/PPIP without PFLAG_CAN_CONDUCT)
+        // plus TTAN/RSSS and a randomized conductance threshold for the rest.
+        const PFLAG_CAN_CONDUCT: i32 = 0x0000_0001;
         for i in 0..self.parts.len() {
             let t = self.parts[i].t;
             if t == 0 {
                 continue;
             }
             let def = element(t);
-            if t == pt::TTAN || t == pt::RSSS || def.heat_conduct == 0 {
+            if t == pt::TTAN || t == pt::RSSS {
                 let x = (self.parts[i].x + 0.5) as i32 / CELL as i32;
                 let y = (self.parts[i].y + 0.5) as i32 / CELL as i32;
                 if x >= 0 && y >= 0 && (x as usize) < cx && (y as usize) < cy {
@@ -537,16 +541,22 @@ impl Sim {
                     self.bmap_blockair[idx] = 1;
                     self.bmap_blockairh[idx] = 0x8;
                 }
-            } else if def.heat_conduct < 128 {
+                continue;
+            }
+            let is_insulator = self.is_heat_insulator(i)
+                || def.heat_conduct <= (self.rng.next() % 250) as u8;
+            if is_insulator {
                 let x = (self.parts[i].x + 0.5) as i32 / CELL as i32;
                 let y = (self.parts[i].y + 0.5) as i32 / CELL as i32;
                 if x >= 0 && y >= 0 && (x as usize) < cx && (y as usize) < cy {
                     let idx = y as usize * cx + x as usize;
-                    if (self.bmap_blockairh[idx] & 0x8) == 0 && self.bmap_blockairh[idx] < 0x7 {
-                        self.bmap_blockairh[idx] += 1;
+                    // Reference: only increments if not already fully blocked (&0x8==0)
+                    if (self.bmap_blockairh[idx] & 0x8) == 0 {
+                        self.bmap_blockairh[idx] = self.bmap_blockairh[idx].saturating_add(1);
                     }
                 }
             }
+            let _ = PFLAG_CAN_CONDUCT;
         }
     }
 
