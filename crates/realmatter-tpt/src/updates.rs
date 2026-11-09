@@ -8214,8 +8214,12 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
                     pipe_push(sim, id, count + 1, original);
                 } else if rt == pt::PRTI {
                     // Reference PIPE.cpp:601-615 (single-pixel push): pass into PRTI.
+                    // Uses Element_PIPE_transfer_pipe_to_part semantics: particle deco
+                    // stored on the pipe is carried with the payload.
                     let ch = portal_channel(sim, id);
                     let dir = count.max(0) as usize % crate::portal::PORTAL_DIRECTIONS;
+                    let particle_deco = sim.parts[i].tmp & PFLAG_PARTICLE_DECO != 0;
+                    let dcolour = if particle_deco { sim.parts[i].dcolour } else { 0 };
                     let payload = crate::portal::PortalPayload {
                         t: sim.parts[i].ctype as u16,
                         life: sim.parts[i].tmp2,
@@ -8230,10 +8234,13 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
                         tmp3: 0,
                         tmp4: 0,
                         flags: 0,
-                        dcolour: 0,
+                        dcolour,
                     };
                     if sim.portal.store(ch, dir, payload) {
                         sim.parts[i].ctype = 0;
+                        if particle_deco {
+                            sim.parts[i].dcolour = 0;
+                        }
                     }
                 }
             } else if sim.parts[i].ctype != 0 {
@@ -8287,8 +8294,12 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
             pipe_push(sim, id, count + 1, original);
             return;
         } else if rt == pt::PRTI {
+            // Reference PIPE.cpp:572-586 (normal push): pass into PRTI with
+            // Element_PIPE_transfer_pipe_to_part semantics (carries particle deco).
             let ch = portal_channel(sim, id);
             let dir = count.max(0) as usize % crate::portal::PORTAL_DIRECTIONS;
+            let particle_deco = sim.parts[i].tmp & PFLAG_PARTICLE_DECO != 0;
+            let dcolour = if particle_deco { sim.parts[i].dcolour } else { 0 };
             let payload = crate::portal::PortalPayload {
                 t: sim.parts[i].ctype as u16,
                 life: sim.parts[i].tmp2,
@@ -8303,10 +8314,13 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
                 tmp3: 0,
                 tmp4: 0,
                 flags: 0,
-                dcolour: 0,
+                dcolour,
             };
             if sim.portal.store(ch, dir, payload) {
                 sim.parts[i].ctype = 0;
+                if particle_deco {
+                    sim.parts[i].dcolour = 0;
+                }
             }
             return;
         }
