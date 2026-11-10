@@ -941,6 +941,33 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
             out.mode &= !pmode::FLAT;
             out.mode |= firemode::ADD | pmode::ADD | pmode::NO_DECO;
         }
+        // ref: CBNW.cpp:148-155
+        pt::CBNW => {
+            let z = p.tmp2 - 20;
+            out.r = clamp_u8(out.r as i32 + z * 1);
+            out.g = clamp_u8(out.g as i32 + z * 2);
+            out.b = clamp_u8(out.b as i32 + z * 8);
+        }
+        // ref: CLST.cpp:98-105
+        pt::CLST => {
+            let z = (p.tmp - 5) * 16;
+            out.r = clamp_u8(out.r as i32 + z);
+            out.g = clamp_u8(out.g as i32 + z);
+            out.b = clamp_u8(out.b as i32 + z);
+        }
+        // ref: DCEL.cpp:83-88
+        pt::DCEL => {
+            if p.tmp != 0 {
+                out.mode |= pmode::GLOW;
+            }
+        }
+        // ref: DLAY.cpp:103-110
+        pt::DLAY => {
+            let stage = ((p.life as f32 / (p.temp - 273.15)) * 100.0f32) as i32;
+            out.r = clamp_u8(out.r as i32 + stage);
+            out.g = clamp_u8(out.g as i32 + stage);
+            out.b = clamp_u8(out.b as i32 + stage);
+        }
         _ => {}
     }
 }
