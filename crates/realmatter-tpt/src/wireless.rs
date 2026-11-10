@@ -13,7 +13,7 @@
 
 use crate::portal::PORTAL_CHANNELS;
 
-/// Wireless channel state. Storage is lazily grown like [`PortalStore`].
+/// Wireless channel state. Storage is lazily grown like [`crate::portal::PortalStore`].
 #[derive(Clone, Debug, Default)]
 pub struct WirelessStore {
     /// `[ch][0]` current, `[ch][1]` next.
@@ -45,6 +45,11 @@ impl WirelessStore {
     }
 
     /// Reference `wireless[ch][1] = 1`: mark the channel active next frame.
+    /// Out-of-range channels are rejected (no-op) because `PORTAL_CHANNELS` is
+    /// the shared channel count (`int(MAX_TEMP - 73.15) / 100 + 2`, ref
+    /// Simulation.h:139) and element updates clamp `tmp` into `0..CHANNELS-1`
+    /// before indexing (e.g. WIFI.cpp:52-54); the reference would never index
+    /// outside that range with a correctly clamped `tmp`.
     pub fn activate_next(&mut self, channel: usize) {
         if channel >= PORTAL_CHANNELS {
             return;
@@ -53,9 +58,29 @@ impl WirelessStore {
         self.channels[channel][1] = true;
     }
 
+    /// Whether a neighbouring spark should be observed by WIFI (ref
+    /// `.reference/tpt-src/src/simulation/elements/WIFI.cpp:75-78`): the
+    /// neighbour is `PT_SPRK && parts[ID(r)].ctype != PT_NSCN &&
+    /// parts[ID(r)].life >= 3`.
+    pub fn spark_observes_channel(
+        neighbour_type: u16,
+        neighbour_ctype: i32,
+        neighbour_life: i32,
+    ) -> bool {
+        use crate::elements_generated::pt;
+        neighbour_type == pt::SPRK
+            && neighbour_ctype != pt::NSCN as i32
+            && neighbour_life >= 3
+    }
+
     /// Reference `ISWIRE` bookkeeping: a spark was seen on a channel this frame.
     /// Returns true when this is a *new* wireless event (used by the frontend to
     /// draw the powerline overlay).
+    ///
+    /// Semantics match the reference (WIFI.cpp:75-78): on observation the code
+    /// sets `wireless[tmp][1] = 1` and `ISWIRE = 2`. Promotion of `[1] -> [0]`
+    /// happens only in `advance()` (BeforeSim, Simulation.cpp:3900-3908) while
+    /// `iswire > 0`, so this does not itself promote or alter the current `[0]`.
     pub fn note_spark(&mut self, channel: usize) -> bool {
         if channel >= PORTAL_CHANNELS {
             return false;
@@ -70,6 +95,10 @@ impl WirelessStore {
     /// Reference `Simulation::BeforeSim` wireless block (Simulation.cpp:3900-3908):
     /// when `ISWIRE > 0`, promote `wireless[q][1] -> [0]`, clear `[1]`, then
     /// decrement `ISWIRE`. Called once per tick before particle updates.
+    ///
+    /// Channels that were never allocated remain implicitly `[false,false]`, so
+    /// the reference loop over all `CHANNELS` promotes them to false/stays false
+    /// as well; promotion happens only when `iswire > 0`.
     pub fn advance(&mut self) {
         if self.iswire == 0 {
             return;
