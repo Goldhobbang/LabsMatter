@@ -721,9 +721,14 @@ impl Sim {
 
     /// `CheckStacking` (Simulation.cpp:3620-3682).
     ///
-    /// Scans `pmap_count` for excessive stacking, clears overfull cells by
-    /// converting/reusing a slot to NBHL or killing particles, and signals the
-    /// caller whether excessive stacking was found.
+    /// Performs the forced-check reset as its first statement
+    /// (`force_stacking_check = false;`, ref Simulation.cpp:3625).
+    ///
+    /// Scans `pmap_count` for excessive stacking and clears overfull cells by
+    /// converting/reusing a slot to NBHL or killing particles. Returns nothing;
+    /// the `excessive stacking found` boolean is internal to the function
+    /// (ref Simulation.cpp:3624 `bool excessive_stacking_found = false;`, which
+    /// gates the conversion pass at 3651).
     ///
     /// Deviation note: `bmap` is wall-type-per-air-cell (`WL_*`), so the
     /// reference `WL_EHOLE` branch (3628-3632) is representable and implemented.
