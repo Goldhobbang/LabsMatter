@@ -862,7 +862,33 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
                 out.mode |= pmode::GLOW;
             }
         }
-        // TODO(GRAV.cpp:62): needs gfctx.sim->currentTick.
+        // ref: AMTR.cpp:83-87 (callback only returns 1; Renderer.cpp:352-353 uses the
+        // return value solely as graphics-cache eligibility, so rendering keeps defaults)
+        pt::AMTR => {}
+        // ref: BOMB.cpp:131-134
+        pt::BOMB => {
+            out.mode |= pmode::FLARE;
+        }
+        // ref: DEST.cpp:100-112
+        pt::DEST => {
+            if p.life != 0 {
+                out.mode |= pmode::LFLARE;
+            } else {
+                out.mode |= pmode::SPARK;
+            }
+        }
+        // ref: DMG.cpp:119-122
+        pt::DMG => {
+            out.mode |= pmode::FLARE;
+        }
+        // ref: FRME.cpp:48-56
+        pt::FRME => {
+            if p.tmp != 0 {
+                out.r = clamp_u8(out.r as i32 + 30);
+                out.g = clamp_u8(out.g as i32 + 30);
+                out.b = clamp_u8(out.b as i32 + 30);
+            }
+        }
         // TODO(PIPE.cpp:~400): detailed parity w/ graphicscache/pixel_mode; base emulation kept above.
         // TODO(PIPE emulation): stored particle deco transfer (PFLAG_PARTICLE_DECO) not represented in Particle here.
         // TODO(TRON.cpp:169): needs exact tron_colours table/index mapping.
