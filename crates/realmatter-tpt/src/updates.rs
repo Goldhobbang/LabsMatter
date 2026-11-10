@@ -8027,19 +8027,8 @@ const PPIP_TRIGGER_REVERSE: i32 = 0x0400_0000;
 const PPIP_TRIGGER_OFF: i32 = 0x0800_0000;
 const PPIP_TRIGGER_ON: i32 = 0x1000_0000;
 const PPIP_TRIGGERS: i32 = 0x1C00_0000;
-/// Direction of travel stored in the pipe's free bits 20..22 (index into
-/// `PIPE_OFFSETS`). Kept away from the reference flag bits.
-const PIPE_DIR_MASK: i32 = 0x0070_0000;
-const PIPE_DIR_SHIFT: i32 = 20;
-const PIPE_OPPOSITE: [usize; 8] = [7, 6, 5, 4, 3, 2, 1, 0];
-
-fn pipe_dir(flags: i32) -> usize {
-    ((flags & PIPE_DIR_MASK) >> PIPE_DIR_SHIFT) as usize & 7
-}
-
-fn pipe_set_dir(flags: &mut i32, dir: usize) {
-    *flags = (*flags & !PIPE_DIR_MASK) | (((dir & 7) as i32) << PIPE_DIR_SHIFT);
-}
+// Reference PIPE.cpp pushParticle (541-640) does not use deterministic
+// direction selection in free tmp bits; pushes use rndstore/offset selection.
 
 fn pipe_next_color(flags: i32) -> i32 {
     match flags & PFLAG_COLORS {
@@ -8184,53 +8173,66 @@ fn stor_to_pipe(sim: &mut Sim, stor: usize, pipe: usize) {
     sim.parts[pipe].tmp4 = ctype;
 }
 
-/// Reference `PIPE::pushParticle` (depth limited to 2 hops per frame), with a
-/// deterministic travel direction stored in free `tmp` bits so a straight pipe
-/// does not oscillate among identically coloured neighbours.
-fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
-    if count >= 2 || sim.parts[i].ctype == 0 {
+/// Reference `PIPE::pushParticle` in `PIPE.cpp:541-640`.
+///
+/// RNG order for push (reference): when `tmp & 0x200 == 0`, draw one `RNG::between(0,7)`
+/// value stored as `rndstore`, then for q in 0..3 consume `rnd = rndstore & 7` and
+/// `rndstore >>= 3`. The predefined-direction branch (`tmp & 0x200 != 0`) draws no RNG.
+fn pipe_push_particle(sim: &mut Sim, i: usize, count: i32, original: usize) {
+    if i >= sim.parts.len() || sim.parts[i].t == 0 {
         return;
     }
     let notctype = pipe_next_color(sim.parts[i].tmp);
+    if sim.parts[i].ctype == 0 || count >= 2 {
+        return;
+    }
     let x = (sim.parts[i].x + 0.5) as i32;
     let y = (sim.parts[i].y + 0.5) as i32;
-    let single = sim.parts[i].tmp & 0x200 != 0;
-    let dir = pipe_dir(sim.parts[i].tmp);
-    if single {
-        let coords = 7 - ((sim.parts[i].tmp >> 10) & 7);
-        let (rx, ry) = PIPE_OFFSETS[(coords & 7) as usize];
-        let nx = x + rx;
-        let ny = y + ry;
-        if sim.in_bounds(nx, ny) {
-            let r = sim.pmap_at(nx, ny);
-            if r != 0 {
-                let id = pmap_id(r) as usize;
-                let rt = pmap_type(r);
-                if (rt == pt::PIPE || rt == pt::PPIP)
-                    && (sim.parts[id].tmp & PFLAG_COLORS) != notctype
-                    && sim.parts[id].ctype == 0
-                {
-                    pipe_to_pipe(sim, i, id);
-                    let d = PIPE_OPPOSITE[(coords & 7) as usize];
-                    pipe_set_dir(&mut sim.parts[id].tmp, d);
-                    if id > original {
-                        sim.parts[id].flags |= PFLAG_NORMALSPEED as u32;
-                    }
-                    pipe_push(sim, id, count + 1, original);
-                } else if rt == pt::PRTI {
-                    // Reference PIPE.cpp:601-615 (single-pixel push): pass into PRTI.
-                    // Uses Element_PIPE_transfer_pipe_to_part semantics: particle deco
-                    // stored on the pipe is carried with the payload.
-                    let ch = portal_channel(sim, id);
-                    let dir = count.max(0) as usize % crate::portal::PORTAL_DIRECTIONS;
+    if sim.parts[i].tmp & 0x200 == 0 {
+        let mut rndstore = sim.rng.between(0, 7) as u32;
+        for _q in 0..3 {
+            let rnd = (rndstore & 7) as usize;
+            rndstore >>= 3;
+            let (rx, ry) = PIPE_OFFSETS[rnd];
+            let (px, py) = (x + rx, y + ry);
+            if !sim.in_bounds(px, py) {
+                continue;
+            }
+            let r = sim.pmap_at(px, py);
+            if r == 0 {
+                continue;
+            }
+            let rt = pmap_type(r);
+            let rid = pmap_id(r) as usize;
+            if (rt == pt::PIPE || rt == pt::PPIP)
+                && (sim.parts[rid].tmp & PFLAG_COLORS) != notctype
+                && sim.parts[rid].ctype == 0
+            {
+                pipe_to_pipe(sim, i, rid);
+                if rid > original {
+                    sim.parts[rid].flags |= PFLAG_NORMALSPEED as u32;
+                }
+                pipe_push_particle(sim, rid, count + 1, original);
+                break;
+            } else if rt == pt::PRTI {
+                // Reference PIPE.cpp:583-597: `portaltmp = clamp(parts[rid].tmp,0,CHANNELS-1)`,
+                // find first empty slot in `portalp[portaltmp][count][nnx]` and
+                // `Element_PIPE_transfer_pipe_to_part(parts+i, &(portalp[portaltmp][count][nnx]))`.
+                // Portal payload storage exists as `sim.portal` (PortalStore, channel/direction/slot);
+                // we store into (channel, count%PORTAL_DIRECTIONS, first free slot) carrying pipe
+                // payload fields like `transfer_pipe_to_part`. Direct [channel][count][slot] indexing
+                // API is not exposed (deviation from raw `portalp` layout).
+                if rid < sim.parts.len() {
+                    let ch = portal_channel(sim, rid);
+                    let dir = (count.max(0) as usize) % crate::portal::PORTAL_DIRECTIONS;
                     let particle_deco = sim.parts[i].tmp & PFLAG_PARTICLE_DECO != 0;
                     let dcolour = if particle_deco { sim.parts[i].dcolour } else { 0 };
                     let payload = crate::portal::PortalPayload {
                         t: sim.parts[i].ctype as u16,
                         life: sim.parts[i].tmp2,
                         ctype: sim.parts[i].tmp4,
-                        x: nx as f32,
-                        y: ny as f32,
+                        x: px as f32,
+                        y: py as f32,
                         vx: 0.0,
                         vy: 0.0,
                         temp: sim.parts[i].temp,
@@ -8245,89 +8247,75 @@ fn pipe_push(sim: &mut Sim, i: usize, count: i32, original: usize) {
                         sim.parts[i].ctype = 0;
                         if particle_deco {
                             sim.parts[i].dcolour = 0;
+                            sim.parts[i].tmp &= !PFLAG_PARTICLE_DECO;
                         }
                     }
                 }
-            } else if sim.parts[i].ctype != 0 {
-                // Reference PIPE.cpp:616-625 (single-pixel push): auto-release at
-                // open end in the stored direction.
+                break;
+            }
+        }
+    } else {
+        // Predefined-direction branch (reference PIPE.cpp:606-639).
+        let coords = (7 - ((sim.parts[i].tmp >> 10) & 7)) as usize & 7;
+        let (rx, ry) = PIPE_OFFSETS[coords];
+        let (px, py) = (x + rx, y + ry);
+        if !sim.in_bounds(px, py) {
+            return;
+        }
+        let r = sim.pmap_at(px, py);
+        if r != 0 {
+            let rt = pmap_type(r);
+            let rid = pmap_id(r) as usize;
+            if (rt == pt::PIPE || rt == pt::PPIP)
+                && (sim.parts[rid].tmp & PFLAG_COLORS) != notctype
+                && sim.parts[rid].ctype == 0
+            {
+                pipe_to_pipe(sim, i, rid);
+                if rid > original {
+                    sim.parts[rid].flags |= PFLAG_NORMALSPEED as u32;
+                }
+                pipe_push_particle(sim, rid, count + 1, original);
+            } else if rt == pt::PRTI {
+                // TODO(PIPE.cpp:583-597 / 601-615): reference stores into portalp[portaltmp][count][nnx]
+                // via transfer_pipe_to_part; mapped to PortalStore (channel, count%dir, slot) as above.
+                if rid < sim.parts.len() {
+                    let ch = portal_channel(sim, rid);
+                    let dir = (count.max(0) as usize) % crate::portal::PORTAL_DIRECTIONS;
+                    let particle_deco = sim.parts[i].tmp & PFLAG_PARTICLE_DECO != 0;
+                    let dcolour = if particle_deco { sim.parts[i].dcolour } else { 0 };
+                    let payload = crate::portal::PortalPayload {
+                        t: sim.parts[i].ctype as u16,
+                        life: sim.parts[i].tmp2,
+                        ctype: sim.parts[i].tmp4,
+                        x: px as f32,
+                        y: py as f32,
+                        vx: 0.0,
+                        vy: 0.0,
+                        temp: sim.parts[i].temp,
+                        tmp: sim.parts[i].tmp3,
+                        tmp2: 0,
+                        tmp3: 0,
+                        tmp4: 0,
+                        flags: 0,
+                        dcolour,
+                    };
+                    if sim.portal.store(ch, dir, payload) {
+                        sim.parts[i].ctype = 0;
+                        if particle_deco {
+                            sim.parts[i].dcolour = 0;
+                            sim.parts[i].tmp &= !PFLAG_PARTICLE_DECO;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Reference PIPE.cpp:616-625: auto-release at open end in stored direction.
+            if sim.parts[i].ctype != 0 {
                 let t = sim.parts[i].ctype as u16;
-                if let Some(np) = sim.create_part(nx, ny, t) {
+                if let Some(np) = sim.create_part(px, py, t) {
                     pipe_to_part(sim, i, np);
                 }
             }
-        }
-        return;
-    }
-    // Prefer continuing straight, then small turns, then any eligible neighbour.
-    let mut order = [dir; 8];
-    for k in 0..8usize {
-        order[k] = match k {
-            0 => dir,
-            1 => (dir + 1) & 7,
-            2 => (dir + 7) & 7,
-            3 => (dir + 2) & 7,
-            4 => (dir + 6) & 7,
-            5 => (dir + 3) & 7,
-            6 => (dir + 5) & 7,
-            _ => dir ^ 4,
-        };
-    }
-    for idx in order {
-        let (rx, ry) = PIPE_OFFSETS[idx];
-        let nx = x + rx;
-        let ny = y + ry;
-        if !sim.in_bounds(nx, ny) {
-            continue;
-        }
-        let r = sim.pmap_at(nx, ny);
-        if r == 0 {
-            continue;
-        }
-        let id = pmap_id(r) as usize;
-        let rt = pmap_type(r);
-        if (rt == pt::PIPE || rt == pt::PPIP)
-            && (sim.parts[id].tmp & PFLAG_COLORS) != notctype
-            && sim.parts[id].ctype == 0
-        {
-            pipe_to_pipe(sim, i, id);
-            let d = PIPE_OPPOSITE[idx];
-            pipe_set_dir(&mut sim.parts[id].tmp, d);
-            if id > original {
-                sim.parts[id].flags |= PFLAG_NORMALSPEED as u32;
-            }
-            pipe_push(sim, id, count + 1, original);
-            return;
-        } else if rt == pt::PRTI {
-            // Reference PIPE.cpp:572-586 (normal push): pass into PRTI with
-            // Element_PIPE_transfer_pipe_to_part semantics (carries particle deco).
-            let ch = portal_channel(sim, id);
-            let dir = count.max(0) as usize % crate::portal::PORTAL_DIRECTIONS;
-            let particle_deco = sim.parts[i].tmp & PFLAG_PARTICLE_DECO != 0;
-            let dcolour = if particle_deco { sim.parts[i].dcolour } else { 0 };
-            let payload = crate::portal::PortalPayload {
-                t: sim.parts[i].ctype as u16,
-                life: sim.parts[i].tmp2,
-                ctype: sim.parts[i].tmp4,
-                x: nx as f32,
-                y: ny as f32,
-                vx: 0.0,
-                vy: 0.0,
-                temp: sim.parts[i].temp,
-                tmp: sim.parts[i].tmp3,
-                tmp2: 0,
-                tmp3: 0,
-                tmp4: 0,
-                flags: 0,
-                dcolour,
-            };
-            if sim.portal.store(ch, dir, payload) {
-                sim.parts[i].ctype = 0;
-                if particle_deco {
-                    sim.parts[i].dcolour = 0;
-                }
-            }
-            return;
         }
     }
 }
@@ -8538,7 +8526,7 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, surround_space: i32, nt:
             if sim.parts[i].flags as i32 & PFLAG_NORMALSPEED != 0 {
                 sim.parts[i].flags &= !(PFLAG_NORMALSPEED as u32);
             } else {
-                pipe_push(sim, i, 0, i);
+                pipe_push_particle(sim, i, 0, i);
             }
 
             // Reference PIPE.cpp:235-265: with neighbours present, pick one random
