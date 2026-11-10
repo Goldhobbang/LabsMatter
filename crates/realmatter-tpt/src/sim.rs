@@ -810,19 +810,43 @@ impl Sim {
                     if let Some(f) = crate::updates::change_type_fn(old_t) {
                         f(self, i, x, y, old_t as i32, pt::NBHL as i32);
                     }
-                    // ref 1936-1937
+                    // ref 1936-1937 (`elementCount[oldType]--` when oldType is
+                    // nonzero): `element_count` is `[u32; PT_NUM]` in this
+                    // crate, so the `> 0` guard stands in for the reference's
+                    // unguarded `--` (same pattern as sim.rs:586 and
+                    // sim.rs:633); a live particle always has a nonzero count,
+                    // so no behaviour difference.
                     if (old_t as usize) < PT_NUM && self.element_count[old_t as usize] > 0 {
                         self.element_count[old_t as usize] -= 1;
                     }
                     // ref 1942-1945: whole-Particle reset to DefaultProperties,
-                    // then type/x/y. NBHL declares no DefaultProperties
-                    // overrides (NBHL.cpp:5-46), so
-                    // `element_defaults::defaults(pt::NBHL)` is None and
-                    // `Particle::new`'s engine defaults (temp 293.15, rest zero)
-                    // are correct. `pavg` is a render cache our `Particle`
-                    // carries (particle.rs:36) that the reference does not
-                    // store in `Particle`; treating a fresh particle as having
-                    // a zeroed `pavg` is correct.
+                    // then type/x/y. The reference reset is
+                    //   Element.cpp:53-54:
+                    //     memset(&DefaultProperties, 0, sizeof(Particle));
+                    //     DefaultProperties.temp = R_TEMP + 273.15f;
+                    //   SimulationConfig.h:66:
+                    //     constexpr float R_TEMP = 22;
+                    // i.e. temp = 295.15 with every other field zero. NBHL
+                    // declares no DefaultProperties overrides (NBHL.cpp:5-46),
+                    // so `element_defaults::defaults(pt::NBHL)` is None and
+                    // `Particle::new` applies this crate's engine defaults
+                    // (rest zero) — but our `default_temp` is 293.15
+                    // (element.rs:105, pre-existing crate-wide deviation), so
+                    // `temp` differs from the reference (295.15) at this
+                    // instant. That is behaviourally inert here: this site is
+                    // the NBHL reuse path, and the caller immediately
+                    // overrides `parts[i].temp = MAX_TEMP` (Simulation.cpp:
+                    // 3668), which in both implementations happens AFTER the
+                    // Create/ChangeType hooks (Simulation.cpp:1969-1973) run
+                    // inside `create_part` before it returns (ours: hooks
+                    // below, then line-by-line the same). NBHL registers
+                    // neither hook (`create_fn(pt::NBHL)` /
+                    // `change_type_fn(pt::NBHL)` are both None), so no
+                    // observer ever reads the differing value.
+                    // `pavg` is a render cache our `Particle` carries
+                    // (particle.rs:36) that the reference does not store in
+                    // `Particle`; treating a fresh particle as having a
+                    // zeroed `pavg` is correct.
                     self.parts[i] = Particle::new(pt::NBHL, x as f32, y as f32);
                     // ref 1948-1951: set the (non-energy) pmap entry for the
                     // new particle.
