@@ -9182,87 +9182,28 @@ fn cray_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 }
 
 // --- PSTN ----------------------------------------------------------------
-// Reference `PSTN.cpp`: temperature sets how many cells the arm moves per
-// frame, `tmp3` bit flags control obstacle/limit behaviour, and a leading
-// `FRME` row is displaced with the same stack operation.
-/// Discover the connected `FRME` component (4-connected) containing `(sx, sy)`.
-fn frme_component(sim: &Sim, sx: i32, sy: i32) -> Vec<(i32, i32)> {
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut stack = vec![(sx, sy)];
-    while let Some((x, y)) = stack.pop() {
-        if !sim.in_bounds(x, y) || !seen.insert((x, y)) {
-            continue;
-        }
-        let r = sim.pmap_at(x, y);
-        if r == 0 || pmap_type(r) != pt::FRME {
-            continue;
-        }
-        out.push((x, y));
-        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-            stack.push((x + dx, y + dy));
-        }
-    }
-    out
-}
-
-/// Rigidly displace an entire connected `FRME` component by `amount` cells in
-/// `(dx, dy)`. Validates every destination first (all-or-nothing), then moves
-/// cells front-first through the shared `move_stack` so no cell is overwritten.
-/// Returns true when the component moved.
-fn push_frme_component(
-    sim: &mut Sim,
-    sx: i32,
-    sy: i32,
-    dx: i32,
-    dy: i32,
-    amount: i32,
-) -> bool {
-    if amount <= 0 {
-        return false;
-    }
-    let comp = frme_component(sim, sx, sy);
-    if comp.is_empty() {
-        return false;
-    }
-    let set: std::collections::HashSet<(i32, i32)> = comp.iter().copied().collect();
-    // Validate every destination.
-    for &(x, y) in &comp {
-        let tx = x + dx * amount;
-        let ty = y + dy * amount;
-        if !sim.in_bounds(tx, ty) {
-            return false;
-        }
-        if sim.wall_at(tx, ty) != 0 {
-            return false;
-        }
-        let r = sim.pmap_at(tx, ty);
-        if r != 0 && !(pmap_type(r) == pt::FRME && set.contains(&(tx, ty))) {
-            return false;
-        }
-    }
-    // Move front-first (largest projection along the direction).
-    let mut order = comp;
-    order.sort_by_key(|&(x, y)| -(x * dx + y * dy));
-    for &(x, y) in &order {
-        sim.move_stack(x, y, dx, dy, 2, amount);
-    }
-    true
-}
+// Reference `PSTN.cpp:82-232`: on spark the piston scans each cardinal
+// direction for a neighbouring base (`life == 0`) PSTN, walks the arm from
+// there, and extends or retracts through `move_stack_ref` (the reference
+// `MoveStack` port in `transport.rs`). `tmp3` bit flags control obstacle and
+// limit behaviour (PSTN.cpp:45-50).
 
 fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
     if sim.parts[i].life != 0 {
         return 0;
     }
-    let max_size = if sim.parts[i].tmp > 0 { sim.parts[i].tmp } else { 31 };
-    let arm_limit = if sim.parts[i].tmp2 > 0 { sim.parts[i].tmp2 } else { 255 };
+    let max_size = if sim.parts[i].tmp > 0 { sim.parts[i].tmp } else { 31 }; // DEFAULT_LIMIT (PSTN.cpp:43)
+    let arm_limit = if sim.parts[i].tmp2 > 0 { sim.parts[i].tmp2 } else { 255 }; // DEFAULT_ARM_LIMIT (PSTN.cpp:44)
+    // `tmp3` bitfield flags (PSTN.cpp:45-50).
     let flags = sim.parts[i].tmp3;
-    let ext_obstacle = flags & 0x01 != 0;
-    let ext_armlimit = flags & 0x02 != 0;
-    let ret_tooshort = flags & 0x08 != 0;
+    let flag_ext_obstacle = flags & 0x01 != 0; // FLAG_EXT_OBSTACLE
+    let flag_ext_armlimit = flags & 0x02 != 0; // FLAG_EXT_ARMLIMIT
+    let flag_ret_obstacle = flags & 0x04 != 0; // FLAG_RET_OBSTACLE
+    let flag_ret_tooshort = flags & 0x08 != 0; // FLAG_RET_TOOSHORT
+    // `block` filter for both MoveStack calls (PSTN.cpp:183, 219).
+    let block = sim.parts[i].ctype;
 
-    let mut state = 0; // 0 inactive, 1 extend, 2 retract
-    let mut spark_off = (0i32, 0i32);
+    let mut state = 0; // 0 inactive, 1 = PISTON_EXTEND, 2 = PISTON_RETRACT
     for rx in -2..=2 {
         for ry in -2..=2 {
             if (rx == 0) == (ry == 0) {
@@ -9284,132 +9225,179 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                 } else {
                     state = 2;
                 }
-                spark_off = (rx.signum(), ry.signum());
             }
         }
     }
     if state == 0 {
         return 0;
     }
-    // Reference direction: toward an adjacent PSTN arm when present; a lone
-    // piston extends away from the activating spark.
-    let mut axis = (0i32, 0i32);
-    for rx in -1..=1 {
-        for ry in -1..=1 {
-            if (rx == 0) == (ry == 0) {
+    // Reference `PSTN.cpp:110-229`: for each cardinal neighbour, if it is a
+    // base (`life == 0`) PSTN, walk outward along that direction. The scan
+    // starts at offset (0, 0) — the piston itself is part of `pistonCount`
+    // (hence the `-1` seed, PSTN.cpp:126).
+    for rx in -1i32..=1 {
+        for ry in -1i32..=1 {
+            // `(rx || ry) && (!rx || !ry)` (PSTN.cpp:116): cross shape.
+            if (rx == 0 && ry == 0) || (rx != 0 && ry != 0) {
                 continue;
             }
-            let r = sim.pmap_at(x + rx, y + ry);
-            if r != 0
-                && pmap_type(r) == pt::PSTN
-                && sim.parts[pmap_id(r) as usize].life == 0
-            {
-                axis = (rx.signum(), ry.signum());
+            if !sim.in_bounds(x + rx, y + ry) {
+                // Reference reads `pmap` with its guard margin (PSTN.cpp:118).
+                continue;
             }
-        }
-    }
-    if axis.0 == 0 && axis.1 == 0 {
-        if spark_off.0 == 0 && spark_off.1 == 0 {
-            return 0;
-        }
-        axis = (-spark_off.0, -spark_off.1);
-    }
-    let (dx, dy) = axis;
-    // Count the arm and find its far end.
-    let mut arm = 0i32;
-    let mut end_x = x;
-    let mut end_y = y;
-    for step in 1..=arm_limit {
-        let tx = x + dx * step;
-        let ty = y + dy * step;
-        if !sim.in_bounds(tx, ty) {
-            break;
-        }
-        let r = sim.pmap_at(tx, ty);
-        if r != 0 && pmap_type(r) == pt::PSTN {
-            arm += 1;
-            end_x = tx;
-            end_y = ty;
-        } else {
-            break;
-        }
-    }
-    // Reference: tens of degrees above 0 C, rounded down, summed over the arm.
-    let mut piston_count = (((sim.parts[i].temp - 268.15) / 10.0).floor() as i32)
-        .max(1)
-        .min(max_size);
-    if state == 1 {
-        if arm + piston_count > arm_limit {
-            if ext_armlimit {
-                return 0;
+            let r = sim.pmap[sim.idx(x + rx, y + ry)];
+            if r == 0 {
+                continue; // PSTN.cpp:119-120
             }
-            piston_count = arm_limit - arm;
-        }
-        if piston_count <= 0 {
-            return 0;
-        }
-        // FRME structure in front is pushed as a unit first. The reference
-        // `MoveStack` walks the whole frame row perpendicular to the piston
-        // axis (and the particles resting on it); we push the full contiguous
-        // row and abort on the first blocked cell when the obstacle flag is set.
-        let fx = x + dx;
-        let fy = y + dy;
-        if sim.in_bounds(fx, fy) {
-            let fr = sim.pmap_at(fx, fy);
-            if fr != 0 && pmap_type(fr) == pt::FRME {
-                // Discover the whole 4-connected FRME component (recursive
-                // stack): arbitrary attached frame structures are displaced as a
-                // single rigid unit instead of only the contiguous perpendicular
-                // row.
-                let comp = frme_component(sim, fx, fy);
-                let moved_frame = push_frme_component(sim, fx, fy, dx, dy, piston_count);
-                if !moved_frame {
-                    if ext_obstacle {
-                        return 0;
+            let rid = pmap_id(r) as usize;
+            if pmap_type(r) != pt::PSTN || sim.parts[rid].life != 0 {
+                continue; // PSTN.cpp:121: adjacent base PSTN only
+            }
+            let mut moved_piston = false;
+            let mut found_end = false;
+            let mut piston_end_x = x;
+            let mut piston_end_y = y;
+            // `int pistonCount = -1;` — number of PSTN particles minus 1
+            // (PSTN.cpp:126). Sum of the temperature-scaled lengths over every
+            // base phase; can be negative and is not clamped to `max_size`.
+            let mut piston_count: i32 = -1;
+            let mut arm_count: i32 = 0;
+            let (direction_x, direction_y) = (rx, ry); // PSTN.cpp:128-129
+            let (nxi, nyi) = (direction_x, direction_y); // PSTN.cpp:130
+            let (mut nxx, mut nyy) = (0i32, 0i32);
+            loop {
+                // PSTN.cpp:133-136
+                if !(x + nxx < sim.width as i32
+                    && y + nyy < sim.height as i32
+                    && x + nxx >= 0
+                    && y + nyy >= 0)
+                {
+                    break;
+                }
+                let r = sim.pmap[sim.idx(x + nxx, y + nyy)];
+                if r != 0 && pmap_type(r) == pt::PSTN {
+                    let rid = pmap_id(r) as usize;
+                    if sim.parts[rid].life != 0 {
+                        arm_count += 1; // PSTN.cpp:140-141
+                    } else if arm_count != 0 {
+                        // PSTN.cpp:143-147: base section behind the arm —
+                        // the piston end.
+                        piston_end_x = x + nxx;
+                        piston_end_y = y + nyy;
+                        found_end = true;
+                        break;
+                    } else {
+                        // PSTN.cpp:149-152: tens of degrees above 0 °C,
+                        // rounded down; can be negative.
+                        piston_count += ((sim.parts[rid].temp - 268.15) / 10.0).floor() as i32;
                     }
+                } else if nxx == 0 && nyy == 0 {
+                    // PSTN.cpp:154-159: BAD THINGS compatibility — the
+                    // starting piston layered underneath other particles.
+                    piston_count += ((sim.parts[i].temp - 268.15) / 10.0).floor() as i32;
                 } else {
-                    // Particles resting on top of the displaced frame move with
-                    // it. Each resting stack is probed independently so several
-                    // layers of particles travel together.
-                    let (sx, sy) = if dx != 0 { (0, -1) } else { (-1, 0) };
-                    for (tx, ty) in &comp {
-                        let above_x = tx + sx;
-                        let above_y = ty + sy;
-                        if sim.pmap_at(above_x, above_y) != 0 {
-                            let moved_rest =
-                                sim.move_stack(above_x, above_y, dx, dy, max_size, piston_count);
-                            if moved_rest == 0 && ext_obstacle {
-                                return 0;
-                            }
+                    // PSTN.cpp:161-166: empty or foreign cell — scan end.
+                    piston_end_x = x + nxx;
+                    piston_end_y = y + nyy;
+                    found_end = true;
+                    break;
+                }
+                nyy += nyi;
+                nxx += nxi;
+            }
+            if found_end {
+                if state == 1 {
+                    // PISTON_EXTEND (PSTN.cpp:171-204).
+                    if arm_count + piston_count > arm_limit {
+                        // Skip extension entirely if blocked by the arm limit.
+                        if flag_ext_armlimit {
+                            continue; // PSTN.cpp:176-177
                         }
+                        piston_count = arm_limit - arm_count; // PSTN.cpp:178
+                    }
+                    if piston_count > 0 {
+                        // PSTN.cpp:182-183: sticky = true, callDepth = 0,
+                        // block = piston ctype, retract = false.
+                        let new_space = sim.move_stack_ref(
+                            piston_end_x,
+                            piston_end_y,
+                            direction_x,
+                            direction_y,
+                            max_size,
+                            piston_count,
+                            false,
+                            block,
+                            true,
+                            0,
+                            flag_ext_obstacle,
+                        );
+                        if new_space != 0 {
+                            // Create the new arm sections outward from the end
+                            // cell (PSTN.cpp:186-203). Reference calls
+                            // `sim->create_part(-3, ...)`: at Simulation.cpp:1896-1918
+                            // `p == -3` skips the occupancy checks of the `-1`
+                            // branch but still runs `elements[t].CreateAllowed`;
+                            // our `Sim::create_part` runs neither the occupancy
+                            // check nor CreateAllowed on any path (it places
+                            // unconditionally, overwriting `pmap`), which is
+                            // identical for PSTN (no CreateAllowed), except ours
+                            // additionally wraps Loop-edge coordinates.
+                            for j in 0..new_space {
+                                let nr = sim.create_part(
+                                    piston_end_x + nxi * j,
+                                    piston_end_y + nyi * j,
+                                    pt::PSTN,
+                                );
+                                if let Some(nr) = nr {
+                                    sim.parts[nr].life = 1; // PSTN.cpp:192
+                                    // Decorations darken per new section
+                                    // (PSTN.cpp:193-198).
+                                    let colour = sim.parts[i].dcolour;
+                                    if colour != 0 {
+                                        sim.parts[nr].dcolour = (colour & 0xFF00_0000)
+                                            | (colour & 0xFF_0000).saturating_sub(0x3C_0000)
+                                            | (colour & 0xFF_00).saturating_sub(0x3C_00)
+                                            | (colour & 0xFF).saturating_sub(0x3C);
+                                    }
+                                }
+                            }
+                            moved_piston = true;
+                        }
+                    }
+                } else if state == 2 {
+                    // PISTON_RETRACT (PSTN.cpp:205-222).
+                    if piston_count > arm_count {
+                        // Arm too short to retract the full amount.
+                        if flag_ret_tooshort {
+                            continue; // PSTN.cpp:210-211
+                        }
+                        piston_count = arm_count; // PSTN.cpp:212
+                    }
+                    if arm_count != 0 && piston_count > 0 {
+                        // Single retracting MoveStack from the end cell
+                        // inward; no extra arm-kill call here — the retract
+                        // branch of `move_stack_ref` kills the arm
+                        // (PSTN.cpp:217-219; arm removal inside MoveStack).
+                        sim.move_stack_ref(
+                            piston_end_x,
+                            piston_end_y,
+                            direction_x,
+                            direction_y,
+                            max_size,
+                            piston_count,
+                            true,
+                            block,
+                            true,
+                            0,
+                            flag_ret_obstacle,
+                        );
+                        moved_piston = true; // PSTN.cpp:220
                     }
                 }
             }
-        }
-        let moved = sim.move_stack(x + dx, y + dy, dx, dy, max_size, piston_count);
-        if moved > 0 {
-            sim.extend_piston_arm(end_x, end_y, dx, dy, moved, 1);
-        } else if cell_free(sim, x + dx, y + dy) {
-            // Empty space ahead: reference `MoveStack` returns the free space
-            // and the piston creates new arm sections there.
-            let room = (arm_limit - arm).max(0);
-            let create = piston_count.min(room);
-            if create > 0 {
-                sim.extend_piston_arm(end_x, end_y, dx, dy, create, 1);
+            if moved_piston {
+                return 0; // PSTN.cpp:224-226: suppress remaining directions
             }
-        } else if ext_obstacle {
-            return 0;
-        }
-    } else if arm > 0 {
-        if piston_count > arm {
-            if ret_tooshort {
-                return 0;
-            }
-            piston_count = arm;
-        }
-        let removed = sim.retract_piston_arm(end_x, end_y, dx, dy, piston_count);
-        if removed > 0 {
-            sim.move_stack(x + dx, y + dy, -dx, -dy, max_size, removed);
         }
     }
     0
