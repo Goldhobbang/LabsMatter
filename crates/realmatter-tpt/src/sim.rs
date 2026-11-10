@@ -557,15 +557,21 @@ impl Sim {
         if reason < self.kill_stats.len() {
             self.kill_stats[reason] += 1;
         }
-        let (x, y, t) = {
-            let p = &mut self.parts[i];
+        // ref: Simulation.cpp:1754-1796
+        let (xi, yi, t) = {
+            let p = &self.parts[i];
             if p.t == 0 {
                 return;
             }
-            (p.x + 0.5, p.y + 0.5, p.t)
+            ((p.x + 0.5) as i32, (p.y + 0.5) as i32, p.t)
         };
-        let xi = x as i32;
-        let yi = y as i32;
+        // ref: Simulation.cpp:1766-1770
+        if t != 0 && (t as usize) < PT_NUM {
+            if let Some(f) = crate::updates::change_type_fn(t) {
+                f(self, i, xi, yi, t as i32, 0 /* PT_NONE */);
+            }
+        }
+        // ref: Simulation.cpp:1772-1779
         if self.in_bounds(xi, yi) {
             let cell = self.idx(xi, yi);
             if self.pmap[cell] != 0 && pmap_id(self.pmap[cell]) as usize == i {
@@ -575,38 +581,63 @@ impl Sim {
                 self.photons[cell] = 0;
             }
         }
-        self.parts[i].t = 0;
-        self.free.push(i as u32);
+        // ref: Simulation.cpp:1781-1787 (reference unconditionally decrements
+        // elementCount[t]; we keep a bounds/nonzero guard for our fixed-size array)
         if (t as usize) < PT_NUM && self.element_count[t as usize] > 0 {
             self.element_count[t as usize] -= 1;
         }
+        // ref: Simulation.cpp:1789-1790, Parts::Free 1793-1796
+        self.parts[i].t = 0;
+        self.free.push(i as u32);
     }
 
     /// Change a particle's element id in place. Returns true if the change
     /// happened (the reference can refuse, e.g. a second STKM).
+    ///
+    /// Note: reference `Simulation::part_change_type` returns true when the particle
+    /// was killed; we keep our existing opposite contract (true = changed) and adapt
+    /// internally.
     pub fn part_change_type(&mut self, i: usize, x: i32, y: i32, t: i16) -> bool {
-        if t == 0 {
-            self.kill_part(i);
+        // ref: Simulation.cpp:1799-1801
+        if !self.in_bounds(x, y) || i >= self.parts.len() {
             return false;
         }
-        if t < 0 || (t as usize) >= PT_NUM || !element(t as u16).enabled {
+        let old = self.parts[i].t;
+        if old == 0 {
+            return false;
+        }
+        // ref: Simulation.cpp:1799 (t < 0 || t >= PT_NUM)
+        if t < 0 || (t as usize) >= PT_NUM {
             return false;
         }
         let t = t as u16;
+        // ref: Simulation.cpp:1805-1809
+        if !element(t).enabled || t == 0 {
+            self.kill_part(i);
+            return false; // ref returns true (killed); we keep "changed" contract
+        }
+        // ref: Simulation.cpp:1810-1814 (CreateAllowed refusal -> return false, no kill)
         if let Some(allowed) = crate::updates::create_allowed_fn(t) {
             if !allowed(self, i, x, y, t as i32) {
-                self.kill_part(i);
                 return false;
             }
         }
-        let old = self.parts[i].t;
-        let from = old;
-        let def = element(t);
-        self.parts[i].t = t;
-        if (from as usize) < PT_NUM && self.element_count[from as usize] > 0 {
-            self.element_count[from as usize] -= 1;
+        // ref: Simulation.cpp:1816-1819 (hooks before count/type/pmap updates)
+        if let Some(f) = crate::updates::change_type_fn(old) {
+            f(self, i, x, y, old as i32, t as i32);
+        }
+        if let Some(f) = crate::updates::change_type_fn(t) {
+            f(self, i, x, y, old as i32, t as i32);
+        }
+        // ref: Simulation.cpp:1821-1823
+        if (old as usize) < PT_NUM && self.element_count[old as usize] > 0 {
+            self.element_count[old as usize] -= 1;
         }
         self.element_count[t as usize] += 1;
+        // ref: Simulation.cpp:1825
+        self.parts[i].t = t;
+        // ref: Simulation.cpp:1826-1838
+        let def = element(t);
         if self.in_bounds(x, y) {
             let cell = self.idx(x, y);
             if (def.properties & props::TYPE_ENERGY) != 0 {
@@ -620,9 +651,6 @@ impl Sim {
                     self.photons[cell] = 0;
                 }
             }
-        }
-        if let Some(f) = crate::updates::change_type_fn(t) {
-            f(self, i, x, y, from as i32, t as i32);
         }
         true
     }
