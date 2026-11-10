@@ -1061,8 +1061,8 @@ impl Sim {
             }
             self.recalc();
         }
-        // ref: Simulation.cpp:337 (load/stamp ApproximateBlockAirMaps)
-        self.approximate_block_air_maps();
+        // ref: Simulation.cpp:765-800 (SetEdgeMode touches bmap only; block maps are rebuilt per tick at 3777-3785)
+        self.refresh_air_block_maps();
     }
 
     /// Numerical stabilisation pass (Agent 1 world infrastructure).
