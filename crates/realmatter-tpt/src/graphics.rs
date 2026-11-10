@@ -339,8 +339,23 @@ pub fn for_particle(t: u16, p: &Particle) -> GfxPixel {
         g = ((deca * dg as u32 + (256 - deca) * out.g as u32) >> 8) as u8;
         b = ((deca * db as u32 + (256 - deca) * out.b as u32) >> 8) as u8;
     }
-    // TODO(Renderer.cpp:438-443): DECO_FIRE blends decoration into fire colour (firer/fireg/fireb) when
-    // PMODE::DECO_FIRE set; not applied here without separate fire-colour output handling.
+    // DECO_FIRE (ref: Renderer.cpp:438-443) blends decoration into the FIRE
+    // colour, not the base colour:
+    //
+    //   if(pixel_mode & DECO_FIRE)
+    //   {
+    //       firer = (deca*decr + (256-deca)*firer) >> 8;
+    //       fireg = (deca*decg + (256-deca)*fireg) >> 8;
+    //       fireb = (deca*decb + (256-deca)*fireb) >> 8;
+    //   }
+    //
+    // That blending is implemented in the labsmatter-wasm rasteriser (which
+    // owns the fire/glow colour path), not here — see the `DECO_FIRE` branch in
+    // `rebuild_render`. Only the base-colour blend above (gated by NO_DECO)
+    // lives in this function; the un-implemented remainder is the
+    // renderer-global `decorationLevel == decorationDisabled` gate
+    // (ref: Renderer.cpp:428): decoration blending here is unconditional once
+    // `deca != 0`.
     out.r = r;
     out.g = g;
     out.b = b;

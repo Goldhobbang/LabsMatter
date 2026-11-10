@@ -410,15 +410,20 @@ fn rebuild_render() {
                             add_onto(buf, o2, or_, og, ob, oa);
                         }
                         if (mode & PMODE_BLOB) != 0 {
-                            // ref: Renderer.cpp:676-690: the centre is written as a
-                            // plain colour when the mode has no PMODE_FLAT (the flat
-                            // centre-spit already painted it otherwise).
-                            if (mode & PMODE_FLAT) == 0 {
-                                buf[o2] = or_;
-                                buf[o2 + 1] = og;
-                                buf[o2 + 2] = ob;
-                                buf[o2 + 3] = oa;
-                            }
+                            // ref: Renderer.cpp:676-678: `video[{nx,ny}] =
+                            // RGB(colr,colg,colb).Pack()` runs whenever PMODE_BLOB is
+                            // set, with no PMODE_FLAT gate — `video` is our `buf` and
+                            // the reference pack is opaque (`RGB::Pack`, Pixel.h:123-126,
+                            // alpha 0xFF). We write `oa`, which is 255 for every
+                            // element whose mode currently carries PMODE_BLOB (all
+                            // non-255 `.a` paths in element_graphics are paired with
+                            // BLEND/FLAT/SPARK, never BLOB), so behaviour matches the
+                            // opaque reference pack; keeping the `oa` field preserves
+                            // the buffer's own alpha semantics.
+                            buf[o2] = or_;
+                            buf[o2 + 1] = og;
+                            buf[o2 + 2] = ob;
+                            buf[o2 + 3] = oa;
                             if x2 > 0 {
                                 blend_onto(buf, o2 - 4, or_, og, ob, 223);
                             }
@@ -1894,6 +1899,18 @@ fn import_v1(bytes: &[u8]) -> Result<(Sim, String), String> {
     Ok((sim, report))
 }
 
+/// The reference performs per-element legacy migrations while loading older
+/// save versions (ref: GameSave.cpp:1136-1267 — BOMB/DUST/FIRW→EMBR with
+/// `Renderer::firwTableAt(tmp-4)` at GameSave.cpp:1164, PSTN/FILT/QRTZ/PHOT/
+/// VINE/DLAY/CRAY/CONV/PIPE/LIFE fixups, all gated on `savedVersion < N`, plus
+/// the PressureInTmp3 sign extension at GameSave.cpp:1268-1280).
+///
+/// TODO(ref: GameSave.cpp:1164): our loader stores the current-model particle
+/// (`t`, `life`, `ctype`, `tmp`, `tmp2`, `tmp3`, `tmp4`, `flags`, `dcolour`)
+/// losslessly in LMT2 v2/v3, so there is no `savedVersion` migration source
+/// and none of these runs. If an importer for reference-format saves is ever
+/// added, this whole block (including the FIRW `tmp-4` → EMBR ctype rule) must
+/// be ported before use.
 fn decode_blob(bytes: &[u8]) -> Result<Sim, String> {
     let mut r = Reader::new(bytes);
     let magic = r.take(4)?;
