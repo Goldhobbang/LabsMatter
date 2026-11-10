@@ -971,7 +971,6 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
         }
         // TODO(PIPE.cpp:~400): detailed parity w/ graphicscache/pixel_mode; base emulation kept above.
         // TODO(PIPE emulation): stored particle deco transfer (PFLAG_PARTICLE_DECO) not represented in Particle here.
-        // TODO(TRON.cpp:169): needs exact tron_colours table/index mapping.
         // TODO(ARAY.cpp): no graphics callback in reference (default).
         // ref: ACEL.cpp:103-108
         pt::ACEL => {
@@ -1145,6 +1144,18 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
                 out.b = 50;
             }
         }
+        // TODO(EXOT.cpp:197-241): needs gfctx.rng.chance(cpart->tmp2-1, 1000) (EXOT.cpp:202)
+        // to pick the flare branch before any colour is assigned.
+        pt::EXOT => {}
+        // TODO(GOLD.cpp:101-108): needs gfctx.rng.gen() for the per-particle colour jitter (GOLD.cpp:102).
+        pt::GOLD => {}
+        // TODO(GRAV.cpp:62-113): needs gfctx.sim->currentTick for the animated phase colours (GRAV.cpp:64-68).
+        pt::GRAV => {}
+        // TODO(LIFE.cpp:51-93): needs gfctx.ren->decorationLevel (LIFE.cpp:60) to choose
+        // builtinGol colours vs decorated dcolour/tmp colours (GOL_RULES table is available).
+        pt::LIFE => {}
+        // TODO(TRON.cpp:169-193): needs the exact tron_colours lookup table (TRON.cpp:170).
+        pt::TRON => {}
         _ => {}
     }
 }
