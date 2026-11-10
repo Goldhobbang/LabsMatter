@@ -1833,6 +1833,8 @@ fn decode_blob(bytes: &[u8]) -> Result<Sim, String> {
     // (ref Simulation.cpp:334 sets gravWallChanged on load).
     sim.update_gravity_mask();
     sim.grav_wall_changed = false;
+    // ref: Simulation.cpp:333-338 (load/stamp ApproximateBlockAirMaps; our saves carry no hasBlockAirMaps flag)
+    sim.approximate_block_air_maps();
 
     sim.recalc();
     Ok(sim)
