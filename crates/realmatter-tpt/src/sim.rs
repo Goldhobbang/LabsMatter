@@ -474,6 +474,13 @@ impl Sim {
         } else {
             self.pmap[cell] = pmap_pack(i as u32, t);
         }
+        // Reference Simulation.cpp:198-201: `case PT_SPAWN: player.spawnID = i;`
+        // / `case PT_SPAWN2: player2.spawnID = i;`. Only on create (no clear on kill).
+        match t {
+            crate::elements_generated::pt::SPAWN => self.player.spawn_id = i as i32,
+            crate::elements_generated::pt::SPAWN2 => self.player2.spawn_id = i as i32,
+            _ => {}
+        }
         self.element_count[t as usize] += 1;
         if let Some(f) = crate::updates::create_fn(t) {
             f(self, i, x, y, t as i32, 0);

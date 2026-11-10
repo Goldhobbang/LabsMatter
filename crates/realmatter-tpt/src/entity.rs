@@ -140,10 +140,34 @@ impl Sim {
     /// Spawn a player/fighter head at `(x, y)`. Returns the particle index.
     ///
     /// Mirrors `Simulation::create_part(-1, x, y, PT_STKM/PT_STKM2/PT_FIGH)`
-    /// plus the `player.spwn` bookkeeping.
+    /// plus the `player.spwn` bookkeeping. Interactive placement clears
+    /// `spawn_id` (reference player reset context differs from SPWN respawn).
     pub fn spawn_entity(&mut self, which: Entity, x: i32, y: i32) -> Option<usize> {
+        self.spawn_entity_inner(which, x, y, true)
+    }
+
+    /// BeforeSim SPWN respawn (ref Simulation.cpp:3911-3914): spawns the head
+    /// but MUST NOT clear `spawn_id`, so the SPWN can respawn the player again
+    /// after death. Resets per-life fields only.
+    pub fn respawn_entity_preserving_spawn(
+        &mut self,
+        which: Entity,
+        x: i32,
+        y: i32,
+    ) -> Option<usize> {
+        self.spawn_entity_inner(which, x, y, false)
+    }
+
+    fn spawn_entity_inner(
+        &mut self,
+        which: Entity,
+        x: i32,
+        y: i32,
+        clear_spawn_id: bool,
+    ) -> Option<usize> {
         // Only one STKM / STKM2 may exist at a time (reference create_allowed).
-        if matches!(which, Entity::Player1 | Entity::Player2) && self.entity_head(which).is_some() {
+        if matches!(which, Entity::Player1 | Entity::Player2) && self.entity_head(which).is_some()
+        {
             return None;
         }
         let t = Self::player_type(which);
@@ -151,17 +175,31 @@ impl Sim {
         self.parts[head].life = 100;
         if let Some(st) = self.player_state_mut(which) {
             st.spwn = 1;
+            // Reset per-life fields (ref spawn/reset behavior); preserve spawn_id
+            // for SPWN respawn path.
             st.comm = 0;
             st.pcomm = 0;
             st.frames = 0;
-            st.spawn_id = -1;
             st.legs = [0.0; 16];
             st.accs = [0.0; 8];
+            if clear_spawn_id {
+                st.spawn_id = -1;
+            }
         }
         Some(head)
     }
 
-    /// Remove a spawned entity and clear its state.
+    /// Reset player spawn bookkeeping (ref Simulation.cpp:1053-1058 clear path).
+    /// Called from full-sim clear/reset implementations that own Sim state.
+    pub fn reset_player_spawn_state(&mut self) {
+        self.player.spwn = 0;
+        self.player.spawn_id = -1;
+        self.player2.spwn = 0;
+        self.player2.spawn_id = -1;
+    }
+
+    /// Remove a spawned entity and clear its state. Preserves `spawn_id` so
+    /// SPWN-linked respawn (ref Simulation.cpp:3911-3914) can occur next tick.
     pub fn despawn_entity(&mut self, which: Entity) {
         if let Some(head) = self.entity_head(which) {
             self.kill_part(head);

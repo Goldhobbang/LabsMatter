@@ -111,13 +111,38 @@ impl Sim {
         //     `WirelessStore::note_spark`, so a spark becomes observable on the
         //     following tick's BeforeSim promotion pass.
         self.wireless.advance();
-        // 11. Reference Simulation.cpp:3911-3914: BeforeSim spawns STKM/STKM2 from
-        //     `player.spawnID` when the player is not spawned. Our world layer
-        //     tracks `player.spawn_id` but currently lacks the pinned SPWN->player
-        //     binding/particle-id contract needed to do this safely/canonically.
-        //     Follow-up (split): define SPWN spawn_id registration (likely updates.rs
-        //     SPWN/STKM create/change handlers) then respawn here using the
-        //     registered particle position.
+        // 11. Reference Simulation.cpp:3911-3914 (BeforeSim, after ISWIRE block
+        //     3900-3908): `if (!player.spwn && player.spawnID >= 0)
+        //     create_part(-1, (int)parts[player.spawnID].x, (int)parts[player.spawnID].y, PT_STKM);`
+        //     (same for player2/STKM2). Respawn keeps `spawn_id` so the SPWN
+        //     respawns after death (unlike interactive `spawn_entity`, which clears it).
+        //     If creation fails (blocked/full), leave `spwn == 0` and retry next tick.
+        self.respawn_from_spawn_points();
+    }
+
+    fn respawn_from_spawn_points(&mut self) {
+        use crate::elements_generated::pt;
+        use crate::entity::Entity;
+        // Ref Simulation.cpp:3911-3914 reads parts[player.spawnID].x/y directly.
+        // We also require the slot to still be a live SPAWN/SPAWN2 to avoid
+        // dereferencing a reused/dead slot as a different particle.
+        if self.player.spwn == 0 && self.player.spawn_id >= 0 {
+            let sid = self.player.spawn_id as usize;
+            if sid < self.parts.len() && self.parts[sid].t == pt::SPAWN {
+                let x = (self.parts[sid].x + 0.5) as i32;
+                let y = (self.parts[sid].y + 0.5) as i32;
+                let _ = self.respawn_entity_preserving_spawn(Entity::Player1, x, y);
+                // On failure (blocked/full) leave spwn==0 and keep spawn_id to retry.
+            }
+        }
+        if self.player2.spwn == 0 && self.player2.spawn_id >= 0 {
+            let sid = self.player2.spawn_id as usize;
+            if sid < self.parts.len() && self.parts[sid].t == pt::SPAWN2 {
+                let x = (self.parts[sid].x + 0.5) as i32;
+                let y = (self.parts[sid].y + 0.5) as i32;
+                let _ = self.respawn_entity_preserving_spawn(Entity::Player2, x, y);
+            }
+        }
     }
 
     /// `AfterSim`.
