@@ -480,13 +480,20 @@ function applySimToolAt(x, y) {
 function initToolPanel() {
   const panel = $("tool-panel");
   if (!panel) return;
-  if (ENGINE !== "tpt" || !modFn("apply_tool")) {
-    // No dead controls: hide the panel when the runtime cannot apply tools.
+  const hasSimTools = modFn("apply_tool");
+  const hasDeco = modFn("set_deco") || !!(sim && typeof sim.setDeco === "function");
+  if (!hasSimTools && !hasDeco) {
+    // No dead controls: hide the panel when the runtime cannot apply tools or deco.
     panel.hidden = true;
     return;
   }
   panel.hidden = false;
   panel.querySelectorAll("[data-simtool]").forEach((b) => {
+    if (!hasSimTools) {
+      b.disabled = true;
+      b.title = "Simulation tools require runtime support (apply_tool)";
+      return;
+    }
     b.addEventListener("click", () => {
       const k = parseInt(b.dataset.simtool, 10);
       activeSimTool = activeSimTool === k ? null : k;
@@ -500,22 +507,28 @@ function initToolPanel() {
       }
     });
   });
-  const env = (id, fn) => {
+  const env = (id, fn, exportName) => {
     const el = $(id);
-    if (el) el.onclick = () => {
+    if (!el) return;
+    if (!modFn(exportName) && !(sim && typeof sim[fn] === "function")) {
+      el.disabled = true;
+      el.title = "Environment control not available in this runtime";
+      return;
+    }
+    el.onclick = () => {
       try { sim[fn](); } catch (e) { console.warn(e); }
       updateEnvStatus();
     };
   };
-  env("btn-env-grav", "cycleGravity");
-  env("btn-env-air", "cycleAir");
-  env("btn-env-edge", "cycleEdge");
-  env("btn-env-newton", "toggleNewtonian");
-  env("btn-env-ambient", "toggleAmbient");
+  env("btn-env-grav", "cycleGravity", "cycle_gravity");
+  env("btn-env-air", "cycleAir", "cycle_air");
+  env("btn-env-edge", "cycleEdge", "cycle_edge");
+  env("btn-env-newton", "toggleNewtonian", "toggle_newtonian");
+  env("btn-env-ambient", "toggleAmbient", "toggle_ambient");
 
   const decoBtn = $("btn-deco");
   if (decoBtn) {
-    if (!modFn("set_deco")) {
+    if (!hasDeco) {
       decoBtn.disabled = true;
       decoBtn.title = "Decoration is not available in this build";
     } else {
@@ -533,13 +546,18 @@ function initToolPanel() {
   }
   const clearBtn = $("btn-deco-clear");
   if (clearBtn) {
-    clearBtn.onclick = () => {
-      try {
-        if (sim.clearDeco) sim.clearDeco();
-        else if (modFn("clear_all_deco")) sim.mod.clear_all_deco();
-        notify("Decoration cleared.");
-      } catch (e) { console.warn(e); }
-    };
+    if (!hasDeco && !modFn("clear_all_deco")) {
+      clearBtn.disabled = true;
+      clearBtn.title = "Decoration is not available in this build";
+    } else {
+      clearBtn.onclick = () => {
+        try {
+          if (sim.clearDeco) sim.clearDeco();
+          else if (modFn("clear_all_deco")) sim.mod.clear_all_deco();
+          notify("Decoration cleared.");
+        } catch (e) { console.warn(e); }
+      };
+    }
   }
   updateEnvStatus();
 }

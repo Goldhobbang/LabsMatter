@@ -262,6 +262,25 @@ export class WasmDirectAdapter {
     }
     return 0;
   }
+  // Decoration (realmatter-wasm exports set_deco/get_deco/clear_all_deco).
+  setDeco(x, y, argb) {
+    if (this.mod && typeof this.mod.set_deco === "function") {
+      try { return !!this.mod.set_deco(x, y, argb >>> 0); } catch {}
+    }
+    return false;
+  }
+  getDeco(x, y) {
+    if (this.mod && typeof this.mod.get_deco === "function") {
+      try { return this.mod.get_deco(x, y); } catch {}
+    }
+    return 0;
+  }
+  clearDeco() {
+    if (this.mod && typeof this.mod.clear_all_deco === "function") {
+      try { this.mod.clear_all_deco(); return true; } catch {}
+    }
+    return false;
+  }
   canPaint() { return !!(this.mod && typeof this.mod.set_cell === "function"); }
   canReset() { return !!(this.mod && (typeof this.mod.reset === "function" || typeof this.mod.init === "function")); }
   canRead() { return !!(this.mod && typeof this.mod.get_cell_material === "function"); }
