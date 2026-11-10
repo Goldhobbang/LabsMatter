@@ -169,6 +169,9 @@ pub struct Sim {
     pub glow: Vec<[f32; 3]>,
     pub gol_counter: u32,
     pub emp_decor: i32,
+    /// Accumulated EMP spark trigger count for this frame (ref: `emp_trigger_count`,
+    /// SPRK increments; `AfterSim` dispatches `Element_EMP_Trigger` and resets).
+    pub emp_trigger_count: u32,
     pub grav_mask: Vec<u32>,
     /// Render colour buffer, refreshed by `render`.
     pub colour: Vec<u32>,
@@ -229,6 +232,7 @@ impl Sim {
             glow: vec![[0.0; 3]; width * height],
             gol_counter: 0,
             emp_decor: 0,
+            emp_trigger_count: 0,
             grav_mask: vec![u32::MAX; n],
             colour: vec![0; width * height],
             kill_stats: [0; 8],

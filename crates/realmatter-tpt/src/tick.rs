@@ -105,14 +105,37 @@ impl Sim {
                 }
             }
         }
+        // 10. Reference Simulation.cpp:3900-3908: while `ISWIRE > 0`, promote
+        //     wireless next->current and decrement `ISWIRE`. This runs in BeforeSim
+        //     before particle updates; WIFI sets `ISWIRE = 2` during update via
+        //     `WirelessStore::note_spark`, so a spark becomes observable on the
+        //     following tick's BeforeSim promotion pass.
+        self.wireless.advance();
+        // 11. Reference Simulation.cpp:3911-3914: BeforeSim spawns STKM/STKM2 from
+        //     `player.spawnID` when the player is not spawned. Our world layer
+        //     tracks `player.spawn_id` but currently lacks the pinned SPWN->player
+        //     binding/particle-id contract needed to do this safely/canonically.
+        //     Follow-up (split): define SPWN spawn_id registration (likely updates.rs
+        //     SPWN/STKM create/change handlers) then respawn here using the
+        //     registered particle position.
     }
 
     /// `AfterSim`.
     pub fn after_sim(&mut self) {
-        // Promote next-frame wireless state to current-frame state. The
-        // reference does this once per tick so WIFI emission/consumption is
-        // independent of particle iteration order.
-        self.wireless.advance();
+        // Reference Simulation.cpp:3924-3929: dispatch Element_EMP_Trigger when
+        // EMP (ctype=PT_EMP) SPRK particles triggered this frame, then reset.
+        // The full EMP trigger effect (probabilistic electronics disruption) is
+        // element-specific and lives in `updates.rs`/element dispatch; we own the
+        // frame counter/reset and emit the canonical `emp_decor` kick. Follow-up:
+        // port `Element_EMP_Trigger(sim, count)` semantics into owned update logic
+        // or a shared hook if updates.rs ownership permits.
+        if self.emp_trigger_count > 0 {
+            self.emp_decor = (self.emp_decor + 3).min(40);
+            self.emp_trigger_count = 0;
+        }
+        // Wireless promotion is handled in `BeforeSim` under the `ISWIRE` countdown
+        // (ref Simulation.cpp:3900-3908). Keep `AfterSim` free of duplicate
+        // promotion to preserve that timing.
     }
 
     pub fn step(&mut self) {

@@ -18,11 +18,18 @@ use crate::portal::PORTAL_CHANNELS;
 pub struct WirelessStore {
     /// `[ch][0]` current, `[ch][1]` next.
     channels: Vec<[bool; 2]>,
+    /// Reference `Simulation::ISWIRE` countdown. Set when a spark is observed
+    /// (WIFI sets `ISWIRE = 2` in the reference) and decremented in `BeforeSim`.
+    /// While > 0, pending channel state is promoted each `BeforeSim` pass.
+    pub iswire: u32,
 }
 
 impl WirelessStore {
     pub fn new() -> Self {
-        Self { channels: Vec::new() }
+        Self {
+            channels: Vec::new(),
+            iswire: 0,
+        }
     }
 
     fn ensure(&mut self, channel: usize) {
@@ -55,16 +62,23 @@ impl WirelessStore {
         }
         let was = self.is_active(channel);
         self.activate_next(channel);
+        // Reference WIFI.cpp sets `sim->ISWIRE = 2` on spark observation.
+        self.iswire = 2;
         !was
     }
 
-    /// `Simulation::AfterSim`: promote next-frame state to current and clear the
-    /// next-frame buffer. Called once per tick by the world scheduler.
+    /// Reference `Simulation::BeforeSim` wireless block (Simulation.cpp:3900-3908):
+    /// when `ISWIRE > 0`, promote `wireless[q][1] -> [0]`, clear `[1]`, then
+    /// decrement `ISWIRE`. Called once per tick before particle updates.
     pub fn advance(&mut self) {
+        if self.iswire == 0 {
+            return;
+        }
         for c in self.channels.iter_mut() {
             c[0] = c[1];
             c[1] = false;
         }
+        self.iswire = self.iswire.saturating_sub(1);
     }
 
     /// Number of channels that are active this frame (diagnostics / tests).
