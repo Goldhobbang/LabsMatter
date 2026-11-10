@@ -9727,12 +9727,13 @@ fn entity_hazard(sim: &Sim, x: i32, y: i32) -> (bool, i32) {
 
 /// Tile-based leg solver (accepted parity).
 ///
-/// The reference `STKM.cpp` resolves feet with a gravity/rotation particle
-/// solver. This implementation keeps locomotion tile-based: feet are stored at
-/// the reference indices `legs[4]/[5]` and `legs[12]/[13]`, the torso anchor
-/// at `legs[2]/[3]`, and leg phase is derived from the frame counter. This is
-/// sufficient for movement, jumping, portals and hazards and is intentionally
-/// documented as the accepted (non-reference) solver.
+/// This is now only used by the interim FIGH update path (`updates.rs`
+/// `figh_update`), which still drives movement through the shared tile helper.
+/// The player (STKM/STKM2) path uses the ported reference leg solver: Verlet
+/// integration (`stickman_verlet`, ref STKM.cpp:207-237), the command blocks
+/// (`stickman_commands`, ref STKM.cpp:252-400), and the joint/foot-socket run
+/// at the tail of `stickman_tick` (ref STKM.cpp:538-631), with head motion
+/// provided by the movement engine (movement.rs, ref Simulation.cpp:2893-2955).
 fn stickman_legs(st: &mut PlayerState, grounded: bool, moving: bool) {
     if grounded && moving {
         let phase = ((st.frames / 4) & 1) as f32;
@@ -10307,6 +10308,61 @@ fn stickman_commands(
     }
 }
 
+/// Delta time per update tick, `dt = 0.9f/(FPSB*FPSB)`
+/// (ref: STKM.cpp:127; FPSB is fixed at 1 in the engine).
+const STKM_DT: f32 = 0.9;
+
+/// Reference Verlet integration of the leg chains
+/// (ref: STKM.cpp:207-237), consuming the `accs` written by the previous
+/// tick's command block. Writes the integrated positions back into
+/// `PlayerState::legs`; the leg solver (joints/sockets) runs later in the tick.
+fn stickman_verlet(sim: &mut Sim, i: usize, which: Entity, gvx: f32, gvy: f32) {
+    let dt = STKM_DT;
+    // ref: STKM.cpp:207-208 ("Head up!")
+    sim.parts[i].vx -= gvx * dt;
+    sim.parts[i].vy -= gvy * dt;
+    let dt2 = dt * dt;
+
+    let mut legs = sim.player_state(which).map(|p| p.legs).unwrap_or([0.0; 16]);
+    let accs = sim.player_state(which).map(|p| p.accs).unwrap_or([0.0; 8]);
+
+    // Torso anchors. ref: STKM.cpp:211-216
+    let mut pp = 2.0 * legs[0] - legs[2] + accs[0] * dt2;
+    legs[2] = legs[0];
+    legs[0] = pp;
+    pp = 2.0 * legs[1] - legs[3] + accs[1] * dt2;
+    legs[3] = legs[1];
+    legs[1] = pp;
+
+    // Left foot pair, gravity included. ref: STKM.cpp:218-223
+    pp = 2.0 * legs[4] - legs[6] + (accs[2] + gvx) * dt2;
+    legs[6] = legs[4];
+    legs[4] = pp;
+    pp = 2.0 * legs[5] - legs[7] + (accs[3] + gvy) * dt2;
+    legs[7] = legs[5];
+    legs[5] = pp;
+
+    // Right torso anchor. ref: STKM.cpp:225-230
+    pp = 2.0 * legs[8] - legs[10] + accs[4] * dt2;
+    legs[10] = legs[8];
+    legs[8] = pp;
+    pp = 2.0 * legs[9] - legs[11] + accs[5] * dt2;
+    legs[11] = legs[9];
+    legs[9] = pp;
+
+    // Right foot pair, gravity included. ref: STKM.cpp:232-237
+    pp = 2.0 * legs[12] - legs[14] + (accs[6] + gvx) * dt2;
+    legs[14] = legs[12];
+    legs[12] = pp;
+    pp = 2.0 * legs[13] - legs[15] + (accs[7] + gvy) * dt2;
+    legs[15] = legs[13];
+    legs[13] = pp;
+
+    if let Some(st) = sim.player_state_mut(which) {
+        st.legs = legs;
+    }
+}
+
 fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     if i >= sim.parts.len() || sim.parts[i].t == 0 {
         return 0;
@@ -10396,6 +10452,9 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     }
     mvx *= tmp;
     mvy *= tmp;
+
+    // Verlet integration (consumes last tick's accs). ref: STKM.cpp:207-237
+    stickman_verlet(sim, i, which, gvx, gvy);
 
     // Movement-key command blocks. ref: STKM.cpp:252-400
     stickman_commands(sim, i, which, gvx, gvy, mvx, mvy, rb_low_grav);
@@ -10638,36 +10697,116 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
         }
     }
 
-    // `comm` / `pcomm` are owned by the input layer (`Sim::set_entity_input`);
-    // the reference update body never rewrites them (ref: STKM.cpp:744 only).
-    let report = sim.step_entity_at(which, i);
-    if report.died || i >= sim.parts.len() || sim.parts[i].t == 0 {
+    // Simulation of joints. ref: STKM.cpp:538-561
+    let mut legs = sim.player_state(which).map(|p| p.legs).unwrap_or([0.0; 16]);
+
+    let d = 25.0 / ((legs[0] - legs[4]).powi(2) + (legs[1] - legs[5]).powi(2) + 25.0) - 0.5;
+    legs[4] -= (legs[0] - legs[4]) * d;
+    legs[5] -= (legs[1] - legs[5]) * d;
+    legs[0] += (legs[0] - legs[4]) * d;
+    legs[1] += (legs[1] - legs[5]) * d;
+
+    let d = 25.0 / ((legs[8] - legs[12]).powi(2) + (legs[9] - legs[13]).powi(2) + 25.0) - 0.5;
+    legs[12] -= (legs[8] - legs[12]) * d;
+    legs[13] -= (legs[9] - legs[13]) * d;
+    legs[8] += (legs[8] - legs[12]) * d;
+    legs[9] += (legs[9] - legs[13]) * d;
+
+    // Head-to-torso-anchor springs write the head velocity directly; the
+    // movement engine integrates it (movement.rs, ref Simulation.cpp:2893-2955).
+    let d = 36.0
+        / ((legs[0] - sim.parts[i].x).powi(2) + (legs[1] - sim.parts[i].y).powi(2) + 36.0)
+        - 0.5;
+    sim.parts[i].vx -= (legs[0] - sim.parts[i].x) * d;
+    sim.parts[i].vy -= (legs[1] - sim.parts[i].y) * d;
+    legs[0] += (legs[0] - sim.parts[i].x) * d;
+    legs[1] += (legs[1] - sim.parts[i].y) * d;
+
+    let d = 36.0
+        / ((legs[8] - sim.parts[i].x).powi(2) + (legs[9] - sim.parts[i].y).powi(2) + 36.0)
+        - 0.5;
+    sim.parts[i].vx -= (legs[8] - sim.parts[i].x) * d;
+    sim.parts[i].vy -= (legs[9] - sim.parts[i].y) * d;
+    legs[8] += (legs[8] - sim.parts[i].x) * d;
+    legs[9] += (legs[9] - sim.parts[i].y) * d;
+
+    // ref: STKM.cpp:563-573 — snap a stuck foot back to its stored position.
+    if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32) {
+        legs[4] = legs[6];
+        legs[5] = legs[7];
+    }
+    if stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32) {
+        legs[12] = legs[14];
+        legs[13] = legs[15];
+    }
+
+    // This makes the stick man "pop" from obstacles. ref: STKM.cpp:576-588
+    if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32) {
+        let tx = legs[4];
+        let ty = legs[5];
+        legs[4] = legs[6];
+        legs[5] = legs[7];
+        legs[6] = tx;
+        legs[7] = ty;
+    }
+    if stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32) {
+        let tx = legs[12];
+        let ty = legs[13];
+        legs[12] = legs[14];
+        legs[13] = legs[15];
+        legs[14] = tx;
+        legs[15] = ty;
+    }
+
+    // Keeping legs distance. ref: STKM.cpp:591-621
+    {
+        let mut accs = sim.player_state(which).map(|p| p.accs).unwrap_or([0.0; 8]);
+        if (legs[4] - legs[12]).powi(2) + (legs[5] - legs[13]).powi(2) < 16.0 {
+            let tvx = -gvy;
+            let tvy = gvx;
+            if tvx != 0.0 || tvy != 0.0 {
+                accs[2] -= 0.2 * tvx / tvx.hypot(tvy);
+                accs[3] -= 0.2 * tvy / tvx.hypot(tvy);
+                accs[6] += 0.2 * tvx / tvx.hypot(tvy);
+                accs[7] += 0.2 * tvy / tvx.hypot(tvy);
+            }
+        }
+        if (legs[0] - legs[8]).powi(2) + (legs[1] - legs[9]).powi(2) < 16.0 {
+            let tvx = -gvy;
+            let tvy = gvx;
+            if tvx != 0.0 || tvy != 0.0 {
+                accs[0] -= 0.2 * tvx / tvx.hypot(tvy);
+                accs[1] -= 0.2 * tvy / tvx.hypot(tvy);
+                accs[4] += 0.2 * tvx / tvx.hypot(tvy);
+                accs[5] += 0.2 * tvy / tvx.hypot(tvy);
+            }
+        }
+        if let Some(st) = sim.player_state_mut(which) {
+            st.accs = accs;
+        }
+    }
+    if let Some(st) = sim.player_state_mut(which) {
+        st.legs = legs;
+    }
+
+    // If legs touch something. ref: STKM.cpp:623-629 (four sample points)
+    if i < sim.parts.len() && sim.parts[i].t != 0 {
+        stickman_interact(sim, i, (legs[4] + 0.5) as i32, (legs[5] + 0.5) as i32, which);
+    }
+    if i < sim.parts.len() && sim.parts[i].t != 0 {
+        stickman_interact(sim, i, (legs[12] + 0.5) as i32, (legs[13] + 0.5) as i32, which);
+    }
+    if i < sim.parts.len() && sim.parts[i].t != 0 {
+        stickman_interact(sim, i, (legs[4] + 0.5) as i32, legs[5] as i32, which);
+    }
+    if i < sim.parts.len() && sim.parts[i].t != 0 {
+        stickman_interact(sim, i, (legs[12] + 0.5) as i32, legs[13] as i32, which);
+    }
+    if i >= sim.parts.len() || sim.parts[i].t == 0 {
         return 1;
     }
-    let moving = (comm & (ent_input::LEFT | ent_input::RIGHT)) != 0;
-    let nx = (sim.parts[i].x + 0.5) as i32;
-    let ny = (sim.parts[i].y + 0.5) as i32;
-    let feet = {
-        let frames = sim.player_state(which).map(|p| p.frames as i32).unwrap_or(0);
-        let mut legs = sim.player_state(which).map(|p| p.legs).unwrap_or([0.0; 16]);
-        stickman_set_feet_targets(sim, &mut legs, frames, nx, ny, moving);
-        if let Some(st) = sim.player_state_mut(which) {
-            st.legs = legs;
-            stickman_legs(st, report.grounded, moving);
-            (st.legs[4] as i32, st.legs[5] as i32, st.legs[12] as i32, st.legs[13] as i32)
-        } else {
-            (0, 0, 0, 0)
-        }
-    };
-    if i < sim.parts.len() && sim.parts[i].t != 0 {
-        stickman_interact(sim, i, feet.0, feet.1, which);
-    }
-    if i < sim.parts.len() && sim.parts[i].t != 0 {
-        stickman_interact(sim, i, feet.2, feet.3, which);
-    }
-    if i < sim.parts.len() && sim.parts[i].t != 0 {
-        sim.parts[i].ctype = sim.player_state(which).map(|p| p.elem).unwrap_or(0);
-    }
+    // ref: STKM.cpp:631
+    sim.parts[i].ctype = sim.player_state(which).map(|p| p.elem).unwrap_or(0);
     0
 }
 

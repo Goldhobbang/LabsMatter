@@ -158,6 +158,40 @@ impl Sim {
         self.spawn_entity_inner(which, x, y, false)
     }
 
+    /// Reference `Element_STKM_init_legs` leg layout and per-life reset
+    /// (ref: STKM.cpp:716-768). `spwn` is intentionally left out here — the
+    /// reference sets it back to 1 in the `changeType` path right after this.
+    fn init_legs_at(&mut self, which: Entity, x: i32, y: i32) {
+        if let Some(st) = self.player_state_mut(which) {
+            st.legs[0] = (x - 1) as f32;
+            st.legs[1] = (y + 6) as f32;
+            st.legs[2] = (x - 1) as f32;
+            st.legs[3] = (y + 6) as f32;
+
+            st.legs[4] = (x - 3) as f32;
+            st.legs[5] = (y + 12) as f32;
+            st.legs[6] = (x - 3) as f32;
+            st.legs[7] = (y + 12) as f32;
+
+            st.legs[8] = (x + 1) as f32;
+            st.legs[9] = (y + 6) as f32;
+            st.legs[10] = (x + 1) as f32;
+            st.legs[11] = (y + 6) as f32;
+
+            st.legs[12] = (x + 3) as f32;
+            st.legs[13] = (y + 12) as f32;
+            st.legs[14] = (x + 3) as f32;
+            st.legs[15] = (y + 12) as f32;
+
+            st.accs = [0.0; 8];
+            st.comm = 0;
+            st.pcomm = 0;
+            st.frames = 0;
+            st.fan = false;
+            st.rocket_boots = false;
+        }
+    }
+
     fn spawn_entity_inner(
         &mut self,
         which: Entity,
@@ -173,15 +207,11 @@ impl Sim {
         let t = Self::player_type(which);
         let head = self.create_part(x, y, t)?;
         self.parts[head].life = 100;
+        // Reference creation reinitialises the leg verlet state and per-life
+        // fields (ref: STKM.cpp:716-768 via `changeType`, STKM.cpp:86-95).
+        self.init_legs_at(which, x, y);
         if let Some(st) = self.player_state_mut(which) {
             st.spwn = 1;
-            // Reset per-life fields (ref spawn/reset behavior); preserve spawn_id
-            // for SPWN respawn path.
-            st.comm = 0;
-            st.pcomm = 0;
-            st.frames = 0;
-            st.legs = [0.0; 16];
-            st.accs = [0.0; 8];
             if clear_spawn_id {
                 st.spawn_id = -1;
             }
