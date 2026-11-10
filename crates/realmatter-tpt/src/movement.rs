@@ -372,8 +372,10 @@ impl Sim {
                                 self.part_change_type(i, x as i32, y as i32, pt::PROT as i16);
                                 self.parts[i].ctype = 0;
                                 self.parts[i].tmp2 = 0x1;
-                                // ELEC replaces the H2 target at the mover's cell
-                                // (ref:1341 — create_part(ID(r), x, y, PT_ELEC)).
+                                // TODO(ref:1341): needs a create_part(p >= 0) reuse form --
+                                // the reference reuses ID(r)'s slot so the H2 becomes ELEC in
+                                // place; this call allocates a new particle and leaves the H2
+                                // alive, so one extra live particle results.
                                 self.create_part(x as i32, y as i32, pt::ELEC);
                                 return 1;
                             }
@@ -953,10 +955,11 @@ impl Sim {
                 } else if self.do_move(i, x, y, fin_x as f32, (2 * y - fin_y) as f32) != 0 {
                     self.parts[i].vy *= collision;
                 } else {
-                    // ref: Simulation.cpp:3122-3126
+                    // ref: Simulation.cpp:3122-3126 — neither mirror destination is
+                    // free, so just damp both components; the reference sets no
+                    // flags here.
                     self.parts[i].vx *= collision;
                     self.parts[i].vy *= collision;
-                    self.parts[i].flags |= flags::STAGNANT;
                 }
             }
             return;
