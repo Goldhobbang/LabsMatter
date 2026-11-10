@@ -216,12 +216,37 @@ export class WasmDirectAdapter {
         if (bytes instanceof ArrayBuffer) arr = new Uint8Array(bytes);
         if (Array.isArray(bytes)) arr = new Uint8Array(bytes);
         const ok = !!this.mod.load_blob(arr);
+        // Always pick up the real report string when the export exists.
         this.lastLoadReport =
-          typeof this.mod.last_load_report === "function" ? this.mod.last_load_report() : "";
+          typeof this.mod.last_load_report === "function"
+            ? String(this.mod.last_load_report() ?? "")
+            : "";
         if (this.lastLoadReport) console.info("[realmatter] " + this.lastLoadReport);
         return ok;
       } catch (e) { console.warn(e); }
     }
+    return false;
+  }
+  getCellInfo(x, y) {
+    if (this.mod && typeof this.mod.get_cell_info === "function") {
+      try { return this.mod.get_cell_info(x, y); } catch (e) { console.warn(e); }
+    }
+    return null;
+  }
+  setCellEx(x, y, info) {
+    if (!info || !this.mod || typeof this.mod.set_cell_ex !== "function") return false;
+    try {
+      return !!this.mod.set_cell_ex(
+        x,
+        y,
+        info.type | 0,
+        Number(info.temperature) || 0,
+        Number(info.vx) || 0,
+        Number(info.vy) || 0,
+        Number(info.life) || 0,
+        info.flags | 0,
+      );
+    } catch (e) { console.warn(e); }
     return false;
   }
   readRenderBuffer() {

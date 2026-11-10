@@ -135,6 +135,8 @@ struct SimState {
     deco: Vec<u32>,
     /// Decoration layer visibility toggle.
     deco_visible: bool,
+    /// Human-readable report for the most recent load attempt.
+    load_report: String,
 }
 
 fn make_chemistry(world: &World) -> realmatter_chemistry::ChemistryEngine {
@@ -350,6 +352,7 @@ pub fn init(width: u32, height: u32) -> Result<(), JsValue> {
         convection: 2,
         deco: vec![0; ww * wh],
         deco_visible: true,
+        load_report: String::new(),
     };
     rebuild_render(&mut state);
     match global().lock() {
@@ -1083,6 +1086,7 @@ pub fn reset() -> bool {
             state.air_field.clear();
             state.grav_field.clear();
             state.deco.fill(0);
+            state.load_report.clear();
             rebuild_render(state);
             true
         },
@@ -1148,19 +1152,102 @@ pub fn load_blob(bytes: &[u8]) -> bool {
                         state.world.height() as usize,
                     );
                     state.deco = vec![0; w * h];
+                    let mut deco_applied = false;
                     if let Ok(raw) = realmatter_persist::format::decompress_blob(bytes) {
                         if let Ok(save) = realmatter_persist::format::decode(&raw) {
                             if let Some(deco) = save.deco {
                                 if deco.len() == w * h {
                                     state.deco = deco;
+                                    deco_applied = true;
                                 }
                             }
                         }
                     }
-                    state.air_field =
-                        realmatter_physics::air::AirField::new(w, h);
+                    state.air_field = realmatter_physics::air::AirField::new(w, h);
                     state.grav_field.clear();
                     rebuild_render(state);
+
+                    // Human-readable load report (format version parsed from blob).
+                    let raw = realmatter_persist::format::decompress_blob(bytes).unwrap_or_else(|_| bytes.to_vec());
+                    let version = if raw.len() >= 8 && &raw[0..4] == realmatter_persist::format::MAGIC {
+                        u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]])
+                    } else {
+                        0
+                    };
+                    state.load_report = format!(
+                        "OK: save format v{}; world {}x{}; deco {}",
+                        version,
+                        w,
+                        h,
+                        if deco_applied { "applied" } else { "none" }
+                    );
+                    true
+                }
+                Err(e) => {
+                    state.load_report = format!("load failed: {e}");
+                    false
+                }
+            }
+        },
+        false,
+    )
+}
+
+/// Human-readable report for the most recent load attempt.
+#[wasm_bindgen]
+pub fn last_load_report() -> String {
+    with_state(|state| state.load_report.clone(), String::new())
+}
+
+/// Inspect a cell as JSON. Out of bounds -> empty string.
+/// Keys: type (material), temperature, vx, vy, life (lifetime), flags.
+#[wasm_bindgen]
+pub fn get_cell_info(x: i32, y: i32) -> String {
+    with_state(
+        |state| match state.world.cell(x, y) {
+            Some(c) => format!(
+                "{{\"type\":{},\"temperature\":{},\"vx\":{},\"vy\":{},\"life\":{},\"flags\":{}}}",
+                c.material, c.temperature, c.vx, c.vy, c.lifetime, c.flags
+            ),
+            None => String::new(),
+        },
+        String::new(),
+    )
+}
+
+/// Write cell fields directly (for copy/paste/undo). Returns false out of bounds.
+/// Updates the render pixel like `set_cell`.
+#[wasm_bindgen]
+pub fn set_cell_ex(
+    x: i32,
+    y: i32,
+    material: u16,
+    temperature: f32,
+    vx: f32,
+    vy: f32,
+    life: f32,
+    flags: u8,
+) -> bool {
+    with_state(
+        |state| {
+            let mut cell = Cell::default();
+            cell.material = material;
+            cell.temperature = temperature;
+            cell.vx = vx;
+            cell.vy = vy;
+            cell.lifetime = life;
+            cell.flags = flags;
+            match state.world.set(CellCoord::new(x, y), cell) {
+                Ok(()) => {
+                    let w = state.world.width() as usize;
+                    let h = state.world.height() as usize;
+                    if x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h
+                        && state.render.len() == w * h * 4
+                    {
+                        repaint_pixel(state, x as usize, y as usize);
+                    } else {
+                        rebuild_render(state);
+                    }
                     true
                 }
                 Err(_) => false,
