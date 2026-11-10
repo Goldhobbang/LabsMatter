@@ -24,6 +24,9 @@ thread_local! {
     static RENDER: RefCell<Vec<u8>> = RefCell::new(Vec::new());
     /// Additive fire/glow buffer (RGBA8 per pixel). Zero outside emissive pixels.
     static GLOW: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    /// Per-cell packed particle draw-op record for the second rasteriser pass
+    /// (internal scratch; not exposed over the WASM boundary).
+    static PARTOPS: RefCell<Vec<u64>> = RefCell::new(Vec::new());
     static WIDTH: RefCell<u32> = RefCell::new(0);
     static HEIGHT: RefCell<u32> = RefCell::new(0);
     /// 0 normal, 1 fancy (glow), 2 heat, 3 pressure, 4 velocity, 5 gravity.
@@ -92,6 +95,71 @@ fn blend(base: u8, over: u8, t: f32) -> u8 {
     (base as f32 * (1.0 - t) + over as f32 * t) as u8
 }
 
+/// Exact port of `RGB::Blend(RGBA)` from Pixel.h:131-148 (same math as the
+/// private `blend_rgb` in `realmatter_tpt::graphics`): `left = destination`,
+/// `right = source`, weight = source alpha (`0xFF` shortcut).
+#[inline]
+fn blend_rgb_u8(left: (u8, u8, u8), right: (u8, u8, u8), alpha: u8) -> (u8, u8, u8) {
+    if alpha == 0xFF {
+        return right;
+    }
+    let a = alpha as u16;
+    let ia = 0xFFu16 - a;
+    (
+        ((a * right.0 as u16 + ia * left.0 as u16) / 0xFF) as u8,
+        ((a * right.1 as u16 + ia * left.1 as u16) / 0xFF) as u8,
+        ((a * right.2 as u16 + ia * left.2 as u16) / 0xFF) as u8,
+    )
+}
+
+/// Blend a source colour onto buffer pixel `o`. The reference video buffer is
+/// opaque, so blending always leaves an opaque pixel; here the buffer alpha
+/// drives CSS compositing, so an empty destination keeps the source alpha and
+/// any painted destination accumulates alpha over-operator style.
+#[inline]
+fn blend_onto(buf: &mut [u8], o: usize, r: u8, g: u8, b: u8, a: u8) {
+    if buf[o + 3] == 0 {
+        buf[o] = r;
+        buf[o + 1] = g;
+        buf[o + 2] = b;
+        buf[o + 3] = a;
+        return;
+    }
+    let (rr, gg, bb) = blend_rgb_u8((buf[o], buf[o + 1], buf[o + 2]), (r, g, b), a);
+    buf[o] = rr;
+    buf[o + 1] = gg;
+    buf[o + 2] = bb;
+    let dst_a = buf[o + 3] as u32;
+    let al = a as u32;
+    buf[o + 3] = (dst_a + ((0xFF - dst_a) * al) / 0xFF) as u8;
+}
+
+/// Exact port of `RGB::Add(RGBA)` from Pixel.h (AddPixel path): adds
+/// `uint16_t(alpha * source) / 0xFF` per channel, saturating at `0xFF`.
+#[inline]
+fn add_onto(buf: &mut [u8], o: usize, r: u8, g: u8, b: u8, a: u8) {
+    if a == 0 {
+        return;
+    }
+    let al = a as u32;
+    buf[o] = (buf[o] as u32 + (al * r as u32) / 0xFF).min(0xFF) as u8;
+    buf[o + 1] = (buf[o + 1] as u32 + (al * g as u32) / 0xFF).min(0xFF) as u8;
+    buf[o + 2] = (buf[o + 2] as u32 + (al * b as u32) / 0xFF).min(0xFF) as u8;
+    let dst_a = buf[o + 3] as u32;
+    buf[o + 3] = (dst_a + ((0xFF - dst_a) * al) / 0xFF).min(0xFF) as u8;
+}
+
+/// Pack a per-cell draw-op record: bits 32-43 = `PMODE_MASK` bits, bits 24-31 =
+/// colour R, 16-23 = G, 8-15 = B, 0-7 = colour alpha. 0 = no op.
+#[inline]
+fn pack_op(mode: u32, r: u8, g: u8, b: u8, a: u8) -> u64 {
+    (((mode & realmatter_tpt::graphics::pmode::PMODE_MASK) as u64) << 32)
+        | ((r as u64) << 24)
+        | ((g as u64) << 16)
+        | ((b as u64) << 8)
+        | (a as u64)
+}
+
 /// Wall base colour / powered glow for wall id `w` (0 = no wall).
 fn wall_rgb(w: u8, powered: bool) -> Option<(u8, u8, u8)> {
     if w == 0 {
@@ -114,6 +182,13 @@ fn gravity_rgba(gx: f32, gy: f32) -> (u8, u8, u8) {
     ((40.0 + k * 215.0) as u8, (120.0 - k * 80.0) as u8, (200.0 - k * 120.0) as u8)
 }
 
+// Local aliases for the pmode flags consumed by the rasteriser (second pass).
+const PMODE_FLAT: u32 = realmatter_tpt::graphics::pmode::FLAT;
+const PMODE_BLOB: u32 = realmatter_tpt::graphics::pmode::BLOB;
+const PMODE_BLUR: u32 = realmatter_tpt::graphics::pmode::BLUR;
+const PMODE_ADD: u32 = realmatter_tpt::graphics::pmode::ADD;
+const PMODE_BLEND: u32 = realmatter_tpt::graphics::pmode::BLEND;
+
 fn rebuild_render() {
     let view = VIEW.with(|v| *v.borrow());
     let glow_on = GLOW_ON.with(|g| *g.borrow());
@@ -122,8 +197,10 @@ fn rebuild_render() {
         let Some(sim) = g.as_mut() else { return };
         RENDER.with(|r| {
             GLOW.with(|gl| {
+                PARTOPS.with(|po| {
                 let mut buf = r.borrow_mut();
                 let mut glow = gl.borrow_mut();
+                let mut partops = po.borrow_mut();
                 let n = sim.width * sim.height;
                 if buf.len() != n * 4 {
                     buf.resize(n * 4, 0);
@@ -131,6 +208,14 @@ fn rebuild_render() {
                 if glow.len() != n * 4 {
                     glow.resize(n * 4, 0);
                 }
+                if partops.len() != n {
+                    partops.resize(n, 0);
+                }
+                partops.fill(0);
+                // Rebind `buf` to a plain mutable slice so the second-pass
+                // helpers (`blend_onto` / `add_onto`) can take it directly;
+                // all other uses are plain indexing through DerefMut.
+                let buf: &mut [u8] = buf.as_mut();
                 let cells_x = sim.cells_x;
                 let fancy = view == 1;
                 for y in 0..sim.height {
@@ -212,12 +297,60 @@ fn rebuild_render() {
                                 let id = realmatter_tpt::pmap_id(packed) as usize;
                                 if let Some(part) = sim.parts.get(id) {
                                     let gp = realmatter_tpt::graphics::for_particle(t, part);
-                                    r = gp.r;
-                                    g_ = gp.g;
-                                    b = gp.b;
-                                    a = gp.a;
+                                    let bits = gp.mode
+                                        & realmatter_tpt::graphics::pmode::PMODE_MASK;
+                                    // Decoration blending into the base colour (and the
+                                    // NO_DECO gate) already happened inside for_particle
+                                    // (ref Renderer.cpp:431-437).
+                                    // DECO_FIRE: blend dcolour into the fire colour
+                                    // (ref Renderer.cpp:438-443).
+                                    let (mut fgr, mut fgg, mut fgb) = (gp.fr, gp.fg, gp.fb);
+                                    if (gp.mode
+                                        & realmatter_tpt::graphics::pmode::DECO_FIRE)
+                                        != 0
+                                    {
+                                        let deca = ((part.dcolour >> 24) & 0xFF) as u32;
+                                        if deca != 0 {
+                                            // ref: Renderer.cpp:431-437 (deca++ semantics, max 256)
+                                            let deca = deca + 1;
+                                            let (dr, dg, db) = rgb(part.dcolour & 0x00FF_FFFF);
+                                            fgr = ((deca * dr as u32
+                                                + (256 - deca) * fgr as u32)
+                                                >> 8) as u8;
+                                            fgg = ((deca * dg as u32
+                                                + (256 - deca) * fgg as u32)
+                                                >> 8) as u8;
+                                            fgb = ((deca * db as u32
+                                                + (256 - deca) * fgb as u32)
+                                                >> 8) as u8;
+                                        }
+                                    }
                                     if fancy && gp.has_glow() {
-                                        part_glow = (gp.fr, gp.fg, gp.fb, gp.fa);
+                                        part_glow = (fgr, fgg, fgb, gp.fa);
+                                    }
+                                    // Baseline: particles whose mode keeps PMODE_FLAT
+                                    // paint their colour directly (ref Renderer.cpp:664);
+                                    // modes without any PMODE bit (fire-only elements)
+                                    // keep today's flat paint so non-fancy views do not
+                                    // regress. Multi-pixel modes (BLEND/ADD/BLOB/BLUR,
+                                    // ref Renderer.cpp:668-727) are applied in the
+                                    // second pass below; their cell keeps the
+                                    // under-wall / empty background instead.
+                                    if bits == 0 || (bits & PMODE_FLAT) != 0 {
+                                        r = gp.r;
+                                        g_ = gp.g;
+                                        b = gp.b;
+                                        a = gp.a;
+                                    }
+                                    if bits
+                                        & (PMODE_BLEND
+                                            | PMODE_ADD
+                                            | PMODE_BLOB
+                                            | PMODE_BLUR)
+                                        != 0
+                                    {
+                                        partops[i] =
+                                            pack_op(gp.mode, gp.r, gp.g, gp.b, gp.a);
                                     }
                                 }
                             }
@@ -245,6 +378,112 @@ fn rebuild_render() {
                         }
                     }
                 }
+                // Second pass: multi-pixel draw modes (ref Renderer.cpp:664-727).
+                // The first pass laid the full baseline (walls + flat particles /
+                // empty background, matching the reference per-frame `Clear()` +
+                // wall drawing), so blend/add/blob/blur ops here act on the
+                // destination pixel exactly like the reference BlendPixel /
+                // AddPixel calls do. Cells are visited in scan order; the
+                // reference draws in parts[] order, which only affects the
+                // relative order of overlapping blend fringes.
+                for y2 in 0..sim.height {
+                    for x2 in 0..sim.width {
+                        let i2 = y2 * sim.width + x2;
+                        let op = partops[i2];
+                        if op == 0 {
+                            continue;
+                        }
+                        let mode = ((op >> 32) & 0xFFF) as u32;
+                        let (or_, og, ob, oa) = (
+                            ((op >> 24) & 0xFF) as u8,
+                            ((op >> 16) & 0xFF) as u8,
+                            ((op >> 8) & 0xFF) as u8,
+                            (op & 0xFF) as u8,
+                        );
+                        let o2 = i2 * 4;
+                        // ref: Renderer.cpp:668-670 (PMODE_BLEND -> BlendPixel)
+                        if (mode & PMODE_BLEND) != 0 {
+                            blend_onto(buf, o2, or_, og, ob, oa);
+                        }
+                        // ref: Renderer.cpp:672-674 (PMODE_ADD -> AddPixel)
+                        if (mode & PMODE_ADD) != 0 {
+                            add_onto(buf, o2, or_, og, ob, oa);
+                        }
+                        if (mode & PMODE_BLOB) != 0 {
+                            // ref: Renderer.cpp:676-690: the centre is written as a
+                            // plain colour when the mode has no PMODE_FLAT (the flat
+                            // centre-spit already painted it otherwise).
+                            if (mode & PMODE_FLAT) == 0 {
+                                buf[o2] = or_;
+                                buf[o2 + 1] = og;
+                                buf[o2 + 2] = ob;
+                                buf[o2 + 3] = oa;
+                            }
+                            if x2 > 0 {
+                                blend_onto(buf, o2 - 4, or_, og, ob, 223);
+                            }
+                            if x2 < sim.width - 1 {
+                                blend_onto(buf, o2 + 4, or_, og, ob, 223);
+                            }
+                            if y2 > 0 {
+                                blend_onto(buf, o2 - 4 * sim.width, or_, og, ob, 223);
+                            }
+                            if y2 < sim.height - 1 {
+                                blend_onto(buf, o2 + 4 * sim.width, or_, og, ob, 223);
+                            }
+                            let ow = 4 * sim.width;
+                            if x2 > 0 && y2 > 0 {
+                                blend_onto(buf, o2 - 4 - ow, or_, og, ob, 112);
+                            }
+                            if x2 > 0 && y2 < sim.height - 1 {
+                                blend_onto(buf, o2 - 4 + ow, or_, og, ob, 112);
+                            }
+                            if x2 < sim.width - 1 && y2 > 0 {
+                                blend_onto(buf, o2 + 4 - ow, or_, og, ob, 112);
+                            }
+                            if x2 < sim.width - 1 && y2 < sim.height - 1 {
+                                blend_onto(buf, o2 + 4 + ow, or_, og, ob, 112);
+                            }
+                        }
+                        if (mode & PMODE_BLUR) != 0 {
+                            // ref: Renderer.cpp:714-727: 7x7 stencil, sequential
+                            // low-alpha blends (30 at distance 0-1, 20 at distance
+                            // 1-3, 10 at exactly 2); blended into THIS frame's
+                            // video, which our baseline represents. The
+                            // `!(abs(x)==2||abs(y)==2)` clause in the reference is
+                            // dead for distance < 2 and is not modelled.
+                            for dx in -3i32..=3 {
+                                for dy in -3i32..=3 {
+                                    let d = dx.abs() + dy.abs();
+                                    let nx = x2 as i32 + dx;
+                                    let ny = y2 as i32 + dy;
+                                    if nx < 0
+                                        || ny < 0
+                                        || nx >= sim.width as i32
+                                        || ny >= sim.height as i32
+                                    {
+                                        continue;
+                                    }
+                                    let no = (ny as usize * sim.width + nx as usize) * 4;
+                                    if d < 2 {
+                                        blend_onto(buf, no, or_, og, ob, 30);
+                                    }
+                                    if d > 0 && d <= 3 {
+                                        blend_onto(buf, no, or_, og, ob, 20);
+                                    }
+                                    if d == 2 {
+                                        blend_onto(buf, no, or_, og, ob, 10);
+                                    }
+                                }
+                            }
+                        }
+                        // TODO(Renderer.cpp:729-800): PMODE_SPARK / PMODE_FLARE /
+                        // PMODE_LFLARE need gfctx.rng for the flicker pattern; not
+                        // representable without RNG here, so those bits still draw
+                        // as their baseline flat pixel.
+                    }
+                }
+                });
             });
         });
     });
