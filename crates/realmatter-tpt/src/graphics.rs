@@ -889,6 +889,44 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
                 out.b = clamp_u8(out.b as i32 + 30);
             }
         }
+        // ref: GBMB.cpp:83-90
+        pt::GBMB => {
+            if p.life <= 0 {
+                out.mode |= pmode::FLARE;
+            } else {
+                out.mode |= pmode::SPARK;
+            }
+        }
+        // ref: GRVT.cpp:76-83
+        pt::GRVT => {
+            out.fa = 5;
+            out.fr = 0;
+            out.fg = 250;
+            out.fb = 170;
+            out.mode |= firemode::BLEND;
+        }
+        // ref: PBCN.cpp:171-176
+        pt::PBCN => {
+            let lifemod = p.life.min(10) * 10;
+            out.r = clamp_u8(out.r as i32 + lifemod);
+            out.g = clamp_u8(out.g as i32 + lifemod / 2);
+        }
+        // ref: PCLN.cpp:160-166
+        pt::PCLN => {
+            let lifemod = p.life.min(10) * 10;
+            out.r = clamp_u8(out.r as i32 + lifemod);
+            out.g = clamp_u8(out.g as i32 + lifemod);
+        }
+        // ref: POLO.cpp:111-119 (LIMIT = 5 from POLO.cpp:53)
+        pt::POLO => {
+            if p.tmp >= 5 {
+                out.r = 0x70;
+                out.g = 0x70;
+                out.b = 0x70;
+            } else {
+                out.mode |= pmode::GLOW;
+            }
+        }
         // TODO(PIPE.cpp:~400): detailed parity w/ graphicscache/pixel_mode; base emulation kept above.
         // TODO(PIPE emulation): stored particle deco transfer (PFLAG_PARTICLE_DECO) not represented in Particle here.
         // TODO(TRON.cpp:169): needs exact tron_colours table/index mapping.
