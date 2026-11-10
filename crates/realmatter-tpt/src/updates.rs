@@ -8175,9 +8175,10 @@ fn stor_to_pipe(sim: &mut Sim, stor: usize, pipe: usize) {
 
 /// Reference `PIPE::pushParticle` in `PIPE.cpp:541-640`.
 ///
-/// RNG order for push (reference): when `tmp & 0x200 == 0`, draw one `RNG::between(0,7)`
-/// value stored as `rndstore`, then for q in 0..3 consume `rnd = rndstore & 7` and
-/// `rndstore >>= 3`. The predefined-direction branch (`tmp & 0x200 != 0`) draws no RNG.
+/// RNG order for push (reference): when `tmp & 0x200 == 0`, draw one `rng.gen()` full
+/// 32-bit value stored as `rndstore`, consumed 3 bits at a time for the 3 tries as
+/// `rnd = rndstore & 7; rndstore >>= 3;`. The predefined-direction branch
+/// (`tmp & 0x200 != 0`) draws no RNG.
 fn pipe_push_particle(sim: &mut Sim, i: usize, count: i32, original: usize) {
     if i >= sim.parts.len() || sim.parts[i].t == 0 {
         return;
@@ -8189,7 +8190,7 @@ fn pipe_push_particle(sim: &mut Sim, i: usize, count: i32, original: usize) {
     let x = (sim.parts[i].x + 0.5) as i32;
     let y = (sim.parts[i].y + 0.5) as i32;
     if sim.parts[i].tmp & 0x200 == 0 {
-        let mut rndstore = sim.rng.between(0, 7) as u32;
+        let mut rndstore: u32 = sim.rng.gen();
         for _q in 0..3 {
             let rnd = (rndstore & 7) as usize;
             rndstore >>= 3;
