@@ -992,6 +992,53 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
             out.g = clamp_u8(out.g as i32 + lifemod);
             out.b = clamp_u8(out.b as i32 + lifemod);
         }
+        // ref: SEED.cpp:286-305 (PLNT_LIFE = 12 from PLNT.h:14)
+        pt::SEED => {
+            let water = (p.ctype >> 12) & 0xFF;
+            if water > 3 {
+                out.r = clamp_u8(out.r as i32 - 50);
+                out.g = clamp_u8(out.g as i32 - 50);
+                out.b = clamp_u8(out.b as i32 - 50);
+            } else if water > 0 {
+                out.r = clamp_u8(out.r as i32 - 25);
+                out.g = clamp_u8(out.g as i32 - 25);
+                out.b = clamp_u8(out.b as i32 - 25);
+            }
+        }
+        // ref: SOAP.cpp:323-327
+        pt::SOAP => {
+            out.mode |= pmode::BLUR;
+            // TODO(SOAP.cpp:325): needs EFFECT_LINES (not represented in pmode).
+        }
+        // ref: VIRS.cpp:151-156
+        pt::VIRS => {
+            out.mode |= pmode::BLUR;
+            out.mode |= pmode::NO_DECO;
+        }
+        // ref: WARP.cpp:89-94
+        pt::WARP => {
+            out.r = 0;
+            out.g = 0;
+            out.b = 0;
+            out.a = 0;
+            out.mode |= pmode::NO_DECO;
+        }
+        // ref: WIRE.cpp:96-121
+        pt::WIRE => {
+            if p.ctype == 0 {
+                out.r = 255;
+                out.g = 204;
+                out.b = 0;
+            } else if p.ctype == 1 {
+                out.r = 50;
+                out.g = 100;
+                out.b = 255;
+            } else if p.ctype == 2 {
+                out.r = 255;
+                out.g = 100;
+                out.b = 50;
+            }
+        }
         _ => {}
     }
 }
