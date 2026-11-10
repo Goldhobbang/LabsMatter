@@ -310,6 +310,13 @@ impl Sim {
                                 return 1;
                             }
                         }
+                        x if x == pt::GLOW => {
+                            // Ref: Simulation.cpp:1266-1272
+                            if self.parts[id].life == 0 && self.rng.chance(1, 30) {
+                                self.parts[id].life = 120;
+                                self.create_gain_photon(i);
+                            }
+                        }
                         x if x == pt::GPMP => {
                             if self.parts[id].life == 0 {
                                 let gt = (self.parts[id].temp - 273.15) as i32;
@@ -323,8 +330,12 @@ impl Sim {
                     }
                 }
             } else if t == pt::NEUT {
-                // Cherenkov (PHOT creation) omitted: no create_cherenkov_photon helper; behavior-preserving no-op.
-                let _ = (rt, rid);
+                // NEUT + GLAS/BGLA -> NEUT + GLAS/BGLA + PHOT (Cherenkov)
+                // Ref: Simulation.cpp:1359-1362
+                if (rt == pt::GLAS || rt == pt::BGLA) && self.rng.chance(1, 10) {
+                    self.create_cherenkov_photon(i);
+                }
+                let _ = rid;
             } else if t == pt::ELEC {
                 if rt == pt::GLOW {
                     self.part_change_type(i, x, y, pt::PHOT as i16);
@@ -699,6 +710,94 @@ impl Sim {
         let c = element(self.parts[i].t).collision;
         self.parts[i].vx *= c;
         self.parts[i].vy *= c;
+    }
+
+    /// Port of `Simulation::create_gain_photon` (Simulation.cpp:2015-2050)
+    fn create_gain_photon(&mut self, pp: usize) {
+        // MaxParts guard
+        if self.parts.len() >= self.width * self.height {
+            return;
+        }
+        let lr = 2.0 * self.rng.between(0, 1) as f32 - 1.0;
+        let xx = self.parts[pp].x - lr * 0.3 * self.parts[pp].vy;
+        let yy = self.parts[pp].y + lr * 0.3 * self.parts[pp].vx;
+        let nx = (xx + 0.5) as i32;
+        let ny = (yy + 0.5) as i32;
+        if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
+            return;
+        }
+        let g = self.pmap[self.idx(nx, ny)];
+        if g == 0 {
+            return;
+        }
+        let gid = pmap_id(g) as usize;
+        if gid >= self.parts.len() {
+            return;
+        }
+        if self.parts[gid].t != pt::GLOW {
+            return;
+        }
+        let old_temp = self.parts[gid].temp;
+        let i = match self.create_part(nx, ny, pt::PHOT) {
+            Some(i) => i,
+            None => return,
+        };
+        self.parts[i].x = xx;
+        self.parts[i].y = yy;
+        self.parts[i].vx = self.parts[pp].vx;
+        self.parts[i].vy = self.parts[pp].vy;
+        self.parts[i].temp = old_temp;
+        let mut temp_bin = ((self.parts[i].temp - 273.0) * 0.25) as i32;
+        if temp_bin < 0 {
+            temp_bin = 0;
+        }
+        if temp_bin > 25 {
+            temp_bin = 25;
+        }
+        self.parts[i].ctype = 0x1F << temp_bin;
+    }
+
+    /// Port of `Simulation::create_cherenkov_photon` (Simulation.cpp:2052-2086)
+    fn create_cherenkov_photon(&mut self, pp: usize) {
+        if self.parts.len() >= self.width * self.height {
+            return;
+        }
+        let nx = (self.parts[pp].x + 0.5) as i32;
+        let ny = (self.parts[pp].y + 0.5) as i32;
+        if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
+            return;
+        }
+        let g = self.pmap[self.idx(nx, ny)];
+        if g == 0 {
+            return;
+        }
+        let gid = pmap_id(g) as usize;
+        if gid >= self.parts.len() {
+            return;
+        }
+        let gt = self.parts[gid].t;
+        if gt != pt::GLAS && gt != pt::BGLA {
+            return;
+        }
+        let hv = (self.parts[pp].vx * self.parts[pp].vx + self.parts[pp].vy * self.parts[pp].vy).sqrt();
+        if hv < 1.44 {
+            return;
+        }
+        let old_temp = self.parts[gid].temp;
+        let i = match self.create_part(nx, ny, pt::PHOT) {
+            Some(i) => i,
+            None => return,
+        };
+        let lr = 2.0 * self.rng.between(0, 1) as f32 - 1.0;
+        self.parts[i].ctype = 0x00000F80;
+        self.parts[i].x = self.parts[pp].x;
+        self.parts[i].y = self.parts[pp].y;
+        self.parts[i].temp = old_temp;
+        self.parts[i].vx = self.parts[pp].vx - lr * 2.5 * self.parts[pp].vy;
+        self.parts[i].vy = self.parts[pp].vy + lr * 2.5 * self.parts[pp].vx;
+        let r = 1.269 / ((self.parts[i].vx * self.parts[i].vx + self.parts[i].vy * self.parts[i].vy).sqrt());
+        self.parts[i].vx *= r;
+        self.parts[i].vy *= r;
     }
 
     /// Horizontal equalisation scan used by liquids (`Falldown > 1`).
