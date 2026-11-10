@@ -335,9 +335,10 @@ impl Sim {
                     }
                 }
             } else {
+                // ref: Simulation.cpp:2745-2749
                 let vc = self.cell_idx(x / CELL as i32, y / CELL as i32);
-                if (self.bmap_blockairh[vc] & 0x8) == 0 && self.bmap_blockairh[vc] < 0x7 {
-                    self.bmap_blockairh[vc] += 1;
+                if (self.bmap_blockairh[vc] & 0x8) == 0 {
+                    self.bmap_blockairh[vc] = self.bmap_blockairh[vc].saturating_add(1);
                 }
                 self.parts[i].temp = restrict_flt(self.parts[i].temp, MIN_TEMP, MAX_TEMP);
             }
