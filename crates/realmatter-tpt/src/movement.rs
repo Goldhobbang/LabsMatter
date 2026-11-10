@@ -873,137 +873,173 @@ impl Sim {
     }
 
     /// Energy particles (`TYPE_ENERGY`): photons, neutrons, electricity, etc.
+    ///
+    /// Reference: `Simulation.cpp:2955-3090` (PHOT pre-step, movement/stagnant,
+    /// and reflection). Life decay is NOT done here: `recalc_and_life` (tick.rs)
+    /// applies `PROP_LIFE_DEC` once per frame for PHOT, NEUT, ELEC (verified in
+    /// `elements_generated.rs`: PHOT 0x00014050, NEUT 0x00014010, ELEC 0x00014010
+    /// all include `PROP_LIFE_DEC` 0x10), avoiding a double-decrement.
     fn move_energy(&mut self, i: usize, x: i32, y: i32, plan: &mut PlanResult) {
-        let t = self.parts[i].t;
-        let def = element(t);
+        // Reference Simulation.cpp:3014 (PHOT branch) — SKIPMOVE short-circuit.
         if self.parts[i].flags & flags::SKIPMOVE != 0 {
             self.parts[i].flags &= !flags::SKIPMOVE;
             return;
         }
-        // Energy particles always try to move at unit steps along their velocity.
-        let mut nx = plan.fin_x;
-        let mut ny = plan.fin_y;
+        let t = self.parts[i].t;
+        // PLNT colour shift bits for SEED photon reflection mask (Simulation.cpp:3074-3082).
+        const PLNT_COLOUR: i32 = 8;
+
+        // PHOT pre-step: glass refraction / total internal reflection (Simulation.cpp:2955-3013).
         if t == pt::PHOT {
-            // Photons move one pixel at a time in their direction.
-            let vx = self.parts[i].vx;
-            let vy = self.parts[i].vy;
-            if vx == 0.0 && vy == 0.0 {
-                return;
-            }
-            nx = x + vx.signum() as i32;
-            ny = y + vy.signum() as i32;
-            // Multi-step along the dominant axis for speed > 1.
-            let steps = vx.abs().max(vy.abs()).max(1.0) as i32;
-            let mut cx = x;
-            let mut cy = y;
-            for _ in 0..steps.min(64) {
-                let step_x = cx + vx.signum() as i32;
-                let step_y = cy + vy.signum() as i32;
-                let moved = self.do_move(i, cx, cy, step_x as f32, step_y as f32);
-                if moved == 0 {
-                    // Basic refraction at a material boundary: try swapping the
-                    // velocity components once before giving up.
-                    let target = if self.in_bounds(step_x, step_y) {
-                        pmap_type(self.pmap[self.idx(step_x, step_y)])
-                    } else {
-                        0
-                    };
-                    if target == pt::GLAS
-                        || target == pt::BGLA
-                        || target == pt::WATR
-                        || target == pt::ICEI
-                    {
-                        let (ovx, ovy) = (self.parts[i].vx, self.parts[i].vy);
-                        self.parts[i].vx = ovy;
-                        self.parts[i].vy = ovx;
-                        let refracted_x = cx + self.parts[i].vx.signum() as i32;
-                        let refracted_y = cy + self.parts[i].vy.signum() as i32;
-                        if self.do_move(i, cx, cy, refracted_x as f32, refracted_y as f32) != 0 {
-                            cx = round_pos(self.parts[i].x);
-                            cy = round_pos(self.parts[i].y);
-                            continue;
-                        }
-                        self.parts[i].vx = ovx;
-                        self.parts[i].vy = ovy;
-                    }
-                    break;
-                }
-                cx = round_pos(self.parts[i].x);
-                cy = round_pos(self.parts[i].y);
-            }
-            self.parts[i].life -= 1;
-            if self.parts[i].life <= 0 || self.parts[i].t == 0 {
-                if self.parts[i].t != 0 {
-                    self.kill_part(i);
-                }
-            }
-            return;
-        }
-        if t == pt::NEUT {
-            if self.rng.chance(1, 10) {
-                self.parts[i].vx = -self.parts[i].vx;
-                self.parts[i].vy = -self.parts[i].vy;
-            }
-            self.parts[i].life -= 1;
-            if self.parts[i].life <= 0 {
-                self.kill_part(i);
-                return;
-            }
-            if !self.in_bounds(nx, ny) && self.settings.edge_mode != crate::sim::EdgeMode::Loop {
-                self.kill_part(i);
-                return;
-            }
-            if self.do_move(i, x, y, nx as f32, ny as f32) == 0 {
-                // In loop mode `do_move` wraps the target, so the stale `nx/ny`
-                // must not be used for a pmap lookup.
-                if !self.in_bounds(nx, ny) {
-                    return;
-                }
-                let r = self.pmap[self.idx(nx, ny)];
-                let rt = pmap_type(r);
-                if rt == pt::GLAS && self.rng.chance(1, 10) {
-                    self.parts[i].vx = -self.parts[i].vx;
-                    self.parts[i].vy = -self.parts[i].vy;
-                } else if rt == pt::GLAS || rt == pt::WATR || rt == pt::ICEI {
-                    // Basic refraction: bend the neutron path instead of dying.
-                    let (ovx, ovy) = (self.parts[i].vx, self.parts[i].vy);
-                    self.parts[i].vx = ovy;
-                    self.parts[i].vy = ovx;
-                    let refracted_x = round_pos(self.parts[i].x + self.parts[i].vx);
-                    let refracted_y = round_pos(self.parts[i].y + self.parts[i].vy);
-                    if self.do_move(i, x, y, refracted_x as f32, refracted_y as f32) == 0 {
-                        self.parts[i].vx = ovx;
-                        self.parts[i].vy = ovy;
+            if self.eval_move(pt::PHOT, plan.fin_x, plan.fin_y) != 0 {
+                let rt = self.pmap_type_at(plan.fin_x, plan.fin_y);
+                let lt = self.pmap_type_at(x, y);
+                let rt_glas = rt == pt::GLAS || rt == pt::BGLA;
+                let lt_glas = lt == pt::GLAS || lt == pt::BGLA;
+                if rt_glas != lt_glas {
+                    let gn = self.get_normal_interp_phot(
+                        crate::normal::REFRACT | t as i32,
+                        self.parts[i].x,
+                        self.parts[i].y,
+                        self.parts[i].vx,
+                        self.parts[i].vy,
+                    );
+                    if !gn.success {
                         self.kill_part(i);
+                        return;
                     }
-                } else {
-                    self.kill_part(i);
+                    let mut nrx = gn.nx;
+                    let mut nry = gn.ny;
+                    let r = self.get_wavelength_bin(i);
+                    if r == -1 || (self.parts[i].ctype as u32 & 0x3FFF_FFFF) == 0 {
+                        self.kill_part(i);
+                        return;
+                    }
+                    let mut nn =
+                        crate::normal::GLASS_IOR - crate::normal::GLASS_DISP * (r - 30) as f32 / 30.0;
+                    nn *= nn;
+                    let enter = rt_glas && !lt_glas;
+                    if enter {
+                        nrx = -nrx;
+                        nry = -nry;
+                        nn = 1.0 / nn;
+                    }
+                    let ct1 = self.parts[i].vx * nrx + self.parts[i].vy * nry;
+                    let ct2 = 1.0 - (nn * nn) * (1.0 - ct1 * ct1);
+                    if ct2 < 0.0 {
+                        // Total internal reflection (Simulation.cpp:2995-3004).
+                        self.parts[i].vx -= 2.0 * ct1 * nrx;
+                        self.parts[i].vy -= 2.0 * ct1 * nry;
+                        plan.fin_xf = self.parts[i].x;
+                        plan.fin_yf = self.parts[i].y;
+                        plan.fin_x = x;
+                        plan.fin_y = y;
+                    } else {
+                        let ct2s = ct2.sqrt() - nn * ct1;
+                        self.parts[i].vx = nn * self.parts[i].vx + ct2s * nrx;
+                        self.parts[i].vy = nn * self.parts[i].vy + ct2s * nry;
+                    }
                 }
             }
-            return;
         }
-        if t == pt::ELEC {
-            self.parts[i].life -= 1;
-            if self.parts[i].life <= 0 {
+
+        let stagnant = self.parts[i].flags & flags::STAGNANT != 0;
+
+        // Movement / stagnant (Simulation.cpp:3014-3023).
+        let blocked = if stagnant {
+            self.do_move(i, x, y, plan.fin_x as f32, plan.fin_y as f32) == 0
+        } else {
+            self.do_move(i, x, y, plan.fin_xf, plan.fin_yf) == 0
+        };
+        if stagnant && blocked {
+            if self.parts[i].t != 0 {
                 self.kill_part(i);
-                return;
             }
-        }
-        if !self.in_bounds(nx, ny) && self.settings.edge_mode != crate::sim::EdgeMode::Loop {
-            self.kill_part(i);
             return;
         }
-        if self.do_move(i, x, y, nx as f32, ny as f32) == 0 {
-            // Bounce along the blocked axis.
-            if plan.fin_x != x {
-                self.parts[i].vx = -self.parts[i].vx;
-            }
-            if plan.fin_y != y {
-                self.parts[i].vy = -self.parts[i].vy;
+
+        if blocked {
+            // Reflection block (Simulation.cpp:3024-3090), entered only when the
+            // non-stagnant do_move fails.
+            if self.parts[i].t == 0 {
+                return;
             }
             self.parts[i].flags |= flags::STAGNANT;
+            if t == pt::NEUT && self.rng.chance(1, 10) {
+                self.kill_part(i);
+                return;
+            }
+            let r = self.pmap_at(plan.fin_x, plan.fin_y);
+            let rt = pmap_type(r);
+            let rid = if r == 0 { 0usize } else { pmap_id(r) as usize };
+            if (rt == pt::PIPE || rt == pt::PPIP)
+                && rid < self.parts.len()
+                && self.parts[rid].t == rt
+                && self.parts[rid].ctype == 0
+            {
+                // Element_PIPE_transfer_part_to_pipe (Simulation.cpp:3057-3066).
+                crate::updates::part_to_pipe(self, i, rid);
+                return;
+            }
+            if t == pt::PHOT {
+                let mut mask = element(rt).photon_reflect;
+                if rt == pt::LITH {
+                    if rid < self.parts.len() && self.parts[rid].t == rt {
+                        let wl_bin = (self.parts[rid].ctype / 4).clamp(0, 25);
+                        mask = 0x1F_u32 << (wl_bin as u32);
+                    }
+                } else if rt == pt::SEED {
+                    if rid < self.parts.len() && self.parts[rid].t == rt {
+                        let colour = (self.parts[rid].ctype >> PLNT_COLOUR) & 0x3f;
+                        if colour & 0b110000 == 0 {
+                            mask |= 1 << 25;
+                        }
+                        if colour & 0b001100 == 0 {
+                            mask |= 1 << 15;
+                        }
+                        if colour & 0b000011 == 0 {
+                            mask |= 1 << 5;
+                        }
+                    }
+                }
+                self.parts[i].ctype &= mask as i32;
+            }
+            // Reflection normal (Simulation.cpp:3084-3089): uses `t`, not `REFRACT|t`.
+            let gn = self.get_normal_interp_phot(
+                t as i32,
+                self.parts[i].x,
+                self.parts[i].y,
+                self.parts[i].vx,
+                self.parts[i].vy,
+            );
+            if gn.success {
+                let (nrx, nry) = (gn.nx, gn.ny);
+                if rt == pt::CRMC {
+                    let mut rr = self.rng.between(-50, 50) as f32 * 0.01;
+                    rr = rr * rr * rr;
+                    let (rx, ry) = (rr.cos(), rr.sin());
+                    let anrx = rx * nrx + ry * nry;
+                    let anry = rx * nry - ry * nrx;
+                    let dp = anrx * self.parts[i].vx + anry * self.parts[i].vy;
+                    self.parts[i].vx -= 2.0 * dp * anrx;
+                    self.parts[i].vy -= 2.0 * dp * anry;
+                } else {
+                    let dp = nrx * self.parts[i].vx + nry * self.parts[i].vy;
+                    self.parts[i].vx -= 2.0 * dp * nrx;
+                    self.parts[i].vy -= 2.0 * dp * nry;
+                }
+                // Leave actual movement to next frame (STAGNANT already set).
+            } else {
+                if t != pt::NEUT {
+                    self.kill_part(i);
+                }
+                return;
+            }
+            if t == pt::PHOT && (self.parts[i].ctype as u32 & 0x3FFF_FFFF) == 0 {
+                self.kill_part(i);
+                return;
+            }
         }
-        let _ = def;
     }
 
     /// Horizontal liquid equalization (`water_equal_test` / `flood_water`).

@@ -60,7 +60,6 @@ impl Sim {
     /// Uses the simulation RNG and consumes exactly one `rng.gen()` call when
     /// the random branch is reached, and zero when the early return happens.
     /// Operates on `parts[i].ctype` only.
-    #[allow(dead_code)]
     pub(crate) fn get_wavelength_bin(&mut self, i: usize) -> i32 {
         let wm = self.parts[i].ctype as u32;
         if (wm & 0x3FFF_FFFF) == 0 {

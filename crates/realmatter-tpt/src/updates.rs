@@ -8090,7 +8090,9 @@ fn pipe_to_part(sim: &mut Sim, pipe: usize, part: usize) {
 
 /// Store a live particle into a pipe (reference
 /// `Element_PIPE_transfer_part_to_pipe` in `PIPE.cpp`).
-fn part_to_pipe(sim: &mut Sim, part: usize, pipe: usize) {
+/// Made `pub(crate)` so `movement.rs` reflection can inject blocked particles
+/// into empty PIPE/PPIP targets (Simulation.cpp:3057-3066).
+pub(crate) fn part_to_pipe(sim: &mut Sim, part: usize, pipe: usize) {
     let t = sim.parts[part].t;
     if t == 0 {
         return;
