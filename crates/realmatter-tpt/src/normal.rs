@@ -54,69 +54,52 @@ pub fn direction_to_map(dx: f32, dy: f32, _t: i32) -> u32 {
         | ((((dy - dx) <= 0.0) as u32) << 7)
 }
 
-/// `Simulation::get_wavelength_bin` (Simulation.cpp).
-///
-/// Deterministic port: uses `parts[i].tmp2` as persistent per-particle RNG
-/// state (xorshift32) instead of global RNG, so this helper consumes no sim
-/// RNG and does not require `&mut Sim`/RNG access from movement.
-pub fn get_wavelength_bin(parts: &mut [Particle], i: usize) -> i32 {
-    let wm = parts[i].ctype as u32;
-    if (wm & 0x3FFF_FFFF) == 0 {
-        return -1;
-    }
-
-    let mut w0: i32 = 30;
-    let mut w_m: i32 = 0;
-    // Portable path (matches the #else branch) for exact bit behaviour.
-    for bit in 0..30i32 {
-        if (wm & (1u32 << bit)) != 0 {
-            if bit < w0 {
-                w0 = bit;
-            }
-            if bit > w_m {
-                w_m = bit;
-            }
-        }
-    }
-
-    if w_m - w0 < 5 {
-        return w_m + w0;
-    }
-
-    let mut st = parts[i].tmp2 as u32;
-    if st == 0 {
-        // Seed from stable particle fields; avoid consuming sim RNG.
-        st = (parts[i].ctype as u32)
-            ^ ((parts[i].x.to_bits()).wrapping_mul(0x9E37_79B9))
-            ^ ((parts[i].y.to_bits()).wrapping_mul(0x85EB_CA6B))
-            ^ 0xA341_316C;
-        if st == 0 {
-            st = 1;
-        }
-    }
-    // xorshift32
-    st ^= st << 13;
-    st ^= st >> 17;
-    st ^= st << 5;
-    parts[i].tmp2 = st as i32;
-    let r = st as i32;
-
-    let mut idx = (r >> 1) % (w_m - w0 - 4);
-    if idx < 0 {
-        idx += w_m - w0 - 4;
-    }
-    idx += w0;
-
-    if (r & 1) != 0 {
-        parts[i].ctype = (0x1Fu32 << (idx as u32)) as i32;
-        (idx + 2) * 2
-    } else {
-        parts[i].ctype = (0xFu32 << (idx as u32)) as i32;
-        (idx + 2) * 2 - 1
-    }
-}
-
 impl Sim {
+    /// `Simulation::get_wavelength_bin` (Simulation.cpp).
+    ///
+    /// Uses the simulation RNG and consumes exactly one `rng.gen()` call when
+    /// the random branch is reached, and zero when the early return happens.
+    /// Operates on `parts[i].ctype` only.
+    #[allow(dead_code)]
+    pub(crate) fn get_wavelength_bin(&mut self, i: usize) -> i32 {
+        let wm = self.parts[i].ctype as u32;
+        if (wm & 0x3FFF_FFFF) == 0 {
+            return -1;
+        }
+
+        let mut w0: i32 = 30;
+        let mut w_m: i32 = 0;
+        // Portable path (matches the #else branch) for exact bit behaviour.
+        for bit in 0..30i32 {
+            if (wm & (1u32 << bit)) != 0 {
+                if bit < w0 {
+                    w0 = bit;
+                }
+                if bit > w_m {
+                    w_m = bit;
+                }
+            }
+        }
+
+        if w_m - w0 < 5 {
+            return w_m + w0;
+        }
+
+        let r = self.rng.gen() as i32;
+
+        let mut idx = ((r >> 1) % (w_m - w0 - 4)) + w0;
+        if idx < 0 {
+            idx += w_m - w0 - 4;
+        }
+
+        if (r & 1) != 0 {
+            self.parts[i].ctype = ((wm & 0x1Fu32.wrapping_shl(idx as u32)) as i32);
+            (idx + 2) * 2
+        } else {
+            self.parts[i].ctype = ((wm & 0xFu32.wrapping_shl(idx as u32)) as i32);
+            (idx + 2) * 2 - 1
+        }
+    }
     /// `Simulation::is_blocking` (Simulation.cpp:1613-1624).
     pub(crate) fn is_blocking(&self, t: i32, x: i32, y: i32) -> bool {
         if (t & REFRACT) != 0 {
