@@ -829,6 +829,7 @@ fn sprk_update(sim: &mut Sim, i: usize, x: i32, y: i32, surround_space: i32, nt:
             }
             pt::EMP => {
                 if sim.parts[id].life == 0 && life > 0 && life < 4 {
+                    sim.emp_trigger_count = sim.emp_trigger_count.saturating_add(1);
                     sim.emp_decor += 3;
                     if sim.emp_decor > 40 {
                         sim.emp_decor = 40;
@@ -8642,6 +8643,154 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, surround_space: i32, nt:
     }
     let _ = pv(sim, x, y);
     0
+}
+
+// --- LOVE / LOLZ BeforeSim stamp (ref: Simulation.cpp:3792-3860, LOVE.cpp, LOLZ.cpp) ---
+// Public for tick.rs to call from BeforeSim (tick.rs is owned by another agent).
+// Call when `element_count[PT_LOVE] > 0 || element_count[PT_LOLZ] > 0`.
+pub const LOVE_RULE_TABLE: [[u8; 9]; 9] = [
+    [0, 0, 1, 1, 0, 0, 0, 0, 0],
+    [0, 1, 0, 0, 1, 1, 0, 0, 0],
+    [1, 0, 0, 0, 0, 0, 1, 0, 0],
+    [1, 0, 0, 0, 0, 0, 0, 1, 0],
+    [0, 1, 0, 0, 0, 0, 0, 0, 1],
+    [1, 0, 0, 0, 0, 0, 0, 1, 0],
+    [1, 0, 0, 0, 0, 0, 1, 0, 0],
+    [0, 1, 0, 0, 1, 1, 0, 0, 0],
+    [0, 0, 1, 1, 0, 0, 0, 0, 0],
+];
+
+pub const LOLZ_RULE_TABLE: [[u8; 9]; 9] = [
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 0, 0, 0, 0, 0, 1, 0, 0],
+    [1, 0, 0, 0, 0, 0, 1, 0, 0],
+    [1, 0, 0, 1, 1, 0, 0, 1, 0],
+    [1, 0, 1, 0, 0, 1, 0, 1, 0],
+    [1, 0, 1, 0, 0, 1, 0, 1, 0],
+    [0, 1, 0, 1, 1, 0, 0, 1, 0],
+    [0, 1, 0, 0, 0, 0, 0, 1, 0],
+    [0, 1, 0, 0, 0, 0, 0, 1, 0],
+];
+
+/// Reference `Simulation::BeforeSim` LOVE/LOLZ handling (Simulation.cpp:3792-3860).
+/// Scans for LOVE/LOLZ particles, marks 9x9 grid anchors, then applies 9x9 rule
+/// stamps (create where rule==1 and empty, kill where rule==0 and matching type).
+/// NOTE: LOVE uses `RuleTable[nnx][nny]`; LOLZ uses `RuleTable[nny][nnx]` (swapped),
+/// matching the reference exactly. Grid indexing follows the reference's `nx/9,ny/9`
+/// usage over the scanned region.
+pub fn before_sim_love_lolz(sim: &mut Sim) {
+    let w = sim.width as i32;
+    let h = sim.height as i32;
+    let yres = h; // simulation pixel height
+    let xres = w;
+    let cols = ((xres + 8) / 9).max(1) as usize;
+    let rows = ((yres + 8) / 9).max(1) as usize;
+    let mut love_grid = vec![false; cols * rows];
+    let mut lolz_grid = vec![false; cols * rows];
+
+    // First pass: mark anchors and kill border LOVE/LOLZ (ref: ny<YRES-4, nx<XRES-4).
+    let y_scan_end = (yres - 4).max(0);
+    let x_scan_end = (xres - 4).max(0);
+    for ny in 0..y_scan_end {
+        for nx in 0..x_scan_end {
+            let r = sim.pmap_at(nx, ny);
+            if r == 0 {
+                continue;
+            }
+            let id = pmap_id(r) as usize;
+            if id >= sim.parts.len() {
+                continue;
+            }
+            let t = sim.parts[id].t;
+            if t != pt::LOVE && t != pt::LOLZ {
+                continue;
+            }
+            if ny < 9 || nx < 9 || ny > yres - 7 || nx > xres - 10 {
+                sim.kill_part(id);
+                continue;
+            }
+            let gx = (nx / 9) as usize;
+            let gy = (ny / 9) as usize;
+            if gx < cols && gy < rows {
+                if t == pt::LOVE {
+                    love_grid[gy * cols + gx] = true;
+                } else {
+                    lolz_grid[gy * cols + gx] = true;
+                }
+            }
+        }
+    }
+
+    // Second pass: apply stamps (ref: nx 9..=XRES-18, ny 9..=YRES-7).
+    // Reference iterates pixel coords and clears grid[nx/9][ny/9] after handling,
+    // so each marked 9x9 block is stamped once at the first (nx,ny) visited that
+    // maps to it (the loop's pixel-ordered traversal makes this deterministic).
+    let x0 = 9i32;
+    let x1 = xres - 18;
+    let y0 = 9i32;
+    let y1 = yres - 7;
+    if x1 >= x0 && y1 >= y0 {
+        for nx in x0..=x1 {
+            for ny in y0..=y1 {
+                let gx = (nx / 9) as usize;
+                let gy = (ny / 9) as usize;
+                if gx >= cols || gy >= rows {
+                    continue;
+                }
+                let li = gy * cols + gx;
+                if love_grid[li] {
+                    for nnx in 0..9i32 {
+                        for nny in 0..9i32 {
+                            let tx = nx + nnx;
+                            let ty = ny + nny;
+                            if ty <= 0 || ty >= yres || tx < 0 || tx >= xres {
+                                continue;
+                            }
+                            let rule = LOVE_RULE_TABLE[nnx as usize][nny as usize];
+                            let rt = sim.pmap_at(tx, ty);
+                            if rt == 0 {
+                                if rule == 1 {
+                                    sim.create_part(tx, ty, pt::LOVE);
+                                }
+                            } else if rule == 0 {
+                                let rid = pmap_id(rt) as usize;
+                                if rid < sim.parts.len() && sim.parts[rid].t == pt::LOVE {
+                                    sim.kill_part(rid);
+                                }
+                            }
+                        }
+                    }
+                }
+                love_grid[li] = false;
+
+                if lolz_grid[li] {
+                    for nnx in 0..9i32 {
+                        for nny in 0..9i32 {
+                            let tx = nx + nnx;
+                            let ty = ny + nny;
+                            if ty <= 0 || ty >= yres || tx < 0 || tx >= xres {
+                                continue;
+                            }
+                            // Reference uses LOLZ_RuleTable[nny][nnx] (indices swapped).
+                            let rule = LOLZ_RULE_TABLE[nny as usize][nnx as usize];
+                            let rt = sim.pmap_at(tx, ty);
+                            if rt == 0 {
+                                if rule == 1 {
+                                    sim.create_part(tx, ty, pt::LOLZ);
+                                }
+                            } else if rule == 0 {
+                                let rid = pmap_id(rt) as usize;
+                                if rid < sim.parts.len() && sim.parts[rid].t == pt::LOLZ {
+                                    sim.kill_part(rid);
+                                }
+                            }
+                        }
+                    }
+                }
+                lolz_grid[li] = false;
+            }
+        }
+    }
 }
 
 // --- WIFI ----------------------------------------------------------------
