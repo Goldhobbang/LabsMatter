@@ -867,6 +867,80 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
         // TODO(PIPE emulation): stored particle deco transfer (PFLAG_PARTICLE_DECO) not represented in Particle here.
         // TODO(TRON.cpp:169): needs exact tron_colours table/index mapping.
         // TODO(ARAY.cpp): no graphics callback in reference (default).
+        // ref: ACEL.cpp:103-108
+        pt::ACEL => {
+            if p.tmp != 0 {
+                out.mode |= pmode::GLOW;
+            }
+        }
+        // ref: ACID.cpp:147-159
+        pt::ACID => {
+            let mut s = p.life;
+            if s > 75 {
+                s = 75;
+            }
+            if s < 49 {
+                s = 49;
+            }
+            s = (s - 49) * 3;
+            if s == 0 {
+                s = 1;
+            }
+            out.r = clamp_u8(out.r as i32 + s * 4);
+            out.g = clamp_u8(out.g as i32 + s * 1);
+            out.b = clamp_u8(out.b as i32 + s * 2);
+            out.mode |= pmode::BLUR;
+        }
+        // ref: BASE.cpp:242-268
+        pt::BASE => {
+            let s = p.life;
+            if s <= 25 {
+                out.r = 0x33;
+                out.g = 0x4C;
+                out.b = 0xD8;
+            } else if s <= 50 {
+                out.r = 0x58;
+                out.g = 0x83;
+                out.b = 0xE8;
+            } else if s <= 75 {
+                out.r = 0x7D;
+                out.g = 0xBA;
+                out.b = 0xF7;
+            }
+            out.mode |= pmode::BLUR;
+            if p.tmp == 1 {
+                out.mode |= pmode::SPARK;
+            }
+        }
+        // ref: C5.cpp:99-124
+        pt::C5 => {
+            if p.ctype == 0 {
+                return;
+            }
+            let mut colr: i32 = 0;
+            let mut colg: i32 = 0;
+            let mut colb: i32 = 0;
+            for x in 0..12 {
+                colr += (p.ctype >> (x + 18)) & 1;
+                colb += (p.ctype >> x) & 1;
+            }
+            for x in 0..12 {
+                colg += (p.ctype >> (x + 9)) & 1;
+            }
+            let x = 624 / (colr + colg + colb + 1);
+            colr *= x;
+            colg *= x;
+            colb *= x;
+            out.fa = 100;
+            out.fr = clamp_u8(colr);
+            out.fg = clamp_u8(colg);
+            out.fb = clamp_u8(colb);
+            out.r = clamp_u8(colr);
+            out.g = clamp_u8(colg);
+            out.b = clamp_u8(colb);
+            out.mode &= !pmode::FLAT;
+            out.mode |= firemode::ADD | pmode::ADD | pmode::NO_DECO;
+        }
         _ => {}
     }
 }
