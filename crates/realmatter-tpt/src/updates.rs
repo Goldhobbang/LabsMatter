@@ -10432,17 +10432,17 @@ pub fn emp_trigger(sim: &mut Sim, trigger_count: u32) {
     let n = trigger_count as i32;
     let prob_change_center = binomial_gte1(n, 1.0 / 48.0); // EMP.cpp:76
     let temp_center = DeltaTempGenerator::new(n, 1.0 / 100.0, 3000.0); // EMP.cpp:77
-    let prob_break_metl = 1.0 / 300.0; // EMP.cpp:79
-    let prob_break_bmtl = 1.0 / 160.0; // EMP.cpp:80
+    let prob_break_metl = binomial_gte1(n, 1.0 / 300.0); // EMP.cpp:79
+    let prob_break_bmtl = binomial_gte1(n, 1.0 / 160.0); // EMP.cpp:80
     let temp_metal = DeltaTempGenerator::new(n, 1.0 / 280.0, 3000.0); // EMP.cpp:81
     // Integer halving as `triggerCount/2` in C++ (EMP.cpp:82).
     let prob_break_metl_more = binomial_gte1(n / 2, 1.0 / 160.0);
-    let prob_rand_wifi = 1.0 / 8.0; // EMP.cpp:83
-    let prob_break_wifi = 1.0 / 16.0; // EMP.cpp:84
-    let prob_break_swch = 1.0 / 100.0; // EMP.cpp:85
+    let prob_rand_wifi = binomial_gte1(n, 1.0 / 8.0); // EMP.cpp:83
+    let prob_break_wifi = binomial_gte1(n, 1.0 / 16.0); // EMP.cpp:84
+    let prob_break_swch = binomial_gte1(n, 1.0 / 100.0); // EMP.cpp:85
     let temp_swch = DeltaTempGenerator::new(n, 1.0 / 100.0, 2000.0); // EMP.cpp:86
-    let prob_break_aray = 1.0 / 60.0; // EMP.cpp:87
-    let prob_rand_dlay = 1.0 / 70.0; // EMP.cpp:88
+    let prob_break_aray = binomial_gte1(n, 1.0 / 60.0); // EMP.cpp:87
+    let prob_rand_dlay = binomial_gte1(n, 1.0 / 70.0); // EMP.cpp:88
 
     let w = sim.width as i32;
     let h = sim.height as i32;
