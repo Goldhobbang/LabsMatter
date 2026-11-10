@@ -122,15 +122,20 @@ impl Sim {
 
     /// `AfterSim`.
     pub fn after_sim(&mut self) {
-        // Reference Simulation.cpp:3924-3929: dispatch Element_EMP_Trigger when
-        // EMP (ctype=PT_EMP) SPRK particles triggered this frame, then reset.
-        // The full EMP trigger effect (probabilistic electronics disruption) is
-        // element-specific and lives in `updates.rs`/element dispatch; we own the
-        // frame counter/reset and emit the canonical `emp_decor` kick. Follow-up:
-        // port `Element_EMP_Trigger(sim, count)` semantics into owned update logic
-        // or a shared hook if updates.rs ownership permits.
+        // Reference Simulation.cpp:3924-3929: AfterSim dispatches
+        // `Element_EMP_Trigger(sim, emp_trigger_count)` when EMP (ctype=PT_EMP)
+        // SPRK particles triggered this frame, then resets the counter.
+        //
+        // AfterSim must NOT mutate `emp_decor`. SPRK's per-spark EMP branch in
+        // updates.rs (SPRK.cpp:281-283) already adds +3 and caps at 40 for each
+        // trigger; reference `Element_EMP_Trigger` (EMP.cpp) does not add decor.
+        // Mutating it here would double-apply decor.
+        //
+        // Remaining gap (unported): the full `Element_EMP_Trigger(sim, triggerCount)`
+        // body (EMP.cpp:74-225) — it changes SPRK/SWCH/WIRE at center and 5x5
+        // neighbours with probabilistic type changes and DeltaTempGenerator heating.
+        // This hook remains the canonical dispatch location for that future port.
         if self.emp_trigger_count > 0 {
-            self.emp_decor = (self.emp_decor + 3).min(40);
             self.emp_trigger_count = 0;
         }
         // Wireless promotion is handled in `BeforeSim` under the `ISWIRE` countdown
