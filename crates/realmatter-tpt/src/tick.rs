@@ -71,6 +71,11 @@ impl Sim {
             }
         }
         // 6. Rebuild pmap and apply life decay.
+        // ref Simulation.cpp:3763-3766 - gravity mask recompute before RecalcFreeParticles/pmap rebuild
+        if self.grav_wall_changed {
+            self.update_gravity_mask();
+            self.grav_wall_changed = false;
+        }
         self.recalc_and_life();
         // 7. emap decrement / wall-ambient block maps (ref 3777-3785).
         for e in self.emap.iter_mut() {

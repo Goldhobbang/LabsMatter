@@ -175,6 +175,9 @@ pub struct Sim {
     /// SPRK increments; `AfterSim` dispatches `Element_EMP_Trigger` and resets).
     pub emp_trigger_count: u32,
     pub grav_mask: Vec<u32>,
+    /// Set when a `WALL_GRAV` wall is created/removed or bulk bmap state changes;
+    /// consumed in `BeforeSim` to recompute `grav_mask` (ref: Simulation.cpp:334,3763-3766,3971).
+    pub grav_wall_changed: bool,
     /// Render colour buffer, refreshed by `render`.
     pub colour: Vec<u32>,
     /// Kill reason counters (diagnostics).
@@ -239,7 +242,8 @@ impl Sim {
             gol_counter: 0,
             emp_decor: 0,
             emp_trigger_count: 0,
-            grav_mask: vec![u32::MAX; n],
+            grav_mask: vec![0; n],
+            grav_wall_changed: true,
             colour: vec![0; width * height],
             kill_stats: [0; 8],
             portal: PortalStore::new(),
@@ -253,6 +257,8 @@ impl Sim {
         sim.init_can_move();
         sim.clear_air();
         sim.clear_ambient_heat();
+        sim.update_gravity_mask();
+        sim.grav_wall_changed = false;
         sim
     }
 
@@ -830,6 +836,76 @@ impl Sim {
     /// implementation runs a bounded Jacobi relaxation of the discrete Poisson
     /// equation on the same grid, which is a documented approximation (see
     /// `docs/tpt-parity/architecture.md`).
+    /// Recompute the gravity mask from `WL_GRAV` walls (ref: Simulation.cpp:3684-3728).
+    ///
+    /// Mask convention: `u32::MAX` = gravity reachable from the border, `0` = enclosed
+    /// by `WL_GRAV` walls (gravity blocked). The flood fill drains a LIFO stack; the
+    /// final mask is order-independent.
+    pub fn update_gravity_mask(&mut self) {
+        self.grav_mask.fill(0);
+        let (cx, cy) = (self.cells_x as i32, self.cells_y as i32);
+        let mut to_check: Vec<(i32, i32)> = Vec::new();
+
+        fn check(
+            bmap: &[u8],
+            grav_mask: &mut [u32],
+            cx: i32,
+            cy: i32,
+            x: i32,
+            y: i32,
+            to_check: &mut Vec<(i32, i32)>,
+        ) {
+            if x < 0 || y < 0 || x >= cx || y >= cy {
+                return;
+            }
+            let idx = y as usize * cx as usize + x as usize;
+            if bmap[idx] == WALL_GRAV || grav_mask[idx] != 0 {
+                return;
+            }
+            grav_mask[idx] = u32::MAX;
+            for oy in -1i32..=1 {
+                for ox in -1i32..=1 {
+                    if (ox + oy) & 1 != 0 {
+                        // orthogonal neighbours only
+                        let qx = x + ox;
+                        let qy = y + oy;
+                        if qx >= 0 && qy >= 0 && qx < cx && qy < cy {
+                            to_check.push((qx, qy));
+                        }
+                    }
+                }
+            }
+        }
+
+        for x in 0..cx {
+            check(&self.bmap, &mut self.grav_mask, cx, cy, x, 0, &mut to_check);
+            check(
+                &self.bmap,
+                &mut self.grav_mask,
+                cx,
+                cy,
+                x,
+                cy - 1,
+                &mut to_check,
+            );
+        }
+        for y in 1..cy - 1 {
+            check(&self.bmap, &mut self.grav_mask, cx, cy, 0, y, &mut to_check);
+            check(
+                &self.bmap,
+                &mut self.grav_mask,
+                cx,
+                cy,
+                cx - 1,
+                y,
+                &mut to_check,
+            );
+        }
+        while let Some((x, y)) = to_check.pop() {
+            check(&self.bmap, &mut self.grav_mask, cx, cy, x, y, &mut to_check);
+        }
+    }
+
     pub fn update_newtonian_gravity(&mut self) {
         if !self.settings.newtonian_gravity {
             self.grav_force.iter_mut().for_each(|f| *f = (0.0, 0.0));
@@ -879,8 +955,13 @@ impl Sim {
             return;
         }
         let idx = self.cell_idx(cx, cy);
+        let old = self.bmap[idx];
         self.bmap[idx] = w;
         self.emap[idx] = 0;
+        // ref Simulation.cpp:334 - grav wall edits invalidate the gravity mask
+        if old == WALL_GRAV || w == WALL_GRAV {
+            self.grav_wall_changed = true;
+        }
     }
 
     pub fn wall_at(&self, x: i32, y: i32) -> u8 {
@@ -924,6 +1005,9 @@ impl Sim {
                 }
             }
         }
+        // Bulk bmap edge writes can create/remove WL_GRAV cells; invalidate mask.
+        // ref Simulation.cpp:334 / 3971
+        self.grav_wall_changed = true;
         // In Loop mode particles that ended up in the outer CELL margin must be
         // wrapped to their counterpart (reference `remainder_p`), mirroring
         // `do_move`/`plan_move`. This keeps saves / mode switches consistent.
