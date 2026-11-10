@@ -2,8 +2,8 @@
 //! `MovementPhase`, ported from the reference.
 
 use crate::air::{
-    WALL_DESTROYALL, WALL_DETECT, WALL_EHOLE, WALL_EWALL, WALL_FAN, WALL_STASIS, WALL_STREAM,
-    WALL_WALLELEC,
+    WALL_ALLOWENERGY, WALL_DESTROYALL, WALL_DETECT, WALL_EHOLE, WALL_EWALL, WALL_FAN, WALL_STASIS,
+    WALL_STREAM, WALL_WALLELEC,
 };
 use crate::element::{element, is_type};
 use crate::elements_generated::pt;
@@ -180,10 +180,7 @@ impl Sim {
         }
 
         if e == 0 {
-            // Blocked: energy particles may conduct heat or be captured (TPT try_move).
-            if !is_type(t, props::TYPE_ENERGY) {
-                return 0;
-            }
+            // ref: Simulation.cpp:1212 — `int rt = TYP(r);` resolved from eval_move's r.
             let rid: Option<usize> = if r != 0 {
                 let id = pmap_id(r) as usize;
                 if id < self.parts.len() && self.parts[id].t != 0 {
@@ -195,6 +192,22 @@ impl Sim {
                 None
             };
             let rt = rid.map(|id| self.parts[id].t).unwrap_or(0);
+            // ref: Simulation.cpp:1213-1219 — a hard hit shatters WOOD into SAWD.
+            // This runs BEFORE the TYPE_ENERGY early-out (ref:1220-1221).
+            if rt == pt::WOOD {
+                if let Some(id) = rid {
+                    let vel = (self.parts[i].vx * self.parts[i].vx
+                        + self.parts[i].vy * self.parts[i].vy)
+                        .sqrt();
+                    if vel > 5.0 {
+                        self.part_change_type(id, nx, ny, pt::SAWD as i16);
+                    }
+                }
+            }
+            // Blocked: energy particles may conduct heat or be captured (TPT try_move).
+            if !is_type(t, props::TYPE_ENERGY) {
+                return 0;
+            }
             // PHOT heat conduction (reference: !legacy_enable && PHOT && r).
             if self.settings.heat_sim && t == pt::PHOT {
                 if let Some(id) = rid {
@@ -264,52 +277,10 @@ impl Sim {
             let rt = rid.map(|id| self.parts[id].t).unwrap_or(0);
             if t == pt::PHOT {
                 if let Some(id) = rid {
-                    // Heat conduction (preserve existing behavior; also done on pass-through in TPT?).
-                    if rt == pt::COAL || rt == pt::BCOL {
-                        self.parts[id].temp = self.parts[i].temp;
-                    }
-                    if rt != pt::FILT && !self.is_heat_insulator(id) {
-                        let t1 = self.parts[i].temp;
-                        let t2 = self.parts[id].temp;
-                        let avg = ((t1 + t2) * 0.5).clamp(0.0, 9999.0);
-                        self.parts[i].temp = avg;
-                        self.parts[id].temp = avg;
-                    }
+                    // ref: Simulation.cpp:1262-1354 — case PT_PHOT switch, in order.
+                    // Note: no heat conduction here in the reference; PHOT heat
+                    // conduction only runs in the blocked (!e) path (ref:1222-1229).
                     match rt {
-                        x if x == pt::INVIS => {
-                            let cx = nx / CELL as i32;
-                            let cy = ny / CELL as i32;
-                            let pv = if self.in_cell_bounds(cx, cy) {
-                                self.pv[self.cell_idx(cx, cy)]
-                            } else {
-                                0.0
-                            };
-                            let pr = if self.parts[id].tmp > 0 { self.parts[id].tmp as f32 } else { 4.0 };
-                            if pv >= -pr && pv <= pr {
-                                self.part_change_type(i, x as i32, y as i32, pt::NEUT as i16);
-                                if self.parts[i].t == pt::NEUT {
-                                    self.parts[i].ctype = 0;
-                                }
-                            }
-                        }
-                        x if x == pt::BIZR || x == pt::BIZRG || x == pt::BIZRS => {
-                            self.part_change_type(i, x as i32, y as i32, pt::ELEC as i16);
-                            if self.parts[i].t == pt::ELEC {
-                                self.parts[i].ctype = 0;
-                            }
-                        }
-                        x if x == pt::H2 => {
-                            if (self.parts[i].tmp & 0x1) == 0 {
-                                self.part_change_type(i, x as i32, y as i32, pt::PROT as i16);
-                                if self.parts[i].t == pt::PROT {
-                                    self.parts[i].ctype = 0;
-                                    self.parts[i].tmp2 = 0x1;
-                                }
-                                // ELEC at mover's old position (TPT: create_part(ID(r), x, y, PT_ELEC)).
-                                if let Some(_j) = self.create_part(x as i32, y as i32, pt::ELEC) {}
-                                return 1;
-                            }
-                        }
                         x if x == pt::GLOW => {
                             // Ref: Simulation.cpp:1266-1272
                             if self.parts[id].life == 0 && self.rng.chance(1, 30) {
@@ -317,82 +288,302 @@ impl Sim {
                                 self.create_gain_photon(i);
                             }
                         }
-                        x if x == pt::GPMP => {
-                            if self.parts[id].life == 0 {
-                                let gt = (self.parts[id].temp - 273.15) as i32;
-                                self.part_change_type(i, x as i32, y as i32, pt::GRVT as i16);
-                                if self.parts[i].t == pt::GRVT {
-                                    self.parts[i].tmp = gt;
+                        x if x == pt::FILT => {
+                            // TODO(ref:Simulation.cpp:1273-1274): needs
+                            // Element_FILT_interactWavelengths (no port exists yet).
+                        }
+                        x if x == pt::C5 => {
+                            // Ref: Simulation.cpp:1276-1312
+                            if self.parts[id].life > 0
+                                && ((self.parts[id].ctype as u32
+                                    & self.parts[i].ctype as u32
+                                    & 0xFFFF_FFC0)
+                                    != 0)
+                            {
+                                let vx = ((self.parts[id].tmp << 16) >> 16) as f32 / 255.0;
+                                let vy = (self.parts[id].tmp >> 16) as f32 / 255.0;
+                                let pci = &self.parts[i];
+                                let vn = pci.vx * pci.vx + pci.vy * pci.vy;
+                                if pci.vx + vx == 0.0 && pci.vy + vy == 0.0 {
+                                    // Resulting velocity would be 0: shoot the photon
+                                    // off at a 90 degree angle instead.
+                                    self.parts[i].vx = vy;
+                                    self.parts[i].vy = -vx;
+                                } else {
+                                    self.parts[i].ctype =
+                                        ((self.parts[id].ctype & self.parts[i].ctype) >> 6) as i32;
+                                    // Add momentum of photons to each other.
+                                    self.parts[i].vx += vx;
+                                    self.parts[i].vy += vy;
+                                    // Normalize velocity to original value.
+                                    let pci = &self.parts[i];
+                                    let vn = vn / (pci.vx * pci.vx + pci.vy * pci.vy);
+                                    let vn = vn.sqrt();
+                                    self.parts[i].vx *= vn;
+                                    self.parts[i].vy *= vn;
                                 }
+                                self.parts[id].life = 0;
+                                self.parts[id].ctype = 0;
+                            } else if self.parts[id].ctype == 0
+                                && (self.parts[i].ctype as u32 & 0xFFFF_FFC0) != 0
+                            {
+                                self.parts[id].life = 1;
+                                self.parts[id].ctype = self.parts[i].ctype;
+                                self.parts[id].tmp = (0xFFFF
+                                    & ((self.parts[i].vx * 255.0) as i32))
+                                    | (0xFFFF_0000u32 as i32
+                                        & ((self.parts[i].vy * 16711680.0) as i32));
+                                self.parts[id].tmp2 = (0xFFFF
+                                    & (((self.parts[i].x - x as f32) * 255.0) as i32))
+                                    | (0xFFFF_0000u32 as i32
+                                        & (((self.parts[i].y - y as f32) * 16711680.0) as i32));
+                                self.kill_part(i);
+                            }
+                        }
+                        x if x == pt::INVIS => {
+                            // Ref: Simulation.cpp:1313-1325
+                            let cx = nx / CELL as i32;
+                            let cy = ny / CELL as i32;
+                            let pv = if self.in_cell_bounds(cx, cy) {
+                                self.pv[self.cell_idx(cx, cy)]
+                            } else {
+                                0.0
+                            };
+                            let pr = if self.parts[id].tmp > 0 {
+                                self.parts[id].tmp as f32
+                            } else {
+                                4.0
+                            };
+                            if pv >= -pr && pv <= pr {
+                                //@ PHOT + INVIS -> NEUT + INVIS
+                                self.part_change_type(i, x as i32, y as i32, pt::NEUT as i16);
+                                self.parts[i].ctype = 0;
+                            }
+                        }
+                        x if x == pt::BIZR || x == pt::BIZRG || x == pt::BIZRS => {
+                            //@ ref: Simulation.cpp:1326-1332 — PHOT + BIZR/BIZRG/BIZRS -> ELEC + BIZR/...
+                            self.part_change_type(i, x as i32, y as i32, pt::ELEC as i16);
+                            self.parts[i].ctype = 0;
+                        }
+                        x if x == pt::H2 => {
+                            // Ref: Simulation.cpp:1333-1344
+                            if (self.parts[i].tmp & 0x1) == 0 {
+                                //@ PHOT + H2 -> PROT + ELEC
+                                self.part_change_type(i, x as i32, y as i32, pt::PROT as i16);
+                                self.parts[i].ctype = 0;
+                                self.parts[i].tmp2 = 0x1;
+                                // ELEC replaces the H2 target at the mover's cell
+                                // (ref:1341 — create_part(ID(r), x, y, PT_ELEC)).
+                                self.create_part(x as i32, y as i32, pt::ELEC);
+                                return 1;
+                            }
+                        }
+                        x if x == pt::GPMP => {
+                            // Ref: Simulation.cpp:1345-1352
+                            if self.parts[id].life == 0 {
+                                //@ PHOT + GPMP -> GRVT + GPMP
+                                self.part_change_type(i, x as i32, y as i32, pt::GRVT as i16);
+                                self.parts[i].tmp = (self.parts[id].temp - 273.15) as i32;
                             }
                         }
                         _ => {}
                     }
                 }
             } else if t == pt::NEUT {
-                // NEUT + GLAS/BGLA -> NEUT + GLAS/BGLA + PHOT (Cherenkov)
-                // Ref: Simulation.cpp:1359-1362
-                if (rt == pt::GLAS || rt == pt::BGLA) && self.rng.chance(1, 10) {
-                    self.create_cherenkov_photon(i);
-                }
+                //@ ref: Simulation.cpp:1356-1361 — NEUT + GLAS/BGLA -> NEUT + GLAS/BGLA + PHOT
                 let _ = rid;
-            } else if t == pt::ELEC {
-                if rt == pt::GLOW {
-                    self.part_change_type(i, x, y, pt::PHOT as i16);
-                    if self.parts[i].t == pt::PHOT {
-                        self.parts[i].ctype = 0x3FFF_FFFF;
+                if rt == pt::GLAS || rt == pt::BGLA {
+                    if self.rng.chance(1, 10) {
+                        self.create_cherenkov_photon(i);
                     }
                 }
+            } else if t == pt::ELEC {
+                //@ ref: Simulation.cpp:1362-1369 — ELEC + GLOW -> PHOT + GLOW
+                if rt == pt::GLOW {
+                    self.part_change_type(i, x, y, pt::PHOT as i16);
+                    self.parts[i].ctype = 0x3FFF_FFFF;
+                }
             } else if t == pt::PROT {
+                //@ ref: Simulation.cpp:1370-1374 — PROT + INVIS -> NEUT + INVIS
                 if rt == pt::INVIS {
                     self.part_change_type(i, x, y, pt::NEUT as i16);
+                }
+            } else if t == pt::BIZR || t == pt::BIZRG {
+                //@ ref: Simulation.cpp:1375-1379 — BIZR/BIZRG + FILT
+                if rt == pt::FILT {
+                    // TODO(ref:Simulation.cpp:1375-1379): needs
+                    // Element_FILT_interactWavelengths (no port exists yet).
                 }
             }
             return 1;
         }
 
         // --- swap block ---------------------------------------------------
+        // ref: Simulation.cpp:1385-1434 — target-type switch.
         match rt {
             x if x == pt::VOID || x == pt::PVOD => {
+                // ref: Simulation.cpp:1387-1392 — void/portal void eats the mover;
+                // void ctype was already checked in eval_move.
                 self.kill_part(i);
                 return 0;
             }
             x if x == pt::BHOL || x == pt::NBHL => {
-                if r != 0 {
+                // ref: Simulation.cpp:1393-1401 — blackhole eats the mover.
+                if self.settings.heat_sim
+                    && r != 0
+                    && (pmap_id(r) as usize) < self.parts.len()
+                {
                     let id = pmap_id(r) as usize;
-                    self.parts[id].temp += self.parts[i].temp * 0.5;
-                    self.parts[id].temp = self.parts[id].temp.min(9999.0);
+                    self.parts[id].temp = crate::sim::restrict_flt(
+                        self.parts[id].temp + self.parts[i].temp / 2.0,
+                        crate::sim::MIN_TEMP,
+                        crate::sim::MAX_TEMP,
+                    );
                 }
                 self.kill_part(i);
                 return 0;
             }
+            x if x == pt::WHOL || x == pt::NWHL => {
+                // ref: Simulation.cpp:1402-1414 — whitehole eats ANAR.
+                if t == pt::ANAR {
+                    if self.settings.heat_sim
+                        && r != 0
+                        && (pmap_id(r) as usize) < self.parts.len()
+                    {
+                        let id = pmap_id(r) as usize;
+                        self.parts[id].temp = crate::sim::restrict_flt(
+                            self.parts[id].temp - (crate::sim::MAX_TEMP - self.parts[i].temp) / 2.0,
+                            crate::sim::MIN_TEMP,
+                            crate::sim::MAX_TEMP,
+                        );
+                    }
+                    self.kill_part(i);
+                    return 0;
+                }
+            }
+            x if x == pt::DEUT => {
+                // ref: Simulation.cpp:1415-1424 — ELEC feeding a DEUT grows it.
+                if t == pt::ELEC {
+                    if r != 0 && (pmap_id(r) as usize) < self.parts.len() {
+                        let id = pmap_id(r) as usize;
+                        if self.parts[id].life < 6000 {
+                            self.parts[id].life += 1;
+                        }
+                        self.parts[id].temp = 0.0;
+                    }
+                    self.kill_part(i);
+                    return 0;
+                }
+            }
+            x if x == pt::VIBR || x == pt::BVBR => {
+                // ref: Simulation.cpp:1425-1433 — energy particles excite VIBR.
+                if is_type(t, props::TYPE_ENERGY) {
+                    if r != 0 && (pmap_id(r) as usize) < self.parts.len() {
+                        let id = pmap_id(r) as usize;
+                        self.parts[id].tmp += 20;
+                    }
+                    self.kill_part(i);
+                    return 0;
+                }
+            }
             _ => {}
         }
+        // ref: Simulation.cpp:1436-1464 — mover-type switch.
         if t == pt::NEUT && (element(rt).properties & props::PROP_NEUTABSORB) != 0 {
             self.kill_part(i);
             return 0;
         }
         if t == pt::CNCT {
-            // Refuse if a CNCT/ROCK sits below (prevents stacking).
-            let below = if ny + 1 < self.height as i32 {
-                pmap_type(self.pmap[self.idx(nx, ny + 1)])
-            } else {
-                0
-            };
-            if below == pt::CNCT || below == pt::ROCK {
-                return 0;
+            // ref: Simulation.cpp:1445-1459 — CNCT cannot sink into another CNCT or
+            // ROCK when gravity points that way (prevents stacking); the offset is
+            // taken from the gravity field at the mover's current cell.
+            let (g_x, g_y) = self.gravity_field(
+                x,
+                y,
+                element(pt::CNCT).gravity,
+                element(pt::CNCT).gravity,
+            );
+            let mut offset_x = 0i32;
+            let mut offset_y = 0i32;
+            if g_x > 0.0 {
+                offset_x = 1;
+            } else if g_x < 0.0 {
+                offset_x = -1;
+            }
+            if g_y > 0.0 {
+                offset_y = 1;
+            } else if g_y < 0.0 {
+                offset_y = -1;
+            }
+            let different_position = (offset_x != 0) != (offset_y != 0);
+            let destination_below = (nx - x) * offset_x > 0 || (ny - y) * offset_y > 0;
+            if different_position && destination_below {
+                let bx = x + offset_x;
+                let by = y + offset_y;
+                if self.in_bounds(bx, by) {
+                    let bt = pmap_type(self.pmap[self.idx(bx, by)]);
+                    if bt == pt::CNCT || bt == pt::ROCK {
+                        return 0;
+                    }
+                }
             }
         }
-        if self.wall_at(nx, ny) == WALL_EHOLE {
-            let cx = nx / CELL as i32;
-            let cy = ny / CELL as i32;
-            if self.in_cell_bounds(cx, cy) && self.emap[self.cell_idx(cx, cy)] == 0 {
-                return 0;
-            }
+        if t == pt::GBMB && self.parts[i].life > 0 {
+            // ref: Simulation.cpp:1460-1463
+            return 0;
+        }
+        // ref: Simulation.cpp:1466-1467 — an unpowered void hole cell only lets
+        // things out into another (unpowered) void hole cell.
+        let src_ehole =
+            self.wall_at(x, y) == WALL_EHOLE && self.emap_at(x, y) == 0;
+        let dst_ehole = self.wall_at(nx, ny) == WALL_EHOLE && self.emap_at(nx, ny) == 0;
+        if src_ehole && !dst_ehole {
+            return 0;
         }
         let ri = pmap_id(r) as usize;
         if r != 0 && ri < self.parts.len() {
-            // Swap: the target moves to the mover's previous position.
+            if self.parts[i].t == pt::NEUT {
+                // ref: Simulation.cpp:1470-1492 — the mover is a neutron:
+                // NEUTPENETRATE material under the neutron gets dragged around.
+                if !self.in_bounds(x, y) {
+                    return 1;
+                }
+                let s = self.pmap[self.idx(x, y)];
+                let sid = if s != 0 { pmap_id(s) as usize } else { usize::MAX };
+                if sid != usize::MAX
+                    && sid < self.parts.len()
+                    && (element(self.parts[sid].t).properties & props::PROP_NEUTPENETRATE) == 0
+                {
+                    // Not a NEUTPENETRATE particle underneath: move only the
+                    // neutron itself.
+                    return 1;
+                }
+                if self.wall_at(x, y) == WALL_ALLOWENERGY {
+                    // ref: Simulation.cpp:1478-1479 — do not drag the target
+                    // particle into an energy only wall.
+                    return 1;
+                }
+                if sid != usize::MAX && sid < self.parts.len() {
+                    // ref: Simulation.cpp:1482-1485
+                    self.parts[sid].x = nx as f32;
+                    self.parts[sid].y = ny as f32;
+                }
+                if self.in_bounds(nx, ny) {
+                    let dcell = self.idx(nx, ny);
+                    if sid != usize::MAX && sid < self.parts.len() {
+                        self.pmap[dcell] = (s & !PMAPMASK) | self.parts[sid].t as u32;
+                    } else {
+                        self.pmap[dcell] = 0;
+                    }
+                }
+                self.parts[ri].x = x as f32;
+                self.parts[ri].y = y as f32;
+                let scell = self.idx(x, y);
+                self.pmap[scell] = pmap_pack(ri as u32, self.parts[ri].t);
+                return 1;
+            }
+            // Swap: the target moves to the mover's previous position
+            // (ref: Simulation.cpp:1494-1500).
             if self.pmap[cell] != 0 && pmap_id(self.pmap[cell]) as usize == ri {
                 self.pmap[cell] = 0;
             }
