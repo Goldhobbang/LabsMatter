@@ -413,13 +413,19 @@ fn rebuild_render() {
                             // ref: Renderer.cpp:676-678: `video[{nx,ny}] =
                             // RGB(colr,colg,colb).Pack()` runs whenever PMODE_BLOB is
                             // set, with no PMODE_FLAT gate — `video` is our `buf` and
-                            // the reference pack is opaque (`RGB::Pack`, Pixel.h:123-126,
-                            // alpha 0xFF). We write `oa`, which is 255 for every
-                            // element whose mode currently carries PMODE_BLOB (all
-                            // non-255 `.a` paths in element_graphics are paired with
-                            // BLEND/FLAT/SPARK, never BLOB), so behaviour matches the
-                            // opaque reference pack; keeping the `oa` field preserves
-                            // the buffer's own alpha semantics.
+                            // the reference pack is `RGB::Pack` (Pixel.h:71-74), which
+                            // writes only the R/G/B bytes; the alpha byte is left 0.
+                            // The reference never reads that alpha back: the frame is
+                            // presented as SDL_PIXELFORMAT_ARGB8888 with no texture
+                            // blending (PowderToySDL.cpp:277; no SDL_SetTextureBlendMode
+                            // call), and BlendPixel / RGB::Blend (Pixel.h) produce
+                            // colour only. Our render buffer's alpha IS consumed by
+                            // the browser/GPU path, so we deliberately write `oa`
+                            // (opaque for these modes) instead of 0 — a documented
+                            // deviation, not a bit-exact match. No element currently
+                            // sets PMODE_BLOB at all (grep of graphics.rs matches only
+                            // the `pmode::BLOB` constant), so this branch is
+                            // unreachable until a render-mode selector exists.
                             buf[o2] = or_;
                             buf[o2 + 1] = og;
                             buf[o2 + 2] = ob;
