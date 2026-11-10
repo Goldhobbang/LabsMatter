@@ -634,6 +634,97 @@ impl Sim {
         let stagnant = self.parts[i].flags & flags::STAGNANT != 0;
         self.parts[i].flags &= !flags::STAGNANT;
 
+        // STKM/STKM2/FIGH head movement (ref Simulation.cpp:2893-2955), runs after
+        // plan_move and FLAG_STAGNANT read/clear, before TYPE_ENERGY dispatch.
+        if t == pt::STKM || t == pt::STKM2 || t == pt::FIGH {
+            // Head passes through anything; uses plan.vx/vy already written above.
+            self.parts[i].x += self.parts[i].vx;
+            self.parts[i].y += self.parts[i].vy;
+            let mut nx = (self.parts[i].x + 0.5) as i32;
+            let mut ny = (self.parts[i].y + 0.5) as i32;
+            if self.settings.edge_mode == crate::sim::EdgeMode::Loop {
+                let x_ok = nx >= CELL as i32 && nx < self.width as i32 - CELL as i32;
+                let y_ok = ny >= CELL as i32 && ny < self.height as i32 - CELL as i32;
+                let oldnx = nx;
+                let oldny = ny;
+                if !x_ok {
+                    self.parts[i].x = remainder_p(
+                        self.parts[i].x - CELL as f32 + 0.5,
+                        self.width as f32 - CELL as f32 * 2.0,
+                    ) + CELL as f32
+                        - 0.5;
+                    nx = (self.parts[i].x + 0.5) as i32;
+                }
+                if !y_ok {
+                    self.parts[i].y = remainder_p(
+                        self.parts[i].y - CELL as f32 + 0.5,
+                        self.height as f32 - CELL as f32 * 2.0,
+                    ) + CELL as f32
+                        - 0.5;
+                    ny = (self.parts[i].y + 0.5) as i32;
+                }
+
+                if !x_ok || !y_ok {
+                    // Adjust stickman legs/accs and damp head velocity.
+                    let stickman = match t {
+                        x if x == pt::STKM => Some(&mut self.player),
+                        x if x == pt::STKM2 => Some(&mut self.player2),
+                        x if x == pt::FIGH => {
+                            let slot = self.parts[i].tmp;
+                            if slot >= 0 && (slot as usize) < self.fighters.len() {
+                                self.fighters.get_mut(slot as usize)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(stickman) = stickman {
+                        let mut j = 0usize;
+                        while j < 16 {
+                            stickman.legs[j] += (nx - oldnx) as f32;
+                            stickman.legs[j + 1] += (ny - oldny) as f32;
+                            stickman.accs[j / 2] *= 0.95;
+                            j += 2;
+                        }
+                    }
+                    self.parts[i].vy *= 0.95;
+                    self.parts[i].vx *= 0.95;
+                }
+            }
+            if ny != y || nx != x {
+                if self.in_bounds(x, y) {
+                    let cell = self.idx(x, y);
+                    if self.pmap[cell] != 0 && pmap_id(self.pmap[cell]) as usize == i {
+                        self.pmap[cell] = 0;
+                    } else if self.photons[cell] != 0 && pmap_id(self.photons[cell]) as usize == i {
+                        self.photons[cell] = 0;
+                    }
+                }
+                if nx < CELL as i32
+                    || nx >= self.width as i32 - CELL as i32
+                    || ny < CELL as i32
+                    || ny >= self.height as i32 - CELL as i32
+                {
+                    self.kill_part(i);
+                    return;
+                }
+                if !self.in_bounds(nx, ny) {
+                    self.kill_part(i);
+                    return;
+                }
+                let cell = self.idx(nx, ny);
+                // Pre-existing deviation retained: STKM/FIGH are written into pmap here
+                // even though the reference create_part path does not insert them.
+                if (element(t).properties & props::TYPE_ENERGY) != 0 {
+                    self.photons[cell] = pmap_pack(i as u32, t);
+                } else if t != 0 {
+                    self.pmap[cell] = pmap_pack(i as u32, t);
+                }
+            }
+            return;
+        }
+
         if is_type(t, props::TYPE_ENERGY) {
             self.move_energy(i, x, y, &mut plan, stagnant);
             return;
