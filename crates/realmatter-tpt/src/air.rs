@@ -544,9 +544,11 @@ impl Sim {
             }
             // ref: Air.cpp:548 draws rng()%250 in this condition for every
             // non-TTAN/RSSS/0 particle, before any bounds test.
-            let rnd = (self.rng.next() % 250) as u8;
             let def = element(t);
-            let is_insulator = self.is_heat_insulator(i) || def.heat_conduct <= rnd;
+            let is_insulator = self.is_heat_insulator(i) || {
+                // ref: Air.cpp:548 - rng()%250 evaluated only when IsHeatInsulator() is false (|| short-circuit)
+                def.heat_conduct <= (self.rng.next() % 250) as u8
+            };
             if is_insulator {
                 let x = (self.parts[i].x + 0.5) as i32 / CELL as i32;
                 let y = (self.parts[i].y + 0.5) as i32 / CELL as i32;
