@@ -9186,15 +9186,20 @@ fn cray_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 // direction for a neighbouring base (`life == 0`) PSTN, walks the arm from
 // there, and extends or retracts through `move_stack_ref` (the reference
 // `MoveStack` port in `transport.rs`). `tmp3` bit flags control obstacle and
-// limit behaviour (PSTN.cpp:45-50).
+// limit behaviour (PSTN.cpp:76-80).
+
+// Reference state constants (PSTN.cpp:70-72).
+const PISTON_INACTIVE: i32 = 0x00;
+const PISTON_RETRACT: i32 = 0x01;
+const PISTON_EXTEND: i32 = 0x02;
 
 fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
     if sim.parts[i].life != 0 {
         return 0;
     }
-    let max_size = if sim.parts[i].tmp > 0 { sim.parts[i].tmp } else { 31 }; // DEFAULT_LIMIT (PSTN.cpp:43)
-    let arm_limit = if sim.parts[i].tmp2 > 0 { sim.parts[i].tmp2 } else { 255 }; // DEFAULT_ARM_LIMIT (PSTN.cpp:44)
-    // `tmp3` bitfield flags (PSTN.cpp:45-50).
+    let max_size = if sim.parts[i].tmp != 0 { sim.parts[i].tmp } else { 31 }; // DEFAULT_LIMIT (PSTN.cpp:74)
+    let arm_limit = if sim.parts[i].tmp2 != 0 { sim.parts[i].tmp2 } else { 255 }; // DEFAULT_ARM_LIMIT (PSTN.cpp:75)
+    // `tmp3` bitfield flags (PSTN.cpp:76-80).
     let flags = sim.parts[i].tmp3;
     let flag_ext_obstacle = flags & 0x01 != 0; // FLAG_EXT_OBSTACLE
     let flag_ext_armlimit = flags & 0x02 != 0; // FLAG_EXT_ARMLIMIT
@@ -9203,7 +9208,7 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
     // `block` filter for both MoveStack calls (PSTN.cpp:183, 219).
     let block = sim.parts[i].ctype;
 
-    let mut state = 0; // 0 inactive, 1 = PISTON_EXTEND, 2 = PISTON_RETRACT
+    let mut state = PISTON_INACTIVE;
     for rx in -2..=2 {
         for ry in -2..=2 {
             if (rx == 0) == (ry == 0) {
@@ -9221,14 +9226,14 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
             let id = pmap_id(r) as usize;
             if pmap_type(r) == pt::SPRK && sim.parts[id].life == 3 {
                 if sim.parts[id].ctype == pt::PSCN as i32 {
-                    state = 1;
+                    state = PISTON_EXTEND;
                 } else {
-                    state = 2;
+                    state = PISTON_RETRACT;
                 }
             }
         }
     }
-    if state == 0 {
+    if state == PISTON_INACTIVE {
         return 0;
     }
     // Reference `PSTN.cpp:110-229`: for each cardinal neighbour, if it is a
@@ -9306,7 +9311,7 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                 nxx += nxi;
             }
             if found_end {
-                if state == 1 {
+                if state == PISTON_EXTEND {
                     // PISTON_EXTEND (PSTN.cpp:171-204).
                     if arm_count + piston_count > arm_limit {
                         // Skip extension entirely if blocked by the arm limit.
@@ -9364,7 +9369,7 @@ fn pstn_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                             moved_piston = true;
                         }
                     }
-                } else if state == 2 {
+                } else if state == PISTON_RETRACT {
                     // PISTON_RETRACT (PSTN.cpp:205-222).
                     if piston_count > arm_count {
                         // Arm too short to retract the full amount.
