@@ -349,7 +349,24 @@ impl Sim {
             let w = self.bmap[cell];
 
             // Kill particles inside walls they cannot occupy.
-            if w != 0 && self.wall_kills(w, t) && t != crate::elements_generated::pt::STKM {
+            // ref: Simulation.cpp:2324-2338
+            let forbidden_wall = w != 0
+                && (w == WALL_WALL
+                    || w == WALL_WALLELEC
+                    || w == WALL_ALLOWAIR
+                    || w == WALL_DESTROYALL
+                    || (w == WALL_ALLOWLIQUID
+                        && (element(t).properties & props::TYPE_LIQUID) == 0)
+                    || (w == WALL_ALLOWPOWDER
+                        && (element(t).properties & props::TYPE_PART) == 0)
+                    || (w == WALL_ALLOWGAS && (element(t).properties & props::TYPE_GAS) == 0)
+                    || (w == WALL_ALLOWENERGY
+                        && (element(t).properties & props::TYPE_ENERGY) == 0)
+                    || (w == WALL_EWALL && self.emap[cell] == 0))
+                && t != crate::elements_generated::pt::STKM
+                && t != crate::elements_generated::pt::STKM2
+                && t != crate::elements_generated::pt::FIGH;
+            if forbidden_wall {
                 self.kill_part(i);
                 continue;
             }
@@ -381,7 +398,10 @@ impl Sim {
             let n = self.neighbourhood(i);
 
             // Velocity updates.
-            if t != crate::elements_generated::pt::SPNG {
+            // ref: Simulation.cpp:2374-2378
+            if t != crate::elements_generated::pt::SPNG
+                || (self.parts[i].flags & flags::MOVABLE) == 0
+            {
                 self.parts[i].vx *= def.loss;
                 self.parts[i].vy *= def.loss;
             }
@@ -407,6 +427,9 @@ impl Sim {
                 if update(self, i, x, y, n.surround_space, n.nt) != 0 {
                     continue;
                 }
+                // ref: Simulation.cpp:2400-2401
+                x = (self.parts[i].x + 0.5) as i32;
+                y = (self.parts[i].y + 0.5) as i32;
             }
 
             if !self.settings.heat_sim {
@@ -422,10 +445,8 @@ impl Sim {
             if self.parts[i].vx == 0.0 && self.parts[i].vy == 0.0 {
                 continue;
             }
-            if self.parts[i].flags & flags::SKIPMOVE != 0 {
-                self.parts[i].flags &= !flags::SKIPMOVE;
-                continue;
-            }
+            // ref: Simulation.cpp:2295-2413,3014 - FLAG_SKIPMOVE is cleared/handled in
+            // MovementPhase (PHOT), not in UpdateParticles.
             self.movement_phase(i);
 
             // Particles that left the world (edge loop or fast movement)
