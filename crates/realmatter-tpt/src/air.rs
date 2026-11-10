@@ -499,14 +499,11 @@ impl Sim {
             }
         }
         self.hv.copy_from_slice(&self.ohv);
-
-        // Air also blocks ambient heat where heat insulators sit.
-        self.refresh_air_block_maps();
     }
 
-    /// Recompute `bmap_blockair` / `bmap_blockairh` from walls and particles,
-    /// equivalent to the reference's per-tick wall/ambient map pass plus the
-    /// insulator scan from `ApproximateBlockAirMaps`.
+    /// Recompute `bmap_blockair` / `bmap_blockairh` from walls only, matching the
+    /// reference per-tick BeforeSim pass.
+    // ref: Simulation.cpp:3777-3785
     pub fn refresh_air_block_maps(&mut self) {
         let (cx, cy) = (self.cells_x, self.cells_y);
         for cyi in 0..cy {
@@ -522,17 +519,19 @@ impl Sim {
                 self.bmap_blockairh[idx] = if block || w == WALL_GRAV { 0x8 } else { 0 };
             }
         }
-        // Particles that conduct heat poorly also block ambient heat.
-        // Reference: Air::ApproximateBlockAirMaps uses IsHeatInsulator(parts[i])
-        // (instance-aware: HSWC life!=10, PIPE/PPIP without PFLAG_CAN_CONDUCT)
-        // plus TTAN/RSSS and a randomized conductance threshold for the rest.
-        const PFLAG_CAN_CONDUCT: i32 = 0x0000_0001;
+    }
+
+    /// Approximate air/ambient-heat block maps after load/stamp, matching
+    /// `Air::ApproximateBlockAirMaps` (wall pass + particle pass).
+    // ref: Air.cpp:516-553
+    pub fn approximate_block_air_maps(&mut self) {
+        self.refresh_air_block_maps();
+        let (cx, cy) = (self.cells_x, self.cells_y);
         for i in 0..self.parts.len() {
             let t = self.parts[i].t;
             if t == 0 {
                 continue;
             }
-            let def = element(t);
             if t == pt::TTAN || t == pt::RSSS {
                 let x = (self.parts[i].x + 0.5) as i32 / CELL as i32;
                 let y = (self.parts[i].y + 0.5) as i32 / CELL as i32;
@@ -543,20 +542,21 @@ impl Sim {
                 }
                 continue;
             }
-            let is_insulator = self.is_heat_insulator(i)
-                || def.heat_conduct <= (self.rng.next() % 250) as u8;
+            // ref: Air.cpp:548 draws rng()%250 in this condition for every
+            // non-TTAN/RSSS/0 particle, before any bounds test.
+            let rnd = (self.rng.next() % 250) as u8;
+            let def = element(t);
+            let is_insulator = self.is_heat_insulator(i) || def.heat_conduct <= rnd;
             if is_insulator {
                 let x = (self.parts[i].x + 0.5) as i32 / CELL as i32;
                 let y = (self.parts[i].y + 0.5) as i32 / CELL as i32;
                 if x >= 0 && y >= 0 && (x as usize) < cx && (y as usize) < cy {
                     let idx = y as usize * cx + x as usize;
-                    // Reference: only increments if not already fully blocked (&0x8==0)
                     if (self.bmap_blockairh[idx] & 0x8) == 0 {
                         self.bmap_blockairh[idx] = self.bmap_blockairh[idx].saturating_add(1);
                     }
                 }
             }
-            let _ = PFLAG_CAN_CONDUCT;
         }
     }
 

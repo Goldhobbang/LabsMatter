@@ -1061,7 +1061,8 @@ impl Sim {
             }
             self.recalc();
         }
-        self.refresh_air_block_maps();
+        // ref: Simulation.cpp:337 (load/stamp ApproximateBlockAirMaps)
+        self.approximate_block_air_maps();
     }
 
     /// Numerical stabilisation pass (Agent 1 world infrastructure).
