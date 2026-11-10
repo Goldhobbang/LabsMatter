@@ -1,4 +1,4 @@
-﻿//! Shared particle graphics contract.
+//! Shared particle graphics contract.
 //!
 //! Mirrors the reference `ElementGraphics.h` model: an element's graphics
 //! callback returns a draw mode plus a base colour and a separate fire/glow
@@ -9,6 +9,8 @@
 //! [`element_graphics`] and are intentionally small; Agent 3 can extend the
 //! match with the remaining reference `graphics()` behaviours without touching
 //! the renderer.
+
+use std::sync::OnceLock;
 
 use crate::element::element;
 use crate::elements_generated::props;
@@ -73,13 +75,23 @@ impl GfxPixel {
     #[inline]
     pub fn has_glow(&self) -> bool {
         self.fa != 0
-            && (self.mode & (pmode::GLOW | pmode::ADD | pmode::SPARK | firemode::ADD | firemode::SPARK)) != 0
+            && (self.mode
+                & (pmode::GLOW
+                    | pmode::ADD
+                    | pmode::SPARK
+                    | firemode::ADD
+                    | firemode::SPARK))
+                != 0
     }
 }
 
 #[inline]
 fn rgb(c: u32) -> (u8, u8, u8) {
-    (((c >> 16) & 0xFF) as u8, ((c >> 8) & 0xFF) as u8, (c & 0xFF) as u8)
+    (
+        ((c >> 16) & 0xFF) as u8,
+        ((c >> 8) & 0xFF) as u8,
+        (c & 0xFF) as u8,
+    )
 }
 
 #[inline]
@@ -89,71 +101,184 @@ fn clamp_u8(v: i32) -> u8 {
 
 #[inline]
 fn clamp_u8f(v: f32) -> u8 {
-    if v <= 0.0 { 0 } else if v >= 255.0 { 255 } else { v as u8 }
+    if v <= 0.0 {
+        0
+    } else if v >= 255.0 {
+        255
+    } else {
+        v as u8
+    }
 }
 
+/// Exact port of `RGB::Blend(RGBA)` from `.reference/tpt-src/src/graphics/Pixel.h:131-148`.
+/// `left = self`, `right = other.NoAlpha()`, `alpha = other.Alpha` (0xFF => right, else
+/// `uint16_t(alpha*right + (0xFF-alpha)*left) / 0xFF` per channel).
 #[inline]
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+fn blend_rgb(left: (u8, u8, u8), right: (u8, u8, u8), alpha: u8) -> (u8, u8, u8) {
+    if alpha == 0xFF {
+        return right;
+    }
+    let a = alpha as u16;
+    let ia = 0xFFu16 - a;
+    (
+        ((a * right.0 as u16 + ia * left.0 as u16) / 0xFF) as u8,
+        ((a * right.1 as u16 + ia * left.1 as u16) / 0xFF) as u8,
+        ((a * right.2 as u16 + ia * left.2 as u16) / 0xFF) as u8,
+    )
 }
 
+#[derive(Clone, Copy)]
+struct GradientStop {
+    r: u8,
+    g: u8,
+    b: u8,
+    point: f32,
+}
+
+/// Exact port of `Gradient(stops, resolution)` from `.reference/tpt-src/src/graphics/Gradient.cpp:3-33`.
+/// Stops must be in ascending `point` order (as in `Renderer::PopulateTables`, `Renderer.cpp:1556-1620`).
+fn build_gradient(stops: &[GradientStop], resolution: usize) -> Vec<(u8, u8, u8)> {
+    let mut table = vec![(0u8, 0u8, 0u8); resolution];
+    if stops.len() >= 2 {
+        let mut stop: i32 = -1;
+        for i in 0..resolution {
+            let point = i as f32 / resolution as f32; // NOTE: divide by resolution, not resolution-1
+            while stop < (stops.len() as i32 - 1) && stops[(stop + 1) as usize].point <= point {
+                stop += 1;
+            }
+            if stop < 0 || stop >= stops.len() as i32 - 1 {
+                continue; // leave 0x000000
+            }
+            let left = stops[stop as usize];
+            let right = stops[(stop + 1) as usize];
+            let denom = right.point - left.point;
+            let f = if denom == 0.0 { 0.0 } else { (point - left.point) / denom };
+            let alpha = (f * 255.0) as u8; // WithAlpha(uint8_t(f * 0xFF))
+            table[i] = blend_rgb((left.r, left.g, left.b), (right.r, right.g, right.b), alpha);
+        }
+    }
+    table
+}
+
+/// Exact port of `RENDERER_TABLE(name)` accessors from `.reference/tpt-src/src/graphics/Renderer.h:89-104`.
 #[inline]
-fn gradient_sample(stops: &[(u8, u8, u8, f32)], t: f32) -> (u8, u8, u8) {
-    let t = t.clamp(0.0, 1.0);
-    if t <= stops[0].3 { return (stops[0].0, stops[0].1, stops[0].2); }
-    let last = stops.len() - 1;
-    if t >= stops[last].3 { return (stops[last].0, stops[last].1, stops[last].2); }
-    let mut i = 0;
-    while i + 1 < stops.len() && t > stops[i + 1].3 { i += 1; }
-    let a = stops[i];
-    let b = stops[i + 1];
-    let lt = if b.3 <= a.3 { 0.0 } else { (t - a.3) / (b.3 - a.3) };
-    (lerp_u8(a.0, b.0, lt), lerp_u8(a.1, b.1, lt), lerp_u8(a.2, b.2, lt))
+fn table_at(table: &[(u8, u8, u8)], index: i32) -> (u8, u8, u8) {
+    let size = table.len() as i32;
+    let mut idx = index;
+    if idx < 0 {
+        idx = 0;
+    }
+    if idx > size - 1 {
+        idx = size - 1;
+    }
+    table[idx as usize]
 }
 
-fn flame_table_at(life: i32) -> (u8, u8, u8) {
-    // ref: Renderer.cpp:1572 flameTable 200 steps
-    const STOPS: [(u8, u8, u8, f32); 4] = [
-        (0x00, 0x00, 0x00, 0.00),
-        (0x60, 0x30, 0x0F, 0.50),
-        (0xDF, 0xBF, 0x6F, 0.90),
-        (0xAF, 0x9F, 0x0F, 1.00),
-    ];
-    let idx = (life - 1).clamp(0, 199) as f32 / 199.0;
-    gradient_sample(&STOPS, idx)
+fn flame_table() -> &'static [(u8, u8, u8)] {
+    static TABLE: OnceLock<Vec<(u8, u8, u8)>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        // ref: Renderer.cpp:1572-1577
+        build_gradient(
+            &[
+                GradientStop { r: 0x00, g: 0x00, b: 0x00, point: 0.00 },
+                GradientStop { r: 0x60, g: 0x30, b: 0x0F, point: 0.50 },
+                GradientStop { r: 0xDF, g: 0xBF, b: 0x6F, point: 0.90 },
+                GradientStop { r: 0xAF, g: 0x9F, b: 0x0F, point: 1.00 },
+            ],
+            200,
+        )
+    })
 }
 
-fn plasma_table_at(life: i32) -> (u8, u8, u8) {
-    // ref: Renderer.cpp:1578 plasmaTable 200 steps
-    const STOPS: [(u8, u8, u8, f32); 5] = [
-        (0x00, 0x00, 0x00, 0.00),
-        (0x30, 0x10, 0x40, 0.25),
-        (0x30, 0x10, 0x60, 0.50),
-        (0xAF, 0xFF, 0xFF, 0.90),
-        (0xAF, 0xFF, 0xFF, 1.00),
-    ];
-    let idx = (life - 1).clamp(0, 199) as f32 / 199.0;
-    gradient_sample(&STOPS, idx)
+fn plasma_table() -> &'static [(u8, u8, u8)] {
+    static TABLE: OnceLock<Vec<(u8, u8, u8)>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        // ref: Renderer.cpp:1578-1584
+        build_gradient(
+            &[
+                GradientStop { r: 0x00, g: 0x00, b: 0x00, point: 0.00 },
+                GradientStop { r: 0x30, g: 0x10, b: 0x40, point: 0.25 },
+                GradientStop { r: 0x30, g: 0x10, b: 0x60, point: 0.50 },
+                GradientStop { r: 0xAF, g: 0xFF, b: 0xFF, point: 0.90 },
+                GradientStop { r: 0xAF, g: 0xFF, b: 0xFF, point: 1.00 },
+            ],
+            200,
+        )
+    })
 }
 
-fn clfm_table_at(life: i32) -> (u8, u8, u8) {
-    // ref: Renderer.cpp clfmTable 200 steps
-    const STOPS: [(u8, u8, u8, f32); 8] = [
-        (0x00, 0x00, 0x00, 0.00),
-        (0x0A, 0x09, 0x17, 0.10),
-        (0x19, 0x16, 0x3C, 0.20),
-        (0x28, 0x28, 0x5E, 0.30),
-        (0x34, 0x3E, 0x77, 0.40),
-        (0x49, 0x76, 0x9A, 0.60),
-        (0x57, 0xA0, 0xB4, 0.80),
-        (0x5E, 0xC4, 0xC6, 1.00),
-    ];
-    let idx = (life - 1).clamp(0, 199) as f32 / 199.0;
-    gradient_sample(&STOPS, idx)
+fn heat_table() -> &'static [(u8, u8, u8)] {
+    static TABLE: OnceLock<Vec<(u8, u8, u8)>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        // ref: Renderer.cpp:1585-1596
+        build_gradient(
+            &[
+                GradientStop { r: 0x2B, g: 0x00, b: 0xFF, point: 0.00 },
+                GradientStop { r: 0x00, g: 0x3C, b: 0xFF, point: 0.01 },
+                GradientStop { r: 0x00, g: 0xC0, b: 0xFF, point: 0.05 },
+                GradientStop { r: 0x00, g: 0xFF, b: 0xEB, point: 0.08 },
+                GradientStop { r: 0x00, g: 0xFF, b: 0x14, point: 0.19 },
+                GradientStop { r: 0x4B, g: 0xFF, b: 0x00, point: 0.25 },
+                GradientStop { r: 0xC8, g: 0xFF, b: 0x00, point: 0.37 },
+                GradientStop { r: 0xFF, g: 0xDC, b: 0x00, point: 0.45 },
+                GradientStop { r: 0xFF, g: 0x00, b: 0x00, point: 0.71 },
+                GradientStop { r: 0xFF, g: 0x00, b: 0xDC, point: 1.00 },
+            ],
+            1024,
+        )
+    })
 }
 
+fn clfm_table() -> &'static [(u8, u8, u8)] {
+    static TABLE: OnceLock<Vec<(u8, u8, u8)>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        // ref: Renderer.cpp:1597-1606
+        build_gradient(
+            &[
+                GradientStop { r: 0x00, g: 0x00, b: 0x00, point: 0.00 },
+                GradientStop { r: 0x0A, g: 0x09, b: 0x17, point: 0.10 },
+                GradientStop { r: 0x19, g: 0x16, b: 0x3C, point: 0.20 },
+                GradientStop { r: 0x28, g: 0x28, b: 0x5E, point: 0.30 },
+                GradientStop { r: 0x34, g: 0x3E, b: 0x77, point: 0.40 },
+                GradientStop { r: 0x49, g: 0x76, b: 0x9A, point: 0.60 },
+                GradientStop { r: 0x57, g: 0xA0, b: 0xB4, point: 0.80 },
+                GradientStop { r: 0x5E, g: 0xC4, b: 0xC6, point: 1.00 },
+            ],
+            200,
+        )
+    })
+}
+
+fn firw_table() -> &'static [(u8, u8, u8)] {
+    static TABLE: OnceLock<Vec<(u8, u8, u8)>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        // ref: Renderer.cpp:1607-1614
+        build_gradient(
+            &[
+                GradientStop { r: 0xFF, g: 0x00, b: 0xFF, point: 0.00 },
+                GradientStop { r: 0x00, g: 0x00, b: 0xFF, point: 0.20 },
+                GradientStop { r: 0x00, g: 0xFF, b: 0xFF, point: 0.40 },
+                GradientStop { r: 0x00, g: 0xFF, b: 0x00, point: 0.60 },
+                GradientStop { r: 0xFF, g: 0xFF, b: 0x00, point: 0.80 },
+                GradientStop { r: 0xFF, g: 0x00, b: 0x00, point: 1.00 },
+            ],
+            200,
+        )
+    })
+}
+
+fn flame_table_at(life: i32) -> (u8, u8, u8) { table_at(flame_table(), life) }
+fn plasma_table_at(life: i32) -> (u8, u8, u8) { table_at(plasma_table(), life) }
+fn heat_table_at(i: i32) -> (u8, u8, u8) { table_at(heat_table(), i) }
+fn clfm_table_at(life: i32) -> (u8, u8, u8) { table_at(clfm_table(), life) }
+fn firw_table_at(i: i32) -> (u8, u8, u8) { table_at(firw_table(), i) }
+
+/// Wavelength bitmask -> RGB as used in PHOT/BRAY/FILT callbacks.
+/// ref: PHOT.cpp:149-163, BRAY.cpp:50-86, FILT.cpp:51-72 (same 30-bit decode, scale 624/(r+g+b+1)).
 fn wavelength_to_rgb(wl: i32) -> (u8, u8, u8) {
-    let (mut r, mut g, mut b) = (0i32, 0i32, 0i32);
+    let mut r: i32 = 0;
+    let mut g: i32 = 0;
+    let mut b: i32 = 0;
     for x in 0..12 {
         r += (wl >> (x + 18)) & 1;
         b += (wl >> x) & 1;
@@ -161,10 +286,13 @@ fn wavelength_to_rgb(wl: i32) -> (u8, u8, u8) {
     for x in 0..12 {
         g += (wl >> (x + 9)) & 1;
     }
-    let scale = 624 / (r + g + b + 1);
-    (clamp_u8(r * scale), clamp_u8(g * scale), clamp_u8(b * scale))
+    let x = 624 / (r + g + b + 1);
+    (clamp_u8(r * x), clamp_u8(g * x), clamp_u8(b * x))
 }
 
+/// ref: FILT.cpp:51 `int x, wl = Element_FILT_getWavelengths(cpart);`
+/// Exact Element_FILT_getWavelengths not in scope; keep mask/temp-bin approximation.
+/// TODO(FILT.cpp:51): use exact Element_FILT_getWavelengths(cpart) when available.
 fn filt_wavelength(p: &Particle) -> i32 {
     if p.ctype & 0x3FFF_FFFF != 0 {
         p.ctype & 0x3FFF_FFFF
@@ -202,15 +330,17 @@ pub fn for_particle(t: u16, p: &Particle) -> GfxPixel {
     element_graphics(t, p, &mut out);
 
     // Per-particle decoration (ARGB) blended onto the base colour.
+    // ref: Renderer.cpp:303-306,431-437 (`deca++` then blend when !(pixel_mode & NO_DECO)).
     if p.dcolour != 0 && (out.mode & pmode::NO_DECO) == 0 {
-        let da = (p.dcolour >> 24) & 0xFF;
-        if da != 0 {
-            let (dr, dg, db) = rgb(p.dcolour & 0x00FF_FFFF);
-            r = ((da as u32 * dr as u32 + (256 - da) as u32 * out.r as u32) >> 8) as u8;
-            g = ((da as u32 * dg as u32 + (256 - da) as u32 * out.g as u32) >> 8) as u8;
-            b = ((da as u32 * db as u32 + (256 - da) as u32 * out.b as u32) >> 8) as u8;
-        }
+        let mut da = ((p.dcolour >> 24) & 0xFF) as u32;
+        da += 1;
+        let (dr, dg, db) = rgb(p.dcolour & 0x00FF_FFFF);
+        r = ((da * dr as u32 + (256 - da) * out.r as u32) >> 8) as u8;
+        g = ((da * dg as u32 + (256 - da) * out.g as u32) >> 8) as u8;
+        b = ((da * db as u32 + (256 - da) * out.b as u32) >> 8) as u8;
     }
+    // TODO(Renderer.cpp:438-443): DECO_FIRE blends decoration into fire colour (firer/fireg/fireb) when
+    // PMODE::DECO_FIRE set; not applied here without separate fire-colour output handling.
     out.r = r;
     out.g = g;
     out.b = b;
@@ -225,19 +355,31 @@ pub fn for_particle(t: u16, p: &Particle) -> GfxPixel {
 fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
     use crate::elements_generated::pt;
     match t {
-        // ref: FIRE.cpp:405
+        // ref: FIRE.cpp:405-425
         pt::FIRE => {
             let (cr, cg, cb) = flame_table_at(p.life);
-            out.r = cr; out.g = cg; out.b = cb;
-            out.fa = 255; out.fr = cr; out.fg = cg; out.fb = cb;
-            out.mode = pmode::NONE | firemode::ADD;
+            out.r = cr;
+            out.g = cg;
+            out.b = cb;
+            out.fa = 255;
+            out.fr = cr;
+            out.fg = cg;
+            out.fb = cb;
+            out.mode = pmode::NONE; // Clear default, don't draw pixel
+            out.mode |= firemode::ADD;
         }
-        // ref: PLSM.cpp:54
+        // ref: PLSM.cpp:54-70
         pt::PLSM => {
             let (cr, cg, cb) = plasma_table_at(p.life);
-            out.r = cr; out.g = cg; out.b = cb;
-            out.fa = 255; out.fr = cr; out.fg = cg; out.fb = cb;
-            out.mode = pmode::GLOW | pmode::ADD | firemode::ADD;
+            out.r = cr;
+            out.g = cg;
+            out.b = cb;
+            out.fa = 255;
+            out.fr = cr;
+            out.fg = cg;
+            out.fb = cb;
+            out.mode = pmode::GLOW | pmode::ADD; // Clear default, don't draw pixel
+            out.mode |= firemode::ADD;
         }
         // ref: LAVA.cpp:55
         pt::LAVA => {
@@ -281,7 +423,7 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
         }
         // TODO(GLOW.cpp:93): needs gfctx.rng for random threshold.
         pt::GLOW => {}
-        // ref: BRAY.cpp:50
+        // ref: BRAY.cpp:50-94
         pt::BRAY => {
             let mut trans: u8 = 255;
             if p.tmp == 0 {
@@ -289,36 +431,46 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
                 let wl = p.ctype & 0x3FFF_FFFF;
                 if wl != 0 {
                     let (r, g, b) = wavelength_to_rgb(wl);
-                    out.r = r; out.g = g; out.b = b;
+                    out.r = r;
+                    out.g = g;
+                    out.b = b;
                 }
             } else if p.tmp == 1 {
                 trans = (p.life / 4).clamp(0, 255) as u8;
                 let wl = p.ctype & 0x3FFF_FFFF;
                 if wl != 0 {
                     let (r, g, b) = wavelength_to_rgb(wl);
-                    out.r = r; out.g = g; out.b = b;
+                    out.r = r;
+                    out.g = g;
+                    out.b = b;
                 }
             } else if p.tmp == 2 {
                 trans = (p.life.saturating_mul(100)).clamp(0, 255) as u8;
-                out.r = 255; out.g = 150; out.b = 50;
+                out.r = 255;
+                out.g = 150;
+                out.b = 50;
             }
             out.a = trans;
             out.mode &= !pmode::PMODE_MASK;
             out.mode |= pmode::BLEND | pmode::GLOW;
         }
-        // TODO(ARAY.cpp): no reference graphics callback.
-        pt::ARAY => {}
-        // ref: FILT.cpp:51
+        // ARAY: no reference graphics callback (default)
+        // ref: FILT.cpp:51-72
         pt::FILT => {
             let wl = filt_wavelength(p);
             let (r, g, b) = wavelength_to_rgb(wl);
-            out.r = r; out.g = g; out.b = b;
-            out.a = if p.life > 0 && p.life <= 4 { (127 + p.life * 30).clamp(0, 255) as u8 } else { 127 };
+            out.r = r;
+            out.g = g;
+            out.b = b;
+            out.a = if p.life > 0 && p.life <= 4 {
+                (127 + p.life * 30).clamp(0, 255) as u8
+            } else {
+                127
+            };
             out.mode &= !pmode::PMODE_MASK;
             out.mode |= pmode::BLEND;
         }
-        // ref: TRON.cpp:169 (colour/index mapping differs from reference hue table; TODO for exact tron_colours table)
-        pt::TRON => {}
+        // TODO(TRON.cpp:169): needs exact tron_colours table/index mapping.
         // PIPE / PPIP: emulate stored particle graphics (reference PIPE.cpp:~400, props_pipe_to_part/Element_PIPE_graphics).
         // Keeps existing behaviour and works for stored/portal-like embedded payload rendering (see graphics.rs:285 note in report).
         pt::PIPE | pt::PPIP => {
@@ -356,11 +508,14 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
                 }
             }
         }
-        // ref: LCRY.cpp:107 (deco-aware branch needs gfctx.ren decorationLevel; base brightness path translated)
+        // ref: LCRY.cpp:107-135
+        // TODO(LCRY.cpp:107): needs gfctx.ren->decorationLevel/dcolour checks (deco-aware branches).
         pt::LCRY => {
             let q = p.tmp2.min(10).max(0);
             let v = clamp_u8(0x50 + q * 10);
-            out.r = v; out.g = v; out.b = v;
+            out.r = v;
+            out.g = v;
+            out.b = v;
             out.mode |= pmode::NO_DECO;
         }
         // ref: DEUT.cpp:148
@@ -437,18 +592,27 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
                  ((curr.2 as u16 + next.2 as u16) / 2) as u8)
             } else { curr };
             out.r = r; out.g = g; out.b = b;
-            // rnd sparkle (p.tmp fields deterministic) ref: SLCN.cpp:125
+            // ref: SLCN.cpp:125-133
             let rnd = ((p.tmp & 0xFFFF) as u32).wrapping_mul(((p.tmp >> 16) & 0xFFFF) as u32);
             if rnd % 887 == 0 {
                 out.mode |= pmode::FLARE | pmode::GLOW;
             }
+            if rnd % 593 == 0 {
+                out.mode |= pmode::SPARK;
+            }
         }
-        // ref: CFLM.cpp:51
+        // ref: CFLM.cpp:51-70
         pt::CFLM => {
             let (cr, cg, cb) = clfm_table_at(p.life / 2);
-            out.r = cr; out.g = cg; out.b = cb;
-            out.fa = 255; out.fr = cr; out.fg = cg; out.fb = cb;
-            out.mode = pmode::NONE | firemode::ADD;
+            out.r = cr;
+            out.g = cg;
+            out.b = cb;
+            out.fa = 255;
+            out.fr = cr;
+            out.fg = cg;
+            out.fb = cb;
+            out.mode = pmode::NONE; // Clear default, don't draw pixel
+            out.mode |= firemode::ADD;
         }
         // ref: THDR.cpp:95
         pt::THDR => {
@@ -552,36 +716,44 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
             out.g = clamp_u8f((freq * q + 2.0).sin() * 127.0 + 128.0);
             out.b = clamp_u8f((freq * q + 4.0).sin() * 127.0 + 128.0);
         }
-        // ref: PRTI.cpp:152 (EFFECT flags not represented in this contract)
+        // ref: PRTI.cpp:152-163 (EFFECT_* flags not represented in this contract)
         pt::PRTI => {
-            out.fa = 8; out.fr = 255; out.fg = 0; out.fb = 0;
+            out.fa = 8;
+            out.fr = 255;
+            out.fg = 0;
+            out.fb = 0;
             out.mode &= !pmode::PMODE_MASK;
             out.mode |= pmode::ADD;
+            // TODO(PRTI.cpp:152): needs EFFECT_DBGLINES|EFFECT_GRAVIN (not represented).
         }
-        // ref: PRTO.cpp:181 (EFFECT flags not represented in this contract)
+        // ref: PRTO.cpp:181-192 (EFFECT_* flags not represented in this contract)
         pt::PRTO => {
-            out.fa = 8; out.fr = 0; out.fg = 0; out.fb = 255;
+            out.fa = 8;
+            out.fr = 0;
+            out.fg = 0;
+            out.fb = 255;
             out.mode &= !pmode::PMODE_MASK;
             out.mode |= pmode::ADD;
+            // TODO(PRTO.cpp:181): needs EFFECT_DBGLINES|EFFECT_GRAVOUT (not represented).
         }
-        // ref: LITH.cpp:254
+        // ref: LITH.cpp:254-274
         pt::LITH => {
             if p.life >= 1000 {
-                out.r = 0xFF; out.g = 0xA0; out.b = 0x40;
+                // Exploding lith
+                out.r = 0xFF;
+                out.g = 0xA0;
+                out.b = 0x40;
                 out.mode |= pmode::FLARE | pmode::GLOW;
             } else if p.ctype > 0 {
-                // Deterministic substitute for gfctx.rng.between(ctype/3, ctype)
-                let v = p.ctype / 2;
-                let mut mult = v / 15;
-                if mult > 6 { mult = 6; }
-                out.r = clamp_u8(out.r as i32 - 30 * mult);
-                out.b = clamp_u8(out.b as i32 + 20 * mult);
-                out.mode |= pmode::FLARE | pmode::GLOW;
+                // TODO(LITH.cpp:254): needs gfctx.rng.between(cpart->ctype/3, cpart->ctype) for mult.
             }
         }
-        // ref: FIRW.cpp:121
+        // ref: FIRW.cpp:121-128 (graphics only toggles PMODE_GLOW when tmp>0)
+        // TODO(FIRW.cpp:96): needs rng (0..=199) to index firwTableAt for explosion particle colour; not representable from (t,p).
         pt::FIRW => {
-            if p.tmp > 0 { out.mode |= pmode::GLOW; }
+            if p.tmp > 0 {
+                out.mode |= pmode::GLOW;
+            }
         }
         // TODO(GRAV.cpp:62): needs gfctx.sim->currentTick.
         // TODO(PIPE.cpp:~400): detailed parity w/ graphicscache/pixel_mode; base emulation kept above.
