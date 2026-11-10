@@ -10335,3 +10335,276 @@ fn _unused(sim: &mut Sim) -> bool {
     let _ = rand_chance(sim, 1, 2);
     true
 }
+
+// ---------------------------------------------------------------------------
+// EMP trigger (reference: EMP.cpp:50-225, Probability.cpp:26-66)
+// Dispatched from AfterSim by tick.rs (separate owner) via emp_trigger.
+// ---------------------------------------------------------------------------
+
+fn binomial_gte1(n: i32, p: f32) -> f32 {
+    // Probability.cpp:26-28
+    1.0 - (1.0 - p).powf(n as f32)
+}
+
+struct SmallKBinomialGenerator {
+    cdf: Vec<f32>,
+    max_k: u32,
+}
+
+impl SmallKBinomialGenerator {
+    fn new(n: u32, p: f32, max_k: u32) -> Self {
+        // Probability.cpp:44-61. Reproduce reference loop exactly, including f32
+        // width and u32 wraparound for coeff_n/coeff_d (C++ unsigned int overflow
+        // is well-defined wraparound; Rust debug would panic, so use wrapping_mul).
+        let mut pdf = vec![0.0f32; max_k as usize];
+        let mut p_term = (1.0f32 - p).powf(n as f32);
+        let mut coeff_n: u32 = 1;
+        let mut coeff_d: u32 = 1;
+        let mut k = 0u32;
+        while k < max_k {
+            pdf[k as usize] = p_term * (coeff_n as f32 / coeff_d as f32);
+            p_term *= p / (1.0f32 - p);
+            coeff_n = coeff_n.wrapping_mul(n.wrapping_sub(k));
+            coeff_d = coeff_d.wrapping_mul(k.wrapping_add(1));
+            k += 1;
+        }
+        let mut cdf = vec![0.0f32; max_k as usize];
+        let mut acc = 0.0f32;
+        let mut i = 0usize;
+        while i < max_k as usize {
+            acc += pdf[i];
+            cdf[i] = acc;
+            i += 1;
+        }
+        Self { cdf, max_k }
+    }
+
+    fn calc(&self, rand_float: f32) -> u32 {
+        // Probability.cpp:63-66
+        let mut k = 0u32;
+        while k < self.max_k {
+            if rand_float < self.cdf[k as usize] {
+                return k;
+            }
+            k += 1;
+        }
+        self.max_k
+    }
+}
+
+struct DeltaTempGenerator {
+    step_size: f32,
+    binom: SmallKBinomialGenerator,
+}
+
+impl DeltaTempGenerator {
+    fn new(n: i32, p: f32, temp_step: f32) -> Self {
+        // EMP.cpp:59-65
+        let max_step_count = if (MAX_TEMP / temp_step) < 10.0 {
+            (MAX_TEMP / temp_step) as u32 + 1
+        } else {
+            10
+        };
+        let binom = SmallKBinomialGenerator::new(n as u32, p, max_step_count);
+        Self {
+            step_size: temp_step,
+            binom,
+        }
+    }
+
+    fn get_delta(&self, rand_float: f32) -> f32 {
+        // EMP.cpp:66-69
+        self.binom.calc(rand_float) as f32 * self.step_size
+    }
+
+    fn apply(&self, sim: &mut Sim, id: usize) {
+        // EMP.cpp:70-72. RNG consumed inside apply once per call, exactly like
+        // the reference (sim.rng.uniform01() passed to get_delta).
+        let d = self.get_delta(sim.rng.uniform01());
+        sim.parts[id].temp = restrict_flt(sim.parts[id].temp + d, MIN_TEMP, MAX_TEMP);
+    }
+}
+
+pub fn emp_trigger(sim: &mut Sim, trigger_count: u32) {
+    // Reproduces reference Element_EMP::Trigger (EMP.cpp:74-225).
+    // Construct ALL probability/temp generators BEFORE any RNG use, in the
+    // reference declaration order. Their construction does not consume RNG.
+    let n = trigger_count as i32;
+    let prob_change_center = binomial_gte1(n, 1.0 / 48.0); // EMP.cpp:76
+    let temp_center = DeltaTempGenerator::new(n, 1.0 / 100.0, 3000.0); // EMP.cpp:77
+    let prob_break_metl = 1.0 / 300.0; // EMP.cpp:79
+    let prob_break_bmtl = 1.0 / 160.0; // EMP.cpp:80
+    let temp_metal = DeltaTempGenerator::new(n, 1.0 / 280.0, 3000.0); // EMP.cpp:81
+    // Integer halving as `triggerCount/2` in C++ (EMP.cpp:82).
+    let prob_break_metl_more = binomial_gte1(n / 2, 1.0 / 160.0);
+    let prob_rand_wifi = 1.0 / 8.0; // EMP.cpp:83
+    let prob_break_wifi = 1.0 / 16.0; // EMP.cpp:84
+    let prob_break_swch = 1.0 / 100.0; // EMP.cpp:85
+    let temp_swch = DeltaTempGenerator::new(n, 1.0 / 100.0, 2000.0); // EMP.cpp:86
+    let prob_break_aray = 1.0 / 60.0; // EMP.cpp:87
+    let prob_rand_dlay = 1.0 / 70.0; // EMP.cpp:88
+
+    let w = sim.width as i32;
+    let h = sim.height as i32;
+
+    let mut r = 0usize;
+    while r < sim.parts.len() {
+        let t = sim.parts[r].t;
+        if t == 0 {
+            r += 1;
+            continue;
+        }
+        let rx = sim.parts[r].x as i32;
+        let ry = sim.parts[r].y as i32;
+        // Guard (EMP.cpp:96-101): SPRK, or SWCH with life!=0 && life!=10, or WIRE with ctype>0
+        let triggered = t == pt::SPRK
+            || (t == pt::SWCH && sim.parts[r].life != 0 && sim.parts[r].life != 10)
+            || (t == pt::WIRE && sim.parts[r].ctype > 0);
+        if !triggered {
+            r += 1;
+            continue;
+        }
+
+        // is_elec (EMP.cpp:102-114): ctype in {PSCN,NSCN,PTCT,NTCT,INST,SWCH} or t==WIRE or t==SWCH
+        let ct = sim.parts[r].ctype;
+        let is_elec = ct == pt::PSCN as i32
+            || ct == pt::NSCN as i32
+            || ct == pt::PTCT as i32
+            || ct == pt::NTCT as i32
+            || ct == pt::INST as i32
+            || ct == pt::SWCH as i32
+            || t == pt::WIRE
+            || t == pt::SWCH;
+
+        if is_elec {
+            // EMP.cpp:116-128
+            temp_center.apply(sim, r);
+            // RNG order: uniform01 then chance(2,5) only inside the branch.
+            if sim.rng.uniform01() < prob_change_center {
+                if sim.rng.chance(2, 5) {
+                    sim.part_change_type(r, rx, ry, pt::BREC as i16);
+                } else {
+                    sim.part_change_type(r, rx, ry, pt::NTCT as i16);
+                }
+            }
+        }
+
+        // 5x5 neighbour scan (EMP.cpp:130-135). Reference uses literal `(rx || ry)`
+        // (particle position), not the offset — reproduced exactly to mirror reference.
+        for nx in -2i32..=2 {
+            for ny in -2i32..=2 {
+                if (rx != 0 || ry != 0)
+                    && rx + nx >= 0
+                    && ry + ny >= 0
+                    && rx + nx < w
+                    && ry + ny < h
+                {
+                    let px = rx + nx;
+                    let py = ry + ny;
+                    let cell = sim.idx(px, py);
+                    let pr = sim.pmap[cell];
+                    if pr == 0 {
+                        continue;
+                    }
+                    let ntype = pmap_type(pr);
+                    let nidx = pmap_id(pr) as usize;
+                    // EMP.cpp:139-142: skip if invalid index or type==0
+                    if nidx >= sim.parts.len() || sim.parts[nidx].t == 0 {
+                        continue;
+                    }
+
+                    if is_elec {
+                        // EMP.cpp:144-188: switch(ntype) for is_elec, then continue.
+                        match ntype {
+                            pt::METL => {
+                                temp_metal.apply(sim, nidx);
+                                if sim.rng.uniform01() < prob_break_metl {
+                                    sim.part_change_type(nidx, px, py, pt::BMTL as i16);
+                                    if sim.rng.uniform01() < prob_break_metl_more {
+                                        sim.part_change_type(nidx, px, py, pt::BRMT as i16);
+                                        sim.parts[nidx].temp = restrict_flt(
+                                            sim.parts[nidx].temp + 1000.0,
+                                            MIN_TEMP,
+                                            MAX_TEMP,
+                                        );
+                                    }
+                                }
+                            }
+                            pt::BMTL => {
+                                temp_metal.apply(sim, nidx);
+                                if sim.rng.uniform01() < prob_break_bmtl {
+                                    sim.part_change_type(nidx, px, py, pt::BRMT as i16);
+                                    sim.parts[nidx].temp = restrict_flt(
+                                        sim.parts[nidx].temp + 1000.0,
+                                        MIN_TEMP,
+                                        MAX_TEMP,
+                                    );
+                                }
+                            }
+                            pt::WIFI => {
+                                if sim.rng.uniform01() < prob_rand_wifi {
+                                    // EMP.cpp:165-167
+                                    sim.parts[nidx].temp =
+                                        sim.rng.between(0, MAX_TEMP as i32 - 1) as f32;
+                                }
+                                if sim.rng.uniform01() < prob_break_wifi {
+                                    // EMP.cpp:168-172: create_part(n, x+nx, y+ny, PT_BREC)
+                                    // replacing n. Primitive choice: kill_part then
+                                    // create_part (reuses freed slot when available) to
+                                    // reset to fresh BREC defaults like reference create_part
+                                    // on existing index; then add 1000 to resulting temp.
+                                    // Deviation note: not a guaranteed in-place same-id
+                                    // replacement primitive; uses existing crate APIs.
+                                    sim.kill_part(nidx);
+                                    if let Some(new_id) = sim.create_part(px, py, pt::BREC) {
+                                        sim.parts[new_id].temp = restrict_flt(
+                                            sim.parts[new_id].temp + 1000.0,
+                                            MIN_TEMP,
+                                            MAX_TEMP,
+                                        );
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
+                    // EMP.cpp:191-220: non-elec triggered second switch.
+                    match ntype {
+                        pt::SWCH => {
+                            // Reference order: probability check FIRST then temp apply.
+                            if sim.rng.uniform01() < prob_break_swch {
+                                sim.part_change_type(nidx, px, py, pt::BREC as i16);
+                            }
+                            temp_swch.apply(sim, nidx);
+                        }
+                        pt::ARAY => {
+                            if sim.rng.uniform01() < prob_break_aray {
+                                // EMP.cpp:203-207: create_part(n,...) replacing n with BREC.
+                                // Same primitive choice/deviation as WIFI branch.
+                                sim.kill_part(nidx);
+                                if let Some(new_id) = sim.create_part(px, py, pt::BREC) {
+                                    sim.parts[new_id].temp = restrict_flt(
+                                        sim.parts[new_id].temp + 1000.0,
+                                        MIN_TEMP,
+                                        MAX_TEMP,
+                                    );
+                                }
+                            }
+                        }
+                        pt::DLAY => {
+                            if sim.rng.uniform01() < prob_rand_dlay {
+                                // EMP.cpp:213-215
+                                sim.parts[nidx].temp = sim.rng.between(0, 255) as f32 + 273.15;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        r += 1;
+    }
+}
