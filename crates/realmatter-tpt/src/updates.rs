@@ -7920,7 +7920,7 @@ fn seed_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 
 // Portal payloads now live in `Sim::portal` (world layer). This keeps them
 // serialisable and independent of particle iteration order.
-use crate::portal::{PortalPayload, PORTAL_CHANNELS};
+use crate::portal::{PortalPayload, PORTAL_CHANNELS, PORTAL_SLOTS};
 
 const PORTAL_RX: [i32; 8] = [-1, 0, 1, 1, 1, 0, -1, -1];
 const PORTAL_RY: [i32; 8] = [-1, -1, -1, 0, 1, 1, 1, 0];
@@ -7934,6 +7934,154 @@ fn portal_channel(sim: &Sim, i: usize) -> usize {
 fn prti_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
     let ch = portal_channel(sim, i);
     sim.parts[i].tmp = ch as i32;
+    let mut fe: i32 = 0;
+
+    // ref: PRTI.cpp:67-74
+    for count in 0..8 {
+        let rx = PORTAL_RX[count];
+        let ry = PORTAL_RY[count];
+        let nx = x + rx;
+        let ny = y + ry;
+        if !sim.in_bounds(nx, ny) {
+            continue;
+        }
+        let mut r = sim.pmap[sim.idx(nx, ny)];
+        // ref: PRTI.cpp:80-83 (fe set from raw pmap BEFORE photon fallback when !r or STOR)
+        if r == 0 || pmap_type(r) == pt::STOR {
+            fe = 1;
+        }
+        if r == 0 {
+            // ref: PRTI.cpp:84-90 (photon fallback when empty)
+            r = sim.photons[sim.idx(nx, ny)];
+            if r == 0 {
+                continue;
+            }
+        } else {
+            // ref: PRTI.cpp:84-90 (photon fallback when neighbour not transportable type)
+            let rt_check = pmap_type(r);
+            let pcheck = element(rt_check).properties;
+            if !((pcheck & (props::TYPE_PART | props::TYPE_LIQUID | props::TYPE_GAS | props::TYPE_ENERGY)) != 0
+                || rt_check == pt::SPRK
+                || rt_check == pt::STOR)
+            {
+                r = sim.photons[sim.idx(nx, ny)];
+                if r == 0 {
+                    continue;
+                }
+            }
+        }
+
+        let rt = pmap_type(r);
+        let id = pmap_id(r) as usize;
+        if id >= sim.parts.len() {
+            continue;
+        }
+        // ref: PRTI.cpp:92-93 (STKM/STKM2/FIGH handled elsewhere)
+        if matches!(rt, pt::STKM | pt::STKM2 | pt::FIGH) {
+            continue;
+        }
+        // ref: PRTI.cpp:95-96
+        if rt == pt::SOAP {
+            sim.soap_detach(id);
+        }
+
+        // ref: PRTI.cpp:98-99 (scan for empty slot in this channel/direction)
+        if let Some(_nnx_slot) = sim.portal.first_empty_slot(ch, count) {
+            if rt == pt::STOR {
+                // ref: PRTI.cpp:100-108, PIPE.cpp:421-446,450-468 (props_pipe_to_part STOR=true)
+                let stored_raw = sim.parts[id].tmp;
+                // ref: PIPE.cpp:421-431 (props_pipe_to_part STOR=true uses TYP(pipe->tmp))
+                let stored = pmap_type(stored_raw as u32) as i32;
+                if stored > 0
+                    && (stored as usize) < crate::elements_generated::PT_NUM
+                    && element(stored as u16).enabled
+                {
+                    let st = element(stored as u16).properties;
+                    if (st & (props::TYPE_PART | props::TYPE_LIQUID | props::TYPE_GAS | props::TYPE_ENERGY)) != 0
+                    {
+                        // ref: PIPE.cpp:439-443 (non-energy velocities zeroed; energy slots start zero here)
+                        let (vx, vy): (f32, f32) = (0.0, 0.0);
+                        let payload = PortalPayload {
+                            t: stored as u16,
+                            life: sim.parts[id].tmp2,
+                            ctype: sim.parts[id].tmp4,
+                            x: (x + rx) as f32,
+                            y: (y + ry) as f32,
+                            vx,
+                            vy,
+                            temp: sim.parts[id].temp,
+                            tmp: sim.parts[id].tmp3,
+                            tmp2: 0,
+                            tmp3: 0,
+                            tmp4: 0,
+                            flags: 0,
+                            dcolour: 0,
+                        };
+                        if sim.portal.store(ch, count, payload) {
+                            // ref: PIPE.cpp:456-459 (STOR source cleared on transfer)
+                            sim.parts[id].tmp = 0;
+                        }
+                    }
+                }
+            } else {
+                // ref: PRTI.cpp:110-118
+                let payload = PortalPayload::from_particle(&sim.parts[id]);
+                if sim.portal.store(ch, count, payload) {
+                    if rt == pt::SPRK {
+                        // ref: PRTI.cpp:112-114 (convert spark to its ctype, unconditional)
+                        // Note: ctype==0 is handled by part_change_type's PT_NONE/disabled path (kills/returns false).
+                        let ct = sim.parts[id].ctype as i16;
+                        sim.part_change_type(id, nx, ny, ct);
+                    } else {
+                        sim.kill_part(id);
+                    }
+                    // ref: PRTI.cpp:117
+                    fe = 1;
+                }
+            }
+        }
+    }
+
+    if fe != 0 {
+        // ref: PRTI.cpp:127-146 (orbital animation RNG order/count preserved)
+        if sim.parts[i].life == 0 {
+            sim.parts[i].life = sim.rng.gen() as i32;
+        }
+        if sim.parts[i].ctype == 0 {
+            sim.parts[i].ctype = sim.rng.gen() as i32;
+        }
+        let (mut orbd, mut orbl_arr) = crate::portal::orbital_get(sim.parts[i].life, sim.parts[i].ctype);
+        for r in 0..4 {
+            if orbd[r] > 1 {
+                orbd[r] -= 12;
+                if orbd[r] < 1 {
+                    orbd[r] = sim.rng.between(128, 255);
+                    orbl_arr[r] = sim.rng.between(0, 254);
+                } else {
+                    orbl_arr[r] += 2;
+                    orbl_arr[r] = ((orbl_arr[r] % 255) + 255) % 255;
+                }
+            } else {
+                orbd[r] = sim.rng.between(128, 255);
+                orbl_arr[r] = sim.rng.between(0, 254);
+            }
+        }
+        let (nl, nc) = crate::portal::orbital_set(&orbd, &orbl_arr);
+        sim.parts[i].life = nl;
+        sim.parts[i].ctype = nc;
+    } else {
+        sim.parts[i].life = 0;
+        sim.parts[i].ctype = 0;
+    }
+    0
+}
+
+// --- PRTO ----------------------------------------------------------------
+fn prto_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
+    let ch = portal_channel(sim, i);
+    sim.parts[i].tmp = ch as i32;
+    let mut fe: i32 = 0;
+    // ref: PRTO.cpp:67-74
     for count in 0..8 {
         let rx = PORTAL_RX[count];
         let ry = PORTAL_RY[count];
@@ -7944,57 +8092,119 @@ fn prti_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
         }
         let r = sim.pmap[sim.idx(nx, ny)];
         if r == 0 {
-            continue;
-        }
-        let id = pmap_id(r) as usize;
-        let rt = pmap_type(r);
-        let p = element(rt).properties;
-        if !((p & (props::TYPE_PART | props::TYPE_LIQUID | props::TYPE_GAS | props::TYPE_ENERGY)) != 0
-            || rt == pt::SPRK
-            || rt == pt::STOR)
-        {
-            continue;
-        }
-        if matches!(rt, pt::STKM | pt::STKM2 | pt::FIGH) {
-            continue;
-        }
-        let payload = PortalPayload::from_particle(&sim.parts[id]);
-        if sim.portal.store(ch, count, payload) {
-            if rt == pt::SPRK {
-                let ct = sim.parts[id].ctype;
-                sim.part_change_type(id, nx, ny, ct as i16);
-            } else {
-                sim.kill_part(id);
+            // ref: PRTO.cpp:70-73 (fe set for every empty neighbour before slot scan)
+            fe = 1;
+            for nnx in 0..PORTAL_SLOTS {
+                // ref: PRTO.cpp:76-80 (rng.between(-1,1) drawn once per nnx iteration, before reading slot)
+                let randomness = crate::portal::PortalStore::reverse_direction(count, sim.rng.between(-1, 1));
+                if let Some(p) = sim.portal.payload_at(ch, randomness, nnx) {
+                    if p.t == pt::SPRK {
+                        // ref: PRTO.cpp:81-90
+                        let _ = sim.create_part(x + 1, y, pt::SPRK);
+                        let _ = sim.create_part(x + 1, y + 1, pt::SPRK);
+                        let _ = sim.create_part(x + 1, y - 1, pt::SPRK);
+                        let _ = sim.create_part(x, y - 1, pt::SPRK);
+                        let _ = sim.create_part(x, y + 1, pt::SPRK);
+                        let _ = sim.create_part(x - 1, y + 1, pt::SPRK);
+                        let _ = sim.create_part(x - 1, y, pt::SPRK);
+                        let _ = sim.create_part(x - 1, y - 1, pt::SPRK);
+                        sim.portal.clear_slot(ch, randomness, nnx);
+                        break;
+                    } else if p.t != 0 {
+                        // ref: PRTO.cpp:93-101 (pre-create spawn bookkeeping)
+                        if p.t == pt::STKM {
+                            sim.player.spwn = 0;
+                        }
+                        if p.t == pt::STKM2 {
+                            sim.player2.spwn = 0;
+                        }
+                        if p.t == pt::FIGH {
+                            sim.figh_count -= 1;
+                            let ft = p.tmp as u8;
+                            if (ft as usize) < sim.fighters.len() {
+                                sim.fighters[ft as usize].spwn = 0;
+                            }
+                        }
+                        // ref: PRTO.cpp:102-116
+                        if let Some(np) = sim.create_part(x + rx, y + ry, p.t) {
+                            if sim.parts[np].t == pt::FIGH {
+                                let ft_new = sim.parts[np].tmp as u8;
+                                let ft_old = p.tmp as u8;
+                                if (ft_new as usize) < sim.fighters.len() {
+                                    sim.fighters[ft_new as usize].spwn = 0;
+                                }
+                                if (ft_old as usize) < sim.fighters.len() {
+                                    sim.fighters[ft_old as usize].spwn = 1;
+                                }
+                            }
+                            // ref: PRTO.cpp:123-134 (keep new particle velocity if stored vx/vy are zero)
+                            if p.vx == 0.0 && p.vy == 0.0 {
+                                let tmp_vx = sim.parts[np].vx;
+                                let tmp_vy = sim.parts[np].vy;
+                                p.apply_to(&mut sim.parts[np], false);
+                                sim.parts[np].vx = tmp_vx;
+                                sim.parts[np].vy = tmp_vy;
+                            } else {
+                                p.apply_to(&mut sim.parts[np], false);
+                            }
+                            // ref: PRTO.cpp:135
+                            sim.parts[np].x = (x + rx) as f32;
+                            sim.parts[np].y = (y + ry) as f32;
+                            sim.portal.clear_slot(ch, randomness, nnx);
+                            break;
+                        } else {
+                            // ref: PRTO.cpp:105-114 (restore on failed create)
+                            if p.t == pt::STKM {
+                                sim.player.spwn = 1;
+                            }
+                            if p.t == pt::STKM2 {
+                                sim.player2.spwn = 1;
+                            }
+                            if p.t == pt::FIGH {
+                                sim.figh_count += 1;
+                                let ft = p.tmp as u8;
+                                if (ft as usize) < sim.fighters.len() {
+                                    sim.fighters[ft as usize].spwn = 1;
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
             }
         }
     }
-    0
-}
 
-// --- PRTO ----------------------------------------------------------------
-fn prto_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
-    let ch = portal_channel(sim, i);
-    sim.parts[i].tmp = ch as i32;
-    for count in 0..8 {
-        let rx = PORTAL_RX[count];
-        let ry = PORTAL_RY[count];
-        let nx = x + rx;
-        let ny = y + ry;
-        if !sim.in_bounds(nx, ny) {
-            continue;
+    if fe != 0 {
+        // ref: PRTO.cpp:143-176 (orbital animation RNG order/count preserved)
+        if sim.parts[i].life == 0 {
+            sim.parts[i].life = sim.rng.gen() as i32;
         }
-        if !cell_free(sim, nx, ny) {
-            continue;
+        if sim.parts[i].ctype == 0 {
+            sim.parts[i].ctype = sim.rng.gen() as i32;
         }
-        let random = ((count as i32 + sim.rng.between(-1, 1) + 4) % 8) as usize;
-        if let Some(p) = sim.portal.take(ch, random) {
-            if let Some(np) = sim.create_part(nx, ny, p.t) {
-                p.apply_to(&mut sim.parts[np], true);
-                sim.parts[np].x = nx as f32;
-                sim.parts[np].y = ny as f32;
+        let (mut orbd, mut orbl_arr) = crate::portal::orbital_get(sim.parts[i].life, sim.parts[i].ctype);
+        for r in 0..4 {
+            if orbd[r] < 254 {
+                orbd[r] += 16;
+                if orbd[r] > 254 {
+                    orbd[r] = 0;
+                    orbl_arr[r] = sim.rng.between(0, 254);
+                } else {
+                    orbl_arr[r] += 1;
+                    orbl_arr[r] = ((orbl_arr[r] % 255) + 255) % 255;
+                }
+            } else {
+                orbd[r] = 0;
+                orbl_arr[r] = sim.rng.between(0, 254);
             }
-            break;
         }
+        let (nl, nc) = crate::portal::orbital_set(&orbd, &orbl_arr);
+        sim.parts[i].life = nl;
+        sim.parts[i].ctype = nc;
+    } else {
+        sim.parts[i].life = 0;
+        sim.parts[i].ctype = 0;
     }
     0
 }
@@ -8781,6 +8991,7 @@ pub fn before_sim_love_lolz(sim: &mut Sim) {
 fn wifi_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i32 {
     let ch = portal_channel(sim, i);
     sim.parts[i].tmp = ch as i32;
+    // ref: WIFI.cpp:56-66
     if sim.wireless.is_active(ch) {
         for rx in -1..=1 {
             for ry in -1..=1 {
@@ -8797,6 +9008,9 @@ fn wifi_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                     continue;
                 }
                 let id = pmap_id(r) as usize;
+                if id >= sim.parts.len() {
+                    continue;
+                }
                 let rt = pmap_type(r);
                 if matches!(rt, pt::NSCN | pt::PSCN | pt::INWR) && sim.parts[id].life == 0 {
                     sim.parts[id].ctype = rt as i32;
@@ -8806,6 +9020,7 @@ fn wifi_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
             }
         }
     }
+    // ref: WIFI.cpp:75-78
     for rx in -1..=1 {
         for ry in -1..=1 {
             if rx == 0 && ry == 0 {
@@ -8821,8 +9036,16 @@ fn wifi_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                 continue;
             }
             let id = pmap_id(r) as usize;
-            if pmap_type(r) == pt::SPRK && sim.parts[id].ctype != pt::NSCN as i32 && sim.parts[id].life >= 3 {
-                sim.wireless.note_spark(ch);
+            if id >= sim.parts.len() {
+                continue;
+            }
+            let rt = pmap_type(r);
+            if crate::wireless::WirelessStore::spark_observes_channel(
+                rt,
+                sim.parts[id].ctype,
+                sim.parts[id].life,
+            ) {
+                let _ = sim.wireless.note_spark(ch);
             }
         }
     }
