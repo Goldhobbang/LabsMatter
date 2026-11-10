@@ -635,7 +635,7 @@ impl Sim {
         self.parts[i].flags &= !flags::STAGNANT;
 
         if is_type(t, props::TYPE_ENERGY) {
-            self.move_energy(i, x, y, &mut plan);
+            self.move_energy(i, x, y, &mut plan, stagnant);
             return;
         }
         if element(t).falldown == 0 {
@@ -875,11 +875,13 @@ impl Sim {
     /// Energy particles (`TYPE_ENERGY`): photons, neutrons, electricity, etc.
     ///
     /// Reference: `Simulation.cpp:2955-3090` (PHOT pre-step, movement/stagnant,
-    /// and reflection). Life decay is NOT done here: `recalc_and_life` (tick.rs)
-    /// applies `PROP_LIFE_DEC` once per frame for PHOT, NEUT, ELEC (verified in
+    /// and reflection). `stagnant` is computed once in `movement_phase` (flag read
+    /// then cleared) and passed in, matching the reference `MovementPhase`.
+    /// Life decay is NOT done here: `recalc_and_life` (tick.rs) applies
+    /// `PROP_LIFE_DEC` once per frame for PHOT, NEUT, ELEC (verified in
     /// `elements_generated.rs`: PHOT 0x00014050, NEUT 0x00014010, ELEC 0x00014010
     /// all include `PROP_LIFE_DEC` 0x10), avoiding a double-decrement.
-    fn move_energy(&mut self, i: usize, x: i32, y: i32, plan: &mut PlanResult) {
+    fn move_energy(&mut self, i: usize, x: i32, y: i32, plan: &mut PlanResult, stagnant: bool) {
         // Reference Simulation.cpp:3014 (PHOT branch) — SKIPMOVE short-circuit.
         if self.parts[i].flags & flags::SKIPMOVE != 0 {
             self.parts[i].flags &= !flags::SKIPMOVE;
@@ -942,8 +944,6 @@ impl Sim {
                 }
             }
         }
-
-        let stagnant = self.parts[i].flags & flags::STAGNANT != 0;
 
         // Movement / stagnant (Simulation.cpp:3014-3023).
         let blocked = if stagnant {
