@@ -257,7 +257,6 @@ impl Sim {
         let x = (self.parts[head].x + 0.5) as i32;
         let y = (self.parts[head].y + 0.5) as i32;
         let comm = self.player_state(which).map(|p| p.comm).unwrap_or(0);
-        let elem = self.player_state(which).map(|p| p.elem).unwrap_or(0);
 
         // Environmental death: acid / fire / immersion in a deadly element.
         let under = self.pmap_at(x, y);
@@ -301,21 +300,13 @@ impl Sim {
             moved = true;
         }
 
-        // Element power: spawn a particle in front of the entity.
-        if comm & input::SPAWN != 0
-            && elem > 0
-            && (elem as usize) < crate::elements_generated::PT_NUM
-            && element(elem as u16).enabled
-        {
-            let sx = x + dx;
-            if self.pmap_at(sx, y) == 0 {
-                self.create_part(sx, y, elem as u16);
-            }
-        }
-
-        if let Some(st) = self.player_state_mut(which) {
-            st.frames = st.frames.wrapping_add(1);
-        }
+        // Element power spawning belongs to the element-specific call sites:
+        // STKM uses the reference spawn block (ref: STKM.cpp:455-536) and FIGH
+        // calls `stickman_element_power`; the shared movement helper no longer
+        // duplicates it.
+        //
+        // `frames` is bumped once per tick by the element call sites
+        // (ref: STKM.cpp:137) rather than by this shared helper.
         StepReport { moved, grounded, died: false }
     }
 

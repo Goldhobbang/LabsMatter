@@ -9694,6 +9694,7 @@ fn soap_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 // add the reference-specific element behaviour: hazard damage, leg phase,
 // element-power cadence, death cleanup, and fighter pursuit/combat.
 use crate::entity::{input as ent_input, Entity, PlayerState};
+use crate::sim::GravityMode;
 
 /// Returns (lethal, damage) for the 3x3 around an entity head.
 fn entity_hazard(sim: &Sim, x: i32, y: i32) -> (bool, i32) {
@@ -9769,6 +9770,7 @@ fn stickman_can_occupy(sim: &Sim, x: i32, y: i32) -> bool {
     }
 }
 
+#[allow(dead_code)] // interim: the reference jump block replaced the tile probe
 fn stickman_feet_grounded(sim: &Sim, x: i32, y: i32) -> bool {
     for fx in [x - 1, x, x + 1] {
         if sim.wall_at(fx, y + 1) != 0 {
@@ -10085,6 +10087,226 @@ fn stickman_element_power(sim: &mut Sim, i: usize, x: i32, y: i32, comm: u8, ele
     false
 }
 
+// --- STKM input / command block (STEP 1 of the STKM.cpp port) -------------
+
+const ROCKET_BOOTS_HEAD_EFFECT: f32 = 0.35; // ref: STKM.cpp:130
+const ROCKET_BOOTS_FEET_EFFECT: f32 = 0.15; // ref: STKM.cpp:131
+const ROCKET_BOOTS_HEAD_EFFECT_V: f32 = 0.3; // ref: STKM.cpp:132
+const ROCKET_BOOTS_FEET_EFFECT_V: f32 = 0.45; // ref: STKM.cpp:133
+
+/// Reference follow-gravity prologue (ref: STKM.cpp:153-178): axis gravity for
+/// the current gravity mode plus the raw newtonian force field, without the
+/// per-element scaling used by `Sim::gravity_field`.
+fn stickman_gravity_axes(sim: &Sim, fx: f32, fy: f32) -> (f32, f32) {
+    let mut g = match sim.settings.gravity_mode {
+        GravityMode::Vertical => (0.0f32, 1.0f32),
+        GravityMode::Off => (0.0f32, 0.0f32),
+        GravityMode::Radial => {
+            // XCNTR/YCNTR = XRES/2 / YRES/2 (ref SimulationConfig.h:22-23).
+            let xcntr = (sim.width / 2) as f32;
+            let ycntr = (sim.height / 2) as f32;
+            let gravd = 0.01f32 - (fx - xcntr).hypot(fy - ycntr);
+            ((fx - xcntr) / gravd, (fy - ycntr) / gravd)
+        }
+        GravityMode::Custom => (
+            sim.settings.custom_gravity.0,
+            sim.settings.custom_gravity.1,
+        ),
+    };
+    // ref: STKM.cpp:177-178 — the force field is added unconditionally; when
+    // newtonian gravity is inactive the field itself is zero.
+    let cx = ((fx as i32) / CELL as i32)
+        .clamp(0, sim.cells_x as i32 - 1) as usize;
+    let cy = ((fy as i32) / CELL as i32)
+        .clamp(0, sim.cells_y as i32 - 1) as usize;
+    let f = sim.grav_force[cy * sim.cells_x + cx];
+    g.0 += f.0;
+    g.1 += f.1;
+    g
+}
+
+/// Reference stuck-foot test `InBounds(int(legs[..])) && !sim->eval_move(t, x, y, nullptr)`
+/// (ref: STKM.cpp:263, 274, 313, 324, 390-391, 563, 569, 576, 583), approximated
+/// with the tile feasibility checker `stickman_can_occupy` (accepted parity for
+/// the `can_move` table).
+fn stickman_foot_stuck(sim: &Sim, fx: i32, fy: i32) -> bool {
+    sim.in_bounds(fx, fy) && !stickman_can_occupy(sim, fx, fy)
+}
+
+/// Reference movement-key command blocks, ref: STKM.cpp:252-400.
+///
+/// Writes the leg accelerations exactly as the reference does; the Verlet
+/// integration that consumes `accs` is part of the later leg-solver step, so
+/// until then `accs` carries only the current tick's command output (the
+/// reference zeroes all `accs` right before this block, ref: STKM.cpp:239-250).
+fn stickman_commands(
+    sim: &mut Sim,
+    i: usize,
+    which: Entity,
+    gvx: f32,
+    gvy: f32,
+    mvx: f32,
+    mvy: f32,
+    rb_low_grav: bool,
+) {
+    let comm = sim.player_state(which).map(|p| p.comm).unwrap_or(0);
+    let rocket_boots = sim.player_state(which).map(|p| p.rocket_boots).unwrap_or(false);
+    let legs = sim.player_state(which).map(|p| p.legs).unwrap_or([0.0; 16]);
+
+    // Vertical rocket-boots effect constants swap in low gravity.
+    let (rb_head_v, rb_feet_v) = if rb_low_grav {
+        // ref: STKM.cpp:201-205
+        (ROCKET_BOOTS_HEAD_EFFECT, ROCKET_BOOTS_FEET_EFFECT)
+    } else {
+        // ref: STKM.cpp:132-133
+        (ROCKET_BOOTS_HEAD_EFFECT_V, ROCKET_BOOTS_FEET_EFFECT_V)
+    };
+
+    // ref: STKM.cpp:252-255
+    let gx = (legs[4] + legs[12]) / 2.0 - gvy;
+    let gy = (legs[5] + legs[13]) / 2.0 + gvx;
+    let dl = (gx - legs[4]).powi(2) + (gy - legs[5]).powi(2);
+    let dr = (gx - legs[12]).powi(2) + (gy - legs[13]).powi(2);
+
+    // ref: STKM.cpp:239-250 — all accs are zeroed each tick ahead of the
+    // command-block writes.
+    let mut accs = [0.0f32; 8];
+
+    // Go left. ref: STKM.cpp:258-305
+    if (comm & ent_input::LEFT) != 0 {
+        let mut moved = false;
+        if dl > dr {
+            if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32) {
+                accs[2] = -3.0 * mvy - 3.0 * mvx;
+                accs[3] = 3.0 * mvx - 3.0 * mvy;
+                accs[0] = -mvy;
+                accs[1] = mvx;
+                moved = true;
+            }
+        } else if stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32) {
+            accs[6] = -3.0 * mvy - 3.0 * mvx;
+            accs[7] = 3.0 * mvx - 3.0 * mvy;
+            accs[0] = -mvy;
+            accs[1] = mvx;
+            moved = true;
+        }
+        if !moved && rocket_boots {
+            sim.parts[i].vx -= ROCKET_BOOTS_HEAD_EFFECT * mvy;
+            sim.parts[i].vy += ROCKET_BOOTS_HEAD_EFFECT * mvx;
+            accs[2] -= ROCKET_BOOTS_FEET_EFFECT * mvy;
+            accs[6] -= ROCKET_BOOTS_FEET_EFFECT * mvy;
+            accs[3] += ROCKET_BOOTS_FEET_EFFECT * mvx;
+            accs[7] += ROCKET_BOOTS_FEET_EFFECT * mvx;
+            for leg in 0..2usize {
+                // ref: STKM.cpp:293-294 — skip the right foot when RIGHT is
+                // also held (its block re-zeroes below anyway).
+                if leg == 1 && (comm & ent_input::RIGHT) != 0 {
+                    continue;
+                }
+                let foot_x = legs[leg * 8 + 4] as i32;
+                let foot_y = legs[leg * 8 + 5] as i32;
+                // ref: STKM.cpp:296-302
+                if let Some(np) = sim.create_part(foot_x, foot_y, pt::PLSM) {
+                    sim.parts[np].vx = sim.parts[i].vx + mvy * 25.0;
+                    sim.parts[np].vy = sim.parts[i].vy - mvx * 25.0;
+                    sim.parts[np].life += 30;
+                }
+            }
+        }
+    }
+
+    // Go right. ref: STKM.cpp:308-355
+    if (comm & ent_input::RIGHT) != 0 {
+        let mut moved = false;
+        if dl < dr {
+            if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32) {
+                accs[2] = 3.0 * mvy - 3.0 * mvx;
+                accs[3] = -3.0 * mvx - 3.0 * mvy;
+                accs[0] = mvy;
+                accs[1] = -mvx;
+                moved = true;
+            }
+        } else if stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32) {
+            accs[6] = 3.0 * mvy - 3.0 * mvx;
+            accs[7] = -3.0 * mvx - 3.0 * mvy;
+            accs[0] = mvy;
+            accs[1] = -mvx;
+            moved = true;
+        }
+        if !moved && rocket_boots {
+            sim.parts[i].vx += ROCKET_BOOTS_HEAD_EFFECT * mvy;
+            sim.parts[i].vy -= ROCKET_BOOTS_HEAD_EFFECT * mvx;
+            accs[2] += ROCKET_BOOTS_FEET_EFFECT * mvy;
+            accs[6] += ROCKET_BOOTS_FEET_EFFECT * mvy;
+            accs[3] -= ROCKET_BOOTS_FEET_EFFECT * mvx;
+            accs[7] -= ROCKET_BOOTS_FEET_EFFECT * mvx;
+            for leg in 0..2usize {
+                // ref: STKM.cpp:343-344 — skip the left foot when LEFT is
+                // also held.
+                if leg == 0 && (comm & ent_input::LEFT) != 0 {
+                    continue;
+                }
+                let foot_x = legs[leg * 8 + 4] as i32;
+                let foot_y = legs[leg * 8 + 5] as i32;
+                // ref: STKM.cpp:346-352
+                if let Some(np) = sim.create_part(foot_x, foot_y, pt::PLSM) {
+                    sim.parts[np].vx = sim.parts[i].vx - mvy * 25.0;
+                    sim.parts[np].vy = sim.parts[i].vy + mvx * 25.0;
+                    sim.parts[np].life += 30;
+                }
+            }
+        }
+    }
+
+    // Pressing LEFT and RIGHT simultaneously with rocket boots slows down
+    // (particularly useful in zero gravity). ref: STKM.cpp:357-365
+    if rocket_boots
+        && (comm & (ent_input::LEFT | ent_input::RIGHT)) == (ent_input::LEFT | ent_input::RIGHT)
+    {
+        sim.parts[i].vx *= 0.5;
+        sim.parts[i].vy *= 0.5;
+        accs[2] = 0.0;
+        accs[6] = 0.0;
+        accs[3] = 0.0;
+        accs[7] = 0.0;
+    }
+
+    // Jump. ref: STKM.cpp:368-400
+    if (comm & ent_input::JUMP) != 0 {
+        if rocket_boots {
+            sim.parts[i].vx -= rb_head_v * mvx;
+            sim.parts[i].vy -= rb_head_v * mvy;
+            accs[2] -= rb_feet_v * mvx;
+            accs[6] -= rb_feet_v * mvx;
+            accs[3] -= rb_feet_v * mvy;
+            accs[7] -= rb_feet_v * mvy;
+            for leg in 0..2usize {
+                let foot_x = legs[leg * 8 + 4] as i32;
+                let foot_y = legs[leg * 8 + 5] as i32;
+                // ref: STKM.cpp:381 — plasm one cell below the foot.
+                if let Some(np) = sim.create_part(foot_x, foot_y + 1, pt::PLSM) {
+                    sim.parts[np].vx = sim.parts[i].vx + mvx * 30.0;
+                    sim.parts[np].vy = sim.parts[i].vy + mvy * 30.0;
+                    sim.parts[np].life += 10;
+                }
+            }
+        } else if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32)
+            || stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32)
+        {
+            sim.parts[i].vx -= 4.0 * mvx;
+            sim.parts[i].vy -= 4.0 * mvy;
+            accs[2] -= mvx;
+            accs[6] -= mvx;
+            accs[3] -= mvy;
+            accs[7] -= mvy;
+        }
+    }
+
+    if let Some(st) = sim.player_state_mut(which) {
+        st.accs = accs;
+    }
+}
+
 fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     if i >= sim.parts.len() || sim.parts[i].t == 0 {
         return 0;
@@ -10093,11 +10315,17 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     let y = (sim.parts[i].y + 0.5) as i32;
 
     // Element power acquisition from touched particles.
+    // ref: STKM.cpp:135-136
     let ctype = sim.parts[i].ctype;
     if let Some(st) = sim.player_state_mut(which) {
         if !st.fan && ctype != 0 && crate::transition::is_element_or_none(ctype) {
             stickman_set_element(st, ctype);
         }
+    }
+    // ref: STKM.cpp:137 — exactly one unconditional bump per tick; owned by
+    // this call site (the shared movement helper no longer increments).
+    if let Some(st) = sim.player_state_mut(which) {
+        st.frames = st.frames.wrapping_add(1);
     }
 
     // Temperature handling.
@@ -10141,6 +10369,36 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
             return 1;
         }
     }
+
+    // Follow gravity. ref: STKM.cpp:153-178
+    let (gvx, gvy) = stickman_gravity_axes(sim, sim.parts[i].x, sim.parts[i].y);
+
+    // ref: STKM.cpp:180-205 — unit movement axes; falls back to the reversed
+    // velocity in effectively weightless gravity, then straight down.
+    let mut mvx = gvx;
+    let mut mvy = gvy;
+    let rb_low_grav;
+    let mut tmp = if mvx.abs() > mvy.abs() { mvx.abs() } else { mvy.abs() };
+    if tmp < 0.001 {
+        rb_low_grav = true;
+        mvx = -sim.parts[i].vx;
+        mvy = -sim.parts[i].vy;
+        tmp = if mvx.abs() > mvy.abs() { mvx.abs() } else { mvy.abs() };
+    } else {
+        rb_low_grav = false;
+    }
+    if tmp < 0.001 {
+        mvx = 0.0;
+        mvy = 1.0;
+        tmp = 1.0;
+    } else {
+        tmp = 1.0 / (mvx * mvx + mvy * mvy).sqrt();
+    }
+    mvx *= tmp;
+    mvy *= tmp;
+
+    // Movement-key command blocks. ref: STKM.cpp:252-400
+    stickman_commands(sim, i, which, gvx, gvy, mvx, mvy, rb_low_grav);
 
     // Head-neighbourhood element acquisition / fan / rocket boots.
     for rx in -2i32..=2 {
@@ -10213,39 +10471,180 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
         return 0;
     }
 
+    // Head position. ref: STKM.cpp:451-452 — driven by `pcomm`, never by `comm`.
     let comm = sim.player_state(which).map(|p| p.comm).unwrap_or(0);
-    let elem = sim.player_state(which).map(|p| p.elem).unwrap_or(0);
-    let mut comm_adj = comm;
+    let pcomm = sim.player_state(which).map(|p| p.pcomm).unwrap_or(0);
+    let rx = x + 3 * (((pcomm & ent_input::RIGHT) == ent_input::RIGHT) as i32)
+        - 3 * (((pcomm & ent_input::LEFT) == ent_input::LEFT) as i32);
+    let mut ry = y - 3 * ((pcomm == 0) as i32);
 
-    // Element power (spawned here so energy particles get velocity).
-    if stickman_element_power(sim, i, x, y, comm, elem) {
-        comm_adj &= !ent_input::SPAWN;
-    }
-
-    // Jump: reference jump leaves the ground for a couple of cells.
-    if comm & ent_input::JUMP != 0 && stickman_feet_grounded(sim, x, y) {
-        let mut jumped = false;
-        for up in [2i32, 1] {
-            if stickman_can_occupy(sim, x, y - up) {
-                sim.parts[i].y = (y - up) as f32;
-                jumped = true;
-                break;
+    // Spawn. ref: STKM.cpp:455-536
+    if (comm & ent_input::SPAWN) != 0 {
+        // ref: STKM.cpp:457 — exactly one rng draw whenever SPAWN is held.
+        ry -= 2 * sim.rng.between(0, 1) + 1;
+        let r = sim.pmap_at(rx, ry);
+        if r == 0 || (element(pmap_type(r)).properties & props::TYPE_SOLID) == 0 {
+            let fan = sim.player_state(which).map(|p| p.fan).unwrap_or(false);
+            let elem = sim.player_state(which).map(|p| p.elem).unwrap_or(0);
+            let frames_now = sim.player_state(which).map(|p| p.frames).unwrap_or(0);
+            let mut np: Option<usize> = None;
+            if fan {
+                // Fan jet: pressure in a 9x9 block around the nose, propagated
+                // one cell. ref: STKM.cpp:469-483
+                let dir_x = 3 * (((pcomm & ent_input::RIGHT) == ent_input::RIGHT) as i32)
+                    - 3 * (((pcomm & ent_input::LEFT) == ent_input::LEFT) as i32);
+                let cell = CELL as i32;
+                for j in -4..=4i32 {
+                    for k in -4..=4i32 {
+                        let airx = rx + dir_x + j; // ref: STKM.cpp:472
+                        let airy = ry + k;
+                        let cx = airx / cell;
+                        let cy = airy / cell;
+                        if sim.in_cell_bounds(cx, cy) {
+                            let c = sim.cell_idx(cx, cy);
+                            sim.pv[c] += 0.03;
+                        }
+                        if airy + cell < sim.height as i32
+                            && sim.in_cell_bounds(cx, cy + 1)
+                        {
+                            let c = sim.cell_idx(cx, cy + 1);
+                            sim.pv[c] += 0.03;
+                        }
+                        if airx + cell < sim.width as i32 {
+                            if sim.in_cell_bounds(cx + 1, cy) {
+                                let c = sim.cell_idx(cx + 1, cy);
+                                sim.pv[c] += 0.03;
+                            }
+                            if airy + cell < sim.height as i32
+                                && sim.in_cell_bounds(cx + 1, cy + 1)
+                            {
+                                let c = sim.cell_idx(cx + 1, cy + 1);
+                                sim.pv[c] += 0.03;
+                            }
+                        }
+                    }
+                }
+            } else if elem == pt::LIGH as i32 && frames_now < 30 {
+                // ref: STKM.cpp:485-486 — LIGH creation rate limit.
+            } else {
+                // ref: STKM.cpp:488 — `create_part(-1, rx, ry, playerp->elem)`.
+                // Reference rule (ref Simulation.cpp:1898-1902): with p == -1
+                // creation only succeeds in an unoccupied, un-walled cell, so
+                // an empty-cell check is used here.
+                let valid_elem =
+                    elem > 0 && (elem as usize) < crate::elements_generated::PT_NUM;
+                if valid_elem
+                    && element(elem as u16).enabled
+                    && sim.in_bounds(rx, ry)
+                    && sim.pmap_at(rx, ry) == 0
+                    && sim.photons[sim.idx(rx, ry)] == 0
+                    && !sim.wall_blocks(rx, ry, elem as u16)
+                {
+                    np = sim.create_part(rx, ry, elem as u16);
+                }
+            }
+            if let Some(np) = np {
+                if elem == pt::PHOT as i32 {
+                    // ref: STKM.cpp:493 — one draw: |between(-1, 1)| * 3.
+                    let random = sim.rng.between(-1, 1).abs() * 3;
+                    if random == 0 {
+                        sim.kill_part(np);
+                    } else {
+                        sim.parts[np].vy = 0.0;
+                        // ref: STKM.cpp:501-504
+                        if (pcomm & (ent_input::LEFT | ent_input::RIGHT)) != 0 {
+                            let dir = (((pcomm & ent_input::RIGHT) == ent_input::RIGHT) as i32
+                                - ((pcomm & ent_input::LEFT) == ent_input::LEFT) as i32)
+                                as f32;
+                            sim.parts[np].vx = dir * (random as f32);
+                        } else {
+                            sim.parts[np].vx = random as f32;
+                        }
+                    }
+                } else if elem == pt::LIGH as i32 {
+                    // ref: STKM.cpp:507-525
+                    let power = 100i32;
+                    let mut angle = if gvx != 0.0 || gvy != 0.0 {
+                        // ref: STKM.cpp:512 — atan2(mvx, mvy) in degrees.
+                        (mvx.atan2(mvy) * (180.0 / std::f32::consts::PI)) as i32
+                    } else {
+                        // ref: STKM.cpp:514 — one draw: between(0, 359).
+                        sim.rng.between(0, 359)
+                    };
+                    if (pcomm & ent_input::LEFT) != 0 {
+                        angle += 180; // ref: STKM.cpp:515-516
+                    }
+                    if angle > 360 {
+                        angle -= 360;
+                    }
+                    if angle < 0 {
+                        angle += 360;
+                    }
+                    sim.parts[np].tmp = angle;
+                    // ref: STKM.cpp:522 — one draw: between(0, 1+power/15).
+                    sim.parts[np].life = sim.rng.between(0, 1 + power / 15) + power / 7;
+                    sim.parts[np].temp = sim.parts[np].life as f32 * power as f32 / 2.5;
+                    sim.parts[np].tmp2 = 1;
+                } else if !fan {
+                    // ref: STKM.cpp:528-530 — note vx uses -= -mvy*(...) in the
+                    // reference, i.e. += mvy*(...); head recoil scales by the
+                    // element weight.
+                    let dir = (((pcomm & ent_input::RIGHT) == ent_input::RIGHT) as i32
+                        - ((pcomm & ent_input::LEFT) == ent_input::LEFT) as i32)
+                        as i32;
+                    sim.parts[np].vx += mvy * (5 * dir) as f32;
+                    sim.parts[np].vy -= mvx * (5 * dir) as f32;
+                    sim.parts[i].vx -=
+                        (element(elem as u16).weight as f32 * sim.parts[np].vx) / 1000.0;
+                }
+                // ref: STKM.cpp:532 — `frames` resets whenever a particle was
+                // created (even if the PHOT particle killed itself).
+                if let Some(st) = sim.player_state_mut(which) {
+                    st.frames = 0;
+                }
+            }
+        } else {
+            // ref: STKM.cpp:459-462 — solid target: `create_part(-1, rx, ry,
+            // PT_SPRK)` sparks the *existing* conductor particle (ref
+            // Simulation.cpp:1848-1866) and never creates a free SPRK; then
+            // `frames` resets unconditionally.
+            let rt = pmap_type(r);
+            let idx = pmap_id(r) as usize;
+            let conducts = rt == pt::INST || (element(rt).properties & props::PROP_CONDUCTS) != 0;
+            if conducts && idx < sim.parts.len() && sim.parts[idx].life == 0 {
+                let old_t = sim.parts[idx].t;
+                if sim.part_change_type(idx, rx, ry, pt::SPRK as i16) {
+                    sim.parts[idx].life = 4;
+                    sim.parts[idx].ctype = old_t as i32;
+                    if matches!(
+                        old_t,
+                        pt::METL
+                            | pt::BMTL
+                            | pt::BRMT
+                            | pt::PSCN
+                            | pt::NSCN
+                            | pt::ETRD
+                            | pt::NBLE
+                            | pt::IRON
+                    ) && sim.parts[idx].temp + 10.0 < 673.0
+                    {
+                        sim.parts[idx].temp += 10.0;
+                    }
+                }
+            }
+            if let Some(st) = sim.player_state_mut(which) {
+                st.frames = 0; // ref: STKM.cpp:462 (unconditional reset)
             }
         }
-        if jumped {
-            comm_adj &= !ent_input::JUMP;
-        }
     }
 
-    if let Some(st) = sim.player_state_mut(which) {
-        st.pcomm = comm;
-        st.comm = comm_adj;
-    }
+    // `comm` / `pcomm` are owned by the input layer (`Sim::set_entity_input`);
+    // the reference update body never rewrites them (ref: STKM.cpp:744 only).
     let report = sim.step_entity_at(which, i);
     if report.died || i >= sim.parts.len() || sim.parts[i].t == 0 {
         return 1;
     }
-    let moving = comm_adj & (ent_input::LEFT | ent_input::RIGHT) != 0;
+    let moving = (comm & (ent_input::LEFT | ent_input::RIGHT)) != 0;
     let nx = (sim.parts[i].x + 0.5) as i32;
     let ny = (sim.parts[i].y + 0.5) as i32;
     let feet = {
@@ -10513,6 +10912,11 @@ fn figh_update(sim: &mut Sim, i: usize, _x: i32, _y: i32, _s: i32, _nt: i32) -> 
     if let Some(st) = sim.player_state_mut(which) {
         st.pcomm = st.comm;
         st.comm = comm_adj;
+    }
+    // ref: STKM.cpp:137 — the shared body bumps `frames` once per tick; the
+    // FIGH call site owns its bump since the movement helper no longer does.
+    if let Some(st) = sim.player_state_mut(which) {
+        st.frames = st.frames.wrapping_add(1);
     }
     sim.step_entity_at(which, i);
     let moving = comm_adj & (ent_input::LEFT | ent_input::RIGHT) != 0;
