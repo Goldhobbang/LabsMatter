@@ -178,6 +178,11 @@ pub struct Sim {
     /// Set when a `WALL_GRAV` wall is created/removed or bulk bmap state changes;
     /// consumed in `BeforeSim` to recompute `grav_mask` (ref: Simulation.cpp:334,3763-3766,3971).
     pub grav_wall_changed: bool,
+    /// One-shot "force a stacking check on the next tick and skip the RNG roll"
+    /// flag (ref: Simulation.h:132 `bool force_stacking_check = false;`).
+    /// Set after restores/load (Simulation.cpp:248, Editing.cpp:47), cleared as
+    /// the first statement of `check_stacking` (ref: Simulation.cpp:3625).
+    pub force_stacking_check: bool,
     /// Render colour buffer, refreshed by `render`.
     pub colour: Vec<u32>,
     /// Kill reason counters (diagnostics).
@@ -244,6 +249,7 @@ impl Sim {
             emp_trigger_count: 0,
             grav_mask: vec![0; n],
             grav_wall_changed: true,
+            force_stacking_check: false,
             colour: vec![0; width * height],
             kill_stats: [0; 8],
             portal: PortalStore::new(),
@@ -721,8 +727,10 @@ impl Sim {
     ///
     /// Deviation note: `bmap` is wall-type-per-air-cell (`WL_*`), so the
     /// reference `WL_EHOLE` branch (3628-3632) is representable and implemented.
-    /// `force_stacking_check` is not present in this crate and is not added.
     pub fn check_stacking(&mut self) {
+        // ref: Simulation.cpp:3625 — the flag is consumed on the first (or a
+        // forced) check, so it is set exactly once per load/restore.
+        self.force_stacking_check = false;
         let w = self.width as i32;
         let h = self.height as i32;
         let npart: u32 = (self.width * self.height) as u32;
@@ -778,24 +786,65 @@ impl Sim {
             let idx = self.idx(x, y);
             if self.pmap_count[idx] >= npart {
                 if self.pmap_count[idx] > npart {
-                    // ref 3663-3670: reuse slot as NBHL (create_part resets defaults), then override
+                    // ref 3663-3670, create_part(i, x, y, PT_NBHL) reuse path
+                    // (Simulation.cpp:1919-1975, `p >= 0`), written out here
+                    // because the reference has no separate helper.
+                    // (ref 1891-1895: `CreateAllowed` is evaluated before the
+                    // branch for every `p`; NBHL declares none, so it is a
+                    // no-op here.)
+                    let old_t = self.parts[i].t;
+                    // ref 3669: strength of the gravitational field.
                     let delta = self.pmap_count[idx] - npart;
-                    let _ = self.part_change_type(i, x, y, pt::NBHL as i16);
-                    // Mirror fresh-particle reset (DefaultProperties for NBHL are engine defaults).
-                    self.parts[i].life = 0;
-                    self.parts[i].ctype = 0;
-                    self.parts[i].tmp = 0;
-                    self.parts[i].tmp2 = 0;
-                    self.parts[i].tmp3 = 0;
-                    self.parts[i].tmp4 = 0;
-                    self.parts[i].vx = 0.0;
-                    self.parts[i].vy = 0.0;
-                    self.parts[i].dcolour = 0;
-                    self.parts[i].flags = 0;
+                    // ref 1921-1930: clear the particle's own pmap/photons
+                    // entries at its current cell before the type change.
+                    // (Our `part_change_type` mirrors Simulation.cpp:1825-1836
+                    // and only clears the *other* map on rewrite, so doing this
+                    // explicitly first matches the reuse path exactly.)
+                    if self.pmap[idx] != 0 && pmap_id(self.pmap[idx]) as usize == i {
+                        self.pmap[idx] = 0;
+                    }
+                    if self.photons[idx] != 0 && pmap_id(self.photons[idx]) as usize == i {
+                        self.photons[idx] = 0;
+                    }
+                    // ref 1934-1935: old type's ChangeType hook (oldType -> NBHL).
+                    if let Some(f) = crate::updates::change_type_fn(old_t) {
+                        f(self, i, x, y, old_t as i32, pt::NBHL as i32);
+                    }
+                    // ref 1936-1937
+                    if (old_t as usize) < PT_NUM && self.element_count[old_t as usize] > 0 {
+                        self.element_count[old_t as usize] -= 1;
+                    }
+                    // ref 1942-1945: whole-Particle reset to DefaultProperties,
+                    // then type/x/y. NBHL declares no DefaultProperties
+                    // overrides (NBHL.cpp:5-46), so
+                    // `element_defaults::defaults(pt::NBHL)` is None and
+                    // `Particle::new`'s engine defaults (temp 293.15, rest zero)
+                    // are correct. `pavg` is a render cache our `Particle`
+                    // carries (particle.rs:36) that the reference does not
+                    // store in `Particle`; treating a fresh particle as having
+                    // a zeroed `pavg` is correct.
+                    self.parts[i] = Particle::new(pt::NBHL, x as f32, y as f32);
+                    // ref 1948-1951: set the (non-energy) pmap entry for the
+                    // new particle.
+                    self.pmap[idx] = pmap_pack(i as u32, pt::NBHL);
+                    // ref 1953-1966: pretty_powder dust — not representable,
+                    // this crate has no pretty_powder setting.
+                    // ref 1969-1970: new type's Create hook.
+                    if let Some(f) = crate::updates::create_fn(pt::NBHL) {
+                        f(self, i, x, y, pt::NBHL as i32, 0);
+                    }
+                    // ref 1972-1973: new type's ChangeType hook.
+                    if let Some(f) = crate::updates::change_type_fn(pt::NBHL) {
+                        f(self, i, x, y, old_t as i32, pt::NBHL as i32);
+                    }
+                    // ref 1975
+                    self.element_count[pt::NBHL as usize] += 1;
+                    // ref 3668-3671: fresh NBHL temperature/strength overrides.
+                    // NBHL's DefaultProperties.tmp is 0 and the reference
+                    // overrides it here from `pmap_count - NPART`.
                     self.parts[i].temp = MAX_TEMP;
                     self.parts[i].tmp = std::cmp::min(delta, 51200) as i32;
                     self.pmap_count[idx] = npart;
-                    // pmap[idx] already updated by part_change_type to refer to NBHL particle i.
                 } else {
                     // ref 3671-3674
                     self.kill_part(i);

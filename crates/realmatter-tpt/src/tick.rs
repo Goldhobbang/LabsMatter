@@ -85,7 +85,9 @@ impl Sim {
         }
         self.refresh_air_block_maps();
         // 8. CheckStacking (ref 3786-3790).
-        if self.rng.chance(1, 10) {
+        // Reference: `if (force_stacking_check || rng.chance(1, 10))` — the
+        // short-circuit guarantees no RNG draw while the flag is set.
+        if self.force_stacking_check || self.rng.chance(1, 10) {
             self.check_stacking();
         }
         // 9. LOVE/LOLZ BeforeSim stamp (ref 3792-3860).
