@@ -9695,6 +9695,7 @@ fn soap_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
 // element-power cadence, death cleanup, and fighter pursuit/combat.
 use crate::entity::{input as ent_input, Entity, PlayerState};
 use crate::sim::GravityMode;
+use crate::air::{WALL_EHOLE, WALL_FAN, WALL_GRAV};
 
 /// Returns (lethal, damage) for the 3x3 around an entity head.
 fn entity_hazard(sim: &Sim, x: i32, y: i32) -> (bool, i32) {
@@ -10115,7 +10116,9 @@ fn stickman_gravity_axes(sim: &Sim, fx: f32, fy: f32) -> (f32, f32) {
         ),
     };
     // ref: STKM.cpp:177-178 — the force field is added unconditionally; when
-    // newtonian gravity is inactive the field itself is zero.
+    // newtonian gravity is inactive the field itself is zero. Safety deviation:
+    // the reference indexes `gravOut.forceX[..]/forceY[..]` unchecked there,
+    // so the cell index is clamped here.
     let cx = ((fx as i32) / CELL as i32)
         .clamp(0, sim.cells_x as i32 - 1) as usize;
     let cy = ((fy as i32) / CELL as i32)
@@ -10127,11 +10130,12 @@ fn stickman_gravity_axes(sim: &Sim, fx: f32, fy: f32) -> (f32, f32) {
 }
 
 /// Reference stuck-foot test `InBounds(int(legs[..])) && !sim->eval_move(t, x, y, nullptr)`
-/// (ref: STKM.cpp:263, 274, 313, 324, 390-391, 563, 569, 576, 583), approximated
-/// with the tile feasibility checker `stickman_can_occupy` (accepted parity for
-/// the `can_move` table).
-fn stickman_foot_stuck(sim: &Sim, fx: i32, fy: i32) -> bool {
-    sim.in_bounds(fx, fy) && !stickman_can_occupy(sim, fx, fy)
+/// (ref: STKM.cpp:263, 274, 313, 324, 390-391, 563, 569, 576, 583) with
+/// `t = parts[i].type` (ref: STKM.cpp:125), using the faithful `eval_move`
+/// port from `movement.rs` (0 = blocked). Replaces the former
+/// `stickman_can_occupy` approximation (kept for the FIGH tile path).
+fn stickman_foot_stuck(sim: &Sim, t: u16, fx: i32, fy: i32) -> bool {
+    sim.in_bounds(fx, fy) && sim.eval_move(t, fx, fy) == 0
 }
 
 /// Reference movement-key command blocks, ref: STKM.cpp:252-400.
@@ -10153,6 +10157,8 @@ fn stickman_commands(
     let comm = sim.player_state(which).map(|p| p.comm).unwrap_or(0);
     let rocket_boots = sim.player_state(which).map(|p| p.rocket_boots).unwrap_or(false);
     let legs = sim.player_state(which).map(|p| p.legs).unwrap_or([0.0; 16]);
+    // Head type used by every foot test. ref: STKM.cpp:125
+    let t = sim.parts[i].t;
 
     // Vertical rocket-boots effect constants swap in low gravity.
     let (rb_head_v, rb_feet_v) = if rb_low_grav {
@@ -10177,14 +10183,14 @@ fn stickman_commands(
     if (comm & ent_input::LEFT) != 0 {
         let mut moved = false;
         if dl > dr {
-            if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32) {
+            if stickman_foot_stuck(sim, t, legs[4] as i32, legs[5] as i32) {
                 accs[2] = -3.0 * mvy - 3.0 * mvx;
                 accs[3] = 3.0 * mvx - 3.0 * mvy;
                 accs[0] = -mvy;
                 accs[1] = mvx;
                 moved = true;
             }
-        } else if stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32) {
+        } else if stickman_foot_stuck(sim, t, legs[12] as i32, legs[13] as i32) {
             accs[6] = -3.0 * mvy - 3.0 * mvx;
             accs[7] = 3.0 * mvx - 3.0 * mvy;
             accs[0] = -mvy;
@@ -10220,14 +10226,14 @@ fn stickman_commands(
     if (comm & ent_input::RIGHT) != 0 {
         let mut moved = false;
         if dl < dr {
-            if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32) {
+            if stickman_foot_stuck(sim, t, legs[4] as i32, legs[5] as i32) {
                 accs[2] = 3.0 * mvy - 3.0 * mvx;
                 accs[3] = -3.0 * mvx - 3.0 * mvy;
                 accs[0] = mvy;
                 accs[1] = -mvx;
                 moved = true;
             }
-        } else if stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32) {
+        } else if stickman_foot_stuck(sim, t, legs[12] as i32, legs[13] as i32) {
             accs[6] = 3.0 * mvy - 3.0 * mvx;
             accs[7] = -3.0 * mvx - 3.0 * mvy;
             accs[0] = mvy;
@@ -10291,8 +10297,8 @@ fn stickman_commands(
                     sim.parts[np].life += 10;
                 }
             }
-        } else if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32)
-            || stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32)
+        } else if stickman_foot_stuck(sim, t, legs[4] as i32, legs[5] as i32)
+            || stickman_foot_stuck(sim, t, legs[12] as i32, legs[13] as i32)
         {
             sim.parts[i].vx -= 4.0 * mvx;
             sim.parts[i].vy -= 4.0 * mvy;
@@ -10369,6 +10375,8 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     }
     let x = (sim.parts[i].x + 0.5) as i32;
     let y = (sim.parts[i].y + 0.5) as i32;
+    // Head type for the foot tests. ref: STKM.cpp:125
+    let t = sim.parts[i].t;
 
     // Element power acquisition from touched particles.
     // ref: STKM.cpp:135-136
@@ -10476,15 +10484,13 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
             }
             if r != 0 {
                 let rt = pmap_type(r);
-                if !fan_before {
-                    if crate::transition::is_element_or_none(rt as i32) {
-                        let ctype = rt as i32;
-                        if let Some(st) = sim.player_state_mut(which) {
-                            if !st.fan {
-                                stickman_set_element(st, ctype);
-                            }
-                        }
-                    }
+                // ref: STKM.cpp:422 — `Element_STKM_set_element` runs for every
+                // neighbour with a particle, unconditionally; it clears `fan`
+                // itself (ref: STKM.cpp:759-764). Wall-only cells would pass
+                // TYP(0) == 0, which `stickman_set_element` treats as a no-op,
+                // so it is equivalent to skip them (ref: STKM.cpp:419).
+                if let Some(st) = sim.player_state_mut(which) {
+                    stickman_set_element(st, rt as i32);
                 }
                 if rt == pt::PLNT && sim.parts[i].life < 100 {
                     if sim.parts[i].life <= 95 {
@@ -10504,15 +10510,15 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
                 }
             }
             let w = sim.wall_at(nx, ny);
-            if w == 5 {
+            if w == WALL_FAN {
                 if let Some(st) = sim.player_state_mut(which) {
                     st.fan = true;
                 }
-            } else if w == 12 {
+            } else if w == WALL_EHOLE {
                 if let Some(st) = sim.player_state_mut(which) {
                     st.rocket_boots = false;
                 }
-            } else if w == 14 {
+            } else if w == WALL_GRAV {
                 if let Some(st) = sim.player_state_mut(which) {
                     st.rocket_boots = true;
                 }
@@ -10549,7 +10555,10 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
             let mut np: Option<usize> = None;
             if fan {
                 // Fan jet: pressure in a 9x9 block around the nose, propagated
-                // one cell. ref: STKM.cpp:469-483
+                // one cell. ref: STKM.cpp:469-483.
+                // Safety deviation: the reference indexes `sim->pv[airy/CELL]
+                // [airx/CELL]` unchecked (STKM.cpp:474-482), which there can be
+                // out-of-bounds; we skip writes outside the air grid instead.
                 let dir_x = 3 * (((pcomm & ent_input::RIGHT) == ent_input::RIGHT) as i32)
                     - 3 * (((pcomm & ent_input::LEFT) == ent_input::LEFT) as i32);
                 let cell = CELL as i32;
@@ -10587,19 +10596,27 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
                 // ref: STKM.cpp:485-486 — LIGH creation rate limit.
             } else {
                 // ref: STKM.cpp:488 — `create_part(-1, rx, ry, playerp->elem)`.
-                // Reference rule (ref Simulation.cpp:1898-1902): with p == -1
-                // creation only succeeds in an unoccupied, un-walled cell, so
-                // an empty-cell check is used here.
+                // Occupancy rule for p == -1 (ref Simulation.cpp:1898-1903): an
+                // occupied cell is only created into when the new particle can
+                // occupy the same space as the existing one (eval_move == 2);
+                // an unoccupied cell is only declined when a wall blocks the
+                // move (eval_move == 0). The reference consults no separate
+                // photons map here. The explicit `enabled` check replaces the
+                // reference's `!elements[t].Enabled` pre-test (ref
+                // Simulation.cpp:1846), which our `Sim::create_part` lacks.
                 let valid_elem =
                     elem > 0 && (elem as usize) < crate::elements_generated::PT_NUM;
-                if valid_elem
-                    && element(elem as u16).enabled
-                    && sim.in_bounds(rx, ry)
-                    && sim.pmap_at(rx, ry) == 0
-                    && sim.photons[sim.idx(rx, ry)] == 0
-                    && !sim.wall_blocks(rx, ry, elem as u16)
-                {
-                    np = sim.create_part(rx, ry, elem as u16);
+                if valid_elem && element(elem as u16).enabled {
+                    let r_here = sim.pmap_at(rx, ry);
+                    let ev = sim.eval_move(elem as u16, rx, ry);
+                    let blocked = if r_here != 0 {
+                        ev != 2
+                    } else {
+                        sim.wall_at(rx, ry) != 0 && ev == 0
+                    };
+                    if !blocked {
+                        np = sim.create_part(rx, ry, elem as u16);
+                    }
                 }
             }
             if let Some(np) = np {
@@ -10685,7 +10702,11 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
                             | pt::ETRD
                             | pt::NBLE
                             | pt::IRON
-                    ) && sim.parts[idx].temp + 10.0 < 673.0
+                    // ref: Simulation.cpp:1866 —
+                    // `parts[index].temp+10.0f < 673.0f && !legacy_enable && ...`;
+                    // `heat_sim` ⇔ `legacy_enable == false` (sim.rs:92).
+                    ) && sim.settings.heat_sim
+                        && sim.parts[idx].temp + 10.0 < 673.0
                     {
                         sim.parts[idx].temp += 10.0;
                     }
@@ -10731,17 +10752,17 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
     legs[9] += (legs[9] - sim.parts[i].y) * d;
 
     // ref: STKM.cpp:563-573 — snap a stuck foot back to its stored position.
-    if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32) {
+    if stickman_foot_stuck(sim, t, legs[4] as i32, legs[5] as i32) {
         legs[4] = legs[6];
         legs[5] = legs[7];
     }
-    if stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32) {
+    if stickman_foot_stuck(sim, t, legs[12] as i32, legs[13] as i32) {
         legs[12] = legs[14];
         legs[13] = legs[15];
     }
 
     // This makes the stick man "pop" from obstacles. ref: STKM.cpp:576-588
-    if stickman_foot_stuck(sim, legs[4] as i32, legs[5] as i32) {
+    if stickman_foot_stuck(sim, t, legs[4] as i32, legs[5] as i32) {
         let tx = legs[4];
         let ty = legs[5];
         legs[4] = legs[6];
@@ -10749,7 +10770,7 @@ fn stickman_tick(sim: &mut Sim, i: usize, which: Entity) -> i32 {
         legs[6] = tx;
         legs[7] = ty;
     }
-    if stickman_foot_stuck(sim, legs[12] as i32, legs[13] as i32) {
+    if stickman_foot_stuck(sim, t, legs[12] as i32, legs[13] as i32) {
         let tx = legs[12];
         let ty = legs[13];
         legs[12] = legs[14];
