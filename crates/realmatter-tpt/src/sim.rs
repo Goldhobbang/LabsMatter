@@ -193,6 +193,9 @@ pub struct Sim {
     pub fighters: Vec<PlayerState>,
     /// Live fighter count (`Simulation::fighcount`).
     pub figh_count: i32,
+    /// Reference `Element_PPIP_ppip_changed`: set when a PPIP trigger bit is
+    /// newly staged, consumed by the global BeforeSim promotion pass.
+    pub ppip_changed: bool,
 }
 
 impl Sim {
@@ -245,6 +248,7 @@ impl Sim {
             player2: PlayerState::default(),
             fighters: Vec::new(),
             figh_count: 0,
+            ppip_changed: false,
         };
         sim.init_can_move();
         sim.clear_air();

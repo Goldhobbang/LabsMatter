@@ -107,7 +107,22 @@ impl Sim {
                 }
             }
         }
-        // 11. PPIP staged promotion (ref 3878-3890) — implemented by a later task
+        // 11. PPIP staged promotion (ref 3878-3890).
+        if self.ppip_changed {
+            for i in 0..self.parts.len() {
+                if self.parts[i].t == 0 {
+                    continue;
+                }
+                // Reference promotes only PT_PPIP; PIPE keeps staged bits 28..30 untouched.
+                if self.parts[i].t != crate::elements_generated::pt::PPIP {
+                    continue;
+                }
+                let tmp = self.parts[i].tmp as u32;
+                let promoted = tmp | ((tmp & 0xE000_0000) >> 3);
+                self.parts[i].tmp = (promoted & !0xE000_0000u32) as i32;
+            }
+            self.ppip_changed = false;
+        }
         // 12. GoL (ref 3892-3898).
         if self.element_count[crate::elements_generated::pt::LIFE as usize] > 0 {
             self.gol_counter += 1;

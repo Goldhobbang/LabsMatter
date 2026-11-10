@@ -8322,11 +8322,10 @@ fn pipe_push_particle(sim: &mut Sim, i: usize, count: i32, original: usize) {
 }
 
 /// Reference `Element_PPIP_flood_trigger` (`PPIP.cpp`). Flood-fill connected
-/// PIPE/PPIP (or same-type for HEAC) and stage trigger/conduct flags in `tmp`.
-/// Trigger flags are staged in bits 28..30 (`PPIP_TRIGGER_* << 3`) so they are
-/// promoted before consumption; promotion matches reference AfterSim global
-/// `ppip_changed` behavior but is applied per-PPIP in `pipe_update` to avoid
-/// editing `sim.rs`/tick (documented deviation).
+/// PIPE/PPIP and apply the spark/PSCN/NSCN/INST trigger side.
+/// Bits 28..30 stage the trigger flags; `Sim::ppip_changed` is set here only
+/// when a bit is newly staged and `sparked_by != PT_HEAC`; the global promotion
+/// happens in `tick.rs` BeforeSim step 11 (ref 3878-3890) and only for PPIP.
 fn ppip_flood_trigger(sim: &mut Sim, x0: i32, y0: i32, sparked_by: u16) {
     let r0 = sim.pmap_at(x0, y0);
     if r0 == 0 {
@@ -8376,6 +8375,9 @@ fn ppip_flood_trigger(sim: &mut Sim, x0: i32, y0: i32, sparked_by: u16) {
             continue;
         }
         if sim.parts[id].tmp & prop == 0 {
+            if sparked_by != pt::HEAC {
+                sim.ppip_changed = true;
+            }
             sim.parts[id].tmp |= prop;
         }
         for (dx, dy) in PIPE_OFFSETS {
@@ -8397,15 +8399,6 @@ fn pipe_update(sim: &mut Sim, i: usize, x: i32, y: i32, surround_space: i32, nt:
             || !element(sim.parts[i].ctype as u16).enabled)
     {
         sim.parts[i].ctype = 0;
-    }
-
-    // Reference AfterSim `ppip_changed`: promote staged trigger bits
-    // (0xE0000000 >> 3 -> 0x1C000000) for PPIP. Applied per-PPIP here because
-    // this task avoids editing sim.rs/tick.rs (deviation from global AfterSim).
-    if sim.parts[i].t == pt::PPIP && (sim.parts[i].tmp & 0xE000_0000u32 as i32) != 0 {
-        let staged = sim.parts[i].tmp & 0xE000_0000u32 as i32;
-        sim.parts[i].tmp |= (staged as u32 >> 3) as i32;
-        sim.parts[i].tmp &= !(0xE000_0000u32 as i32);
     }
 
     // ---- PPIP trigger flags ------------------------------------------
