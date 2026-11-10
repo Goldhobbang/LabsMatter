@@ -1829,6 +1829,10 @@ fn decode_blob(bytes: &[u8]) -> Result<Sim, String> {
     // Re-establish the edge-mode wall ring from the restored setting (reference
     // `SetEdgeMode` semantics), so a Solid save cannot lose its boundary.
     sim.apply_edge_mode();
+    // Grav mask must reflect the restored WL_GRAV walls before the first tick
+    // (ref Simulation.cpp:334 sets gravWallChanged on load).
+    sim.update_gravity_mask();
+    sim.grav_wall_changed = false;
 
     sim.recalc();
     Ok(sim)
