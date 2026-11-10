@@ -330,14 +330,14 @@ pub fn for_particle(t: u16, p: &Particle) -> GfxPixel {
     element_graphics(t, p, &mut out);
 
     // Per-particle decoration (ARGB) blended onto the base colour.
-    // ref: Renderer.cpp:303-306,431-437 (`deca++` then blend when !(pixel_mode & NO_DECO)).
-    if p.dcolour != 0 && (out.mode & pmode::NO_DECO) == 0 {
-        let mut da = ((p.dcolour >> 24) & 0xFF) as u32;
-        da += 1;
+    // ref: Renderer.cpp:431-437
+    let deca = ((p.dcolour >> 24) & 0xFF) as u32;
+    if deca != 0 && (out.mode & pmode::NO_DECO) == 0 {
+        let deca = deca + 1; // ref: Renderer.cpp:431-437 (deca++ semantics, max 256)
         let (dr, dg, db) = rgb(p.dcolour & 0x00FF_FFFF);
-        r = ((da * dr as u32 + (256 - da) * out.r as u32) >> 8) as u8;
-        g = ((da * dg as u32 + (256 - da) * out.g as u32) >> 8) as u8;
-        b = ((da * db as u32 + (256 - da) * out.b as u32) >> 8) as u8;
+        r = ((deca * dr as u32 + (256 - deca) * out.r as u32) >> 8) as u8;
+        g = ((deca * dg as u32 + (256 - deca) * out.g as u32) >> 8) as u8;
+        b = ((deca * db as u32 + (256 - deca) * out.b as u32) >> 8) as u8;
     }
     // TODO(Renderer.cpp:438-443): DECO_FIRE blends decoration into fire colour (firer/fireg/fireb) when
     // PMODE::DECO_FIRE set; not applied here without separate fire-colour output handling.
@@ -696,6 +696,218 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
             out.r = clamp_u8(out.r as i32 + z);
             out.g = clamp_u8(out.g as i32 + z);
             out.b = clamp_u8(out.b as i32 + z);
+        }
+        // ref: BRCK.cpp:48
+        pt::BRCK => {
+            if p.tmp == 1 {
+                out.mode |= firemode::ADD;
+                out.b = clamp_u8(out.b as i32 + 100);
+                out.fa = 40;
+                out.fr = out.r;
+                out.fg = out.g;
+                out.fb = out.b;
+            }
+        }
+        // ref: ROCK.cpp:51
+        pt::ROCK => {
+            let z = (p.tmp2 - 7) * 6;
+            out.r = clamp_u8(out.r as i32 + z);
+            out.g = clamp_u8(out.g as i32 + z);
+            out.b = clamp_u8(out.b as i32 + z);
+            if p.temp >= 810.15 {
+                out.mode |= firemode::ADD;
+                out.fa = (((p.temp - 810.15) / 45.0) as i32).clamp(0, 255) as u8;
+                out.fr = out.r;
+                out.fg = out.g;
+                out.fb = out.b;
+            }
+        }
+        // ref: WOOD.cpp:67
+        pt::WOOD => {
+            let maxtemp = if (p.tmp as f32) > p.temp { p.tmp as f32 } else { p.temp };
+            if maxtemp > 400.0 {
+                out.r = clamp_u8(out.r as i32 - ((maxtemp - 400.0) / 3.0).clamp(0.0, 172.0) as i32);
+                out.g = clamp_u8(out.g as i32 - ((maxtemp - 400.0) / 4.0).clamp(0.0, 140.0) as i32);
+                out.b = clamp_u8(out.b as i32 - ((maxtemp - 400.0) / 20.0).clamp(0.0, 44.0) as i32);
+            }
+            if maxtemp < 273.0 {
+                out.r = clamp_u8(out.r as i32 - ((273.0 - maxtemp) / 5.0).clamp(0.0, 40.0) as i32);
+                out.g = clamp_u8(out.g as i32 + ((273.0 - maxtemp) / 4.0).clamp(0.0, 40.0) as i32);
+                out.b = clamp_u8(out.b as i32 + ((273.0 - maxtemp) / 1.5).clamp(0.0, 150.0) as i32);
+            }
+        }
+        // ref: VINE.cpp:79
+        pt::VINE => {
+            let maxtemp = if (p.tmp2 as f32) > p.temp { p.tmp2 as f32 } else { p.temp };
+            if maxtemp > 300.0 {
+                out.r = clamp_u8(out.r as i32 + ((maxtemp - 300.0) / 5.0).clamp(0.0, 58.0) as i32);
+                out.g = clamp_u8(out.g as i32 - ((maxtemp - 300.0) / 2.0).clamp(0.0, 102.0) as i32);
+                out.b = clamp_u8(out.b as i32 + ((maxtemp - 300.0) / 5.0).clamp(0.0, 70.0) as i32);
+            }
+            if maxtemp < 273.0 {
+                out.g = clamp_u8(out.g as i32 + ((273.0 - maxtemp) / 4.0).clamp(0.0, 255.0) as i32);
+                out.b = clamp_u8(out.b as i32 + ((273.0 - maxtemp) / 1.5).clamp(0.0, 255.0) as i32);
+            }
+        }
+        // ref: TUNG.cpp:118
+        pt::TUNG => {
+            let melting_point = 3695.0f32;
+            let start_temp = melting_point - 1500.0;
+            let temp_over = (((p.temp - start_temp) / 1500.0) * std::f32::consts::PI) - (std::f32::consts::PI / 2.0);
+            if temp_over > -(std::f32::consts::PI / 2.0) {
+                let mut temp_over = temp_over;
+                if temp_over > std::f32::consts::PI / 2.0 {
+                    temp_over = std::f32::consts::PI / 2.0;
+                }
+                let gradv = temp_over.sin() + 1.0;
+                let fr = (gradv * 258.0) as i32;
+                let fg = (gradv * 156.0) as i32;
+                let fb = (gradv * 112.0) as i32;
+                out.fa = 30;
+                out.fr = clamp_u8(fr);
+                out.fg = clamp_u8(fg);
+                out.fb = clamp_u8(fb);
+                out.r = clamp_u8(out.r as i32 + fr);
+                out.g = clamp_u8(out.g as i32 + fg);
+                out.b = clamp_u8(out.b as i32 + fb);
+                out.mode |= firemode::ADD;
+            }
+        }
+        // ref: PLNT.cpp:360
+        pt::PLNT => {
+            if p.ctype == 0 {
+                let maxtemp = if (p.tmp2 as f32) > p.temp { p.tmp2 as f32 } else { p.temp };
+                if maxtemp > 300.0 {
+                    out.r = clamp_u8(out.r as i32 + ((maxtemp - 300.0) / 5.0).clamp(0.0, 58.0) as i32);
+                    out.g = clamp_u8(out.g as i32 - ((maxtemp - 300.0) / 2.0).clamp(0.0, 102.0) as i32);
+                    out.b = clamp_u8(out.b as i32 + ((maxtemp - 300.0) / 5.0).clamp(0.0, 70.0) as i32);
+                }
+                if maxtemp < 273.0 {
+                    out.g = clamp_u8(out.g as i32 + ((273.0 - maxtemp) / 4.0).clamp(0.0, 255.0) as i32);
+                    out.b = clamp_u8(out.b as i32 + ((273.0 - maxtemp) / 1.5).clamp(0.0, 255.0) as i32);
+                }
+            } else {
+                const LEAF: [(u8, u8, u8); 8] = [
+                    (243, 246, 244), (255, 223, 50), (255, 183, 197), (250, 0, 25),
+                    (128, 206, 196), (127, 255, 0), (0, 74, 178), (12, 172, 0),
+                ];
+                let colour = ((p.ctype >> 14) & 0x3f) as i32; // PLNT_COLOUR
+                let cyan = if (colour & 0b110000) != 0 { 1 } else { 0 };
+                let magenta = if (colour & 0b001100) != 0 { 1 } else { 0 };
+                let yellow = if (colour & 0b000011) != 0 { 1 } else { 0 };
+                let ind = (4 * cyan + 2 * magenta + yellow) as usize;
+                if ind < 8 {
+                    out.r = LEAF[ind].0;
+                    out.g = LEAF[ind].1;
+                    out.b = LEAF[ind].2;
+                }
+            }
+        }
+        // ref: BRCK.cpp:48
+        pt::BRCK => {
+            if p.tmp == 1 {
+                out.mode |= firemode::ADD;
+                out.b = clamp_u8(out.b as i32 + 100);
+                out.fa = 40;
+                out.fr = out.r;
+                out.fg = out.g;
+                out.fb = out.b;
+            }
+        }
+        // ref: ROCK.cpp:51
+        pt::ROCK => {
+            let z = (p.tmp2 - 7) * 6;
+            out.r = clamp_u8(out.r as i32 + z);
+            out.g = clamp_u8(out.g as i32 + z);
+            out.b = clamp_u8(out.b as i32 + z);
+            if p.temp >= 810.15 {
+                out.mode |= firemode::ADD;
+                out.fa = (((p.temp - 810.15) / 45.0) as i32).clamp(0, 255) as u8;
+                out.fr = out.r;
+                out.fg = out.g;
+                out.fb = out.b;
+            }
+        }
+        // ref: WOOD.cpp:67
+        pt::WOOD => {
+            let maxtemp = if (p.tmp as f32) > p.temp { p.tmp as f32 } else { p.temp };
+            if maxtemp > 400.0 {
+                out.r = clamp_u8(out.r as i32 - ((maxtemp - 400.0) / 3.0).clamp(0.0, 172.0) as i32);
+                out.g = clamp_u8(out.g as i32 - ((maxtemp - 400.0) / 4.0).clamp(0.0, 140.0) as i32);
+                out.b = clamp_u8(out.b as i32 - ((maxtemp - 400.0) / 20.0).clamp(0.0, 44.0) as i32);
+            }
+            if maxtemp < 273.0 {
+                out.r = clamp_u8(out.r as i32 - ((273.0 - maxtemp) / 5.0).clamp(0.0, 40.0) as i32);
+                out.g = clamp_u8(out.g as i32 + ((273.0 - maxtemp) / 4.0).clamp(0.0, 40.0) as i32);
+                out.b = clamp_u8(out.b as i32 + ((273.0 - maxtemp) / 1.5).clamp(0.0, 150.0) as i32);
+            }
+        }
+        // ref: VINE.cpp:79
+        pt::VINE => {
+            let maxtemp = if (p.tmp2 as f32) > p.temp { p.tmp2 as f32 } else { p.temp };
+            if maxtemp > 300.0 {
+                out.r = clamp_u8(out.r as i32 + ((maxtemp - 300.0) / 5.0).clamp(0.0, 58.0) as i32);
+                out.g = clamp_u8(out.g as i32 - ((maxtemp - 300.0) / 2.0).clamp(0.0, 102.0) as i32);
+                out.b = clamp_u8(out.b as i32 + ((maxtemp - 300.0) / 5.0).clamp(0.0, 70.0) as i32);
+            }
+            if maxtemp < 273.0 {
+                out.g = clamp_u8(out.g as i32 + ((273.0 - maxtemp) / 4.0).clamp(0.0, 255.0) as i32);
+                out.b = clamp_u8(out.b as i32 + ((273.0 - maxtemp) / 1.5).clamp(0.0, 255.0) as i32);
+            }
+        }
+        // ref: TUNG.cpp:118
+        pt::TUNG => {
+            let melting_point = 3695.0f32;
+            let start_temp = melting_point - 1500.0;
+            let temp_over = (((p.temp - start_temp) / 1500.0) * std::f32::consts::PI) - (std::f32::consts::PI / 2.0);
+            if temp_over > -(std::f32::consts::PI / 2.0) {
+                let mut temp_over = temp_over;
+                if temp_over > std::f32::consts::PI / 2.0 {
+                    temp_over = std::f32::consts::PI / 2.0;
+                }
+                let gradv = temp_over.sin() + 1.0;
+                let fr = (gradv * 258.0) as i32;
+                let fg = (gradv * 156.0) as i32;
+                let fb = (gradv * 112.0) as i32;
+                out.fa = 30;
+                out.fr = clamp_u8(fr);
+                out.fg = clamp_u8(fg);
+                out.fb = clamp_u8(fb);
+                out.r = clamp_u8(out.r as i32 + fr);
+                out.g = clamp_u8(out.g as i32 + fg);
+                out.b = clamp_u8(out.b as i32 + fb);
+                out.mode |= firemode::ADD;
+            }
+        }
+        // ref: PLNT.cpp:360
+        pt::PLNT => {
+            if p.ctype == 0 {
+                let maxtemp = if (p.tmp2 as f32) > p.temp { p.tmp2 as f32 } else { p.temp };
+                if maxtemp > 300.0 {
+                    out.r = clamp_u8(out.r as i32 + ((maxtemp - 300.0) / 5.0).clamp(0.0, 58.0) as i32);
+                    out.g = clamp_u8(out.g as i32 - ((maxtemp - 300.0) / 2.0).clamp(0.0, 102.0) as i32);
+                    out.b = clamp_u8(out.b as i32 + ((maxtemp - 300.0) / 5.0).clamp(0.0, 70.0) as i32);
+                }
+                if maxtemp < 273.0 {
+                    out.g = clamp_u8(out.g as i32 + ((273.0 - maxtemp) / 4.0).clamp(0.0, 255.0) as i32);
+                    out.b = clamp_u8(out.b as i32 + ((273.0 - maxtemp) / 1.5).clamp(0.0, 255.0) as i32);
+                }
+            } else {
+                const LEAF: [(u8, u8, u8); 8] = [
+                    (243, 246, 244), (255, 223, 50), (255, 183, 197), (250, 0, 25),
+                    (128, 206, 196), (127, 255, 0), (0, 74, 178), (12, 172, 0),
+                ];
+                let colour = ((p.ctype >> 14) & 0x3f) as i32; // PLNT_COLOUR
+                let cyan = if (colour & 0b110000) != 0 { 1 } else { 0 };
+                let magenta = if (colour & 0b001100) != 0 { 1 } else { 0 };
+                let yellow = if (colour & 0b000011) != 0 { 1 } else { 0 };
+                let ind = (4 * cyan + 2 * magenta + yellow) as usize;
+                if ind < 8 {
+                    out.r = LEAF[ind].0;
+                    out.g = LEAF[ind].1;
+                    out.b = LEAF[ind].2;
+                }
+            }
         }
         // ref: PTNM.cpp:267
         pt::PTNM => {
