@@ -1,205 +1,220 @@
 //! Game of Life cellular automata on `PT_LIFE` cells.
+//!
+//! Reference: `Simulation::SimulateGoL` in `Simulation.cpp:3443-3618`.
 
 use crate::elements_generated::pt;
 use crate::elements_generated::GOL_RULES;
+use crate::elements_generated::WALLS;
 use crate::sim::{pmap_id, pmap_type, Sim, CELL};
 
 const NGOL: u32 = GOL_RULES.len() as u32;
 
-/// Resolve the ruleset for a LIFE particle's `ctype` (golnum identity for
-/// builtins, raw ruleset for custom rules), mirroring reference `SimulateGoL`.
+// Wall id for DEFAULT_WL_STASIS (elements_generated: "DEFAULT_WL_STASIS" id 18).
+const WL_STASIS: u8 = 18;
+
 #[inline]
-fn resolve_ruleset(ctype: i32) -> (u32, u32) {
-    let golnum = ctype as u32;
-    if golnum < NGOL {
-        (golnum, GOL_RULES[golnum as usize].ruleset)
-    } else {
-        (golnum, golnum)
+fn is_stasis_frozen(sim: &Sim, x: i32, y: i32) -> bool {
+    debug_assert!(WALLS[WL_STASIS as usize].identifier == "DEFAULT_WL_STASIS");
+    if sim.wall_at(x, y) != WL_STASIS {
+        return false;
     }
+    let cx = x / CELL as i32;
+    let cy = y / CELL as i32;
+    if !sim.in_cell_bounds(cx, cy) {
+        return false;
+    }
+    // emap is per-cell; stasis frozen when emap < 8 (reference Simulation.cpp).
+    sim.emap[sim.cell_idx(cx, cy)] < 8
 }
 
-#[derive(Clone, Copy, Default)]
-struct CellInfo {
-    alive: bool,
-    /// Species identity: builtin index (0-based) or raw custom ruleset.
-    golnum: u32,
-    ruleset: u32,
-    dcolour: u32,
-    tmp: i32,
-}
-
-/// `Simulation::SimulateGoL`.
-///
-/// Reference-grounded behavior implemented here: builtin/custom ruleset
-/// resolution, multi-state countdown, neighbor-count birth/survival masks with
-/// toroidal wrapping inside the 2*CELL border, birth from the true majority
-/// species among the 8 alive neighbors (lowest golnum on ties, matching the
-/// reference contest order), and inheritance of `dcolour`/`tmp` from the
-/// sampled neighbor that contributed the winning species (reference
-/// `createFromEntry` offset sampling).
-///
-/// Not implemented (requires gol grid / tick API changes): the reference's
-/// per-cell 5-slot multi-species contest grid (`gol[y][x][5]`) that tracks
-/// multiple competing species populations in the same empty cell across the
-/// global grid. This implementation tallies the 8 neighbors directly, which
-/// is sufficient for <=8 competing neighbors but is not the full 5-slot grid
-/// structure (`SYS-GOL-MULTI`).
+/// `Simulation::SimulateGoL` (reference `Simulation.cpp:3443-3618`).
 pub fn simulate_gol(sim: &mut Sim) {
-    let w = sim.width as i32;
-    let h = sim.height as i32;
+    let width = sim.width as i32;
+    let height = sim.height as i32;
     let inner_min = CELL as i32;
-    let inner_w = w - 2 * CELL as i32;
-    let inner_h = h - 2 * CELL as i32;
+    let inner_max_x = width - inner_min;
+    let inner_max_y = height - inner_min;
+    let inner_w = width - 2 * inner_min;
+    let inner_h = height - 2 * inner_min;
 
-    let mut cells: Vec<CellInfo> = vec![CellInfo::default(); sim.width * sim.height];
+    // Scratch neighbour list: persistent in reference as `gol[YRES][XRES][5]`,
+    // zeroed as consumed. Local zeroed per call starts each call zeroed.
+    let mut gol: Vec<[u32; 5]> = vec![[0u32; 5]; sim.width * sim.height];
 
-    for i in 0..sim.parts.len() {
-        let p = &sim.parts[i];
-        if p.t != pt::LIFE {
+    // PASS 1 — per LIFE particle (reference Simulation.cpp:3463-3497).
+    let part_count = sim.parts.len();
+    for i in 0..part_count {
+        if sim.parts[i].t != pt::LIFE {
             continue;
         }
-        let x = (p.x + 0.5) as i32;
-        let y = (p.y + 0.5) as i32;
-        if x < inner_min || y < inner_min || x >= w - inner_min || y >= h - inner_min {
+        let x = (sim.parts[i].x + 0.5) as i32;
+        let y = (sim.parts[i].y + 0.5) as i32;
+        if x < inner_min || y < inner_min || x >= inner_max_x || y >= inner_max_y {
             continue;
         }
-        let (golnum, ruleset) = resolve_ruleset(p.ctype);
-        let states = ((ruleset >> 17) & 0xF) + 2;
-        let idx = sim.idx(x, y);
-        cells[idx] = CellInfo {
-            alive: p.tmp2 as u32 + 1 >= states,
-            golnum,
-            ruleset,
-            dcolour: p.dcolour,
-            tmp: p.tmp,
-        };
-    }
-
-    #[derive(Clone, Copy)]
-    struct Tally {
-        golnum: u32,
-        ruleset: u32,
-        count: u32,
-        sample_dx: i32,
-        sample_dy: i32,
-    }
-
-    let mut to_kill: Vec<usize> = Vec::new();
-    let mut to_birth: Vec<(i32, i32, u32, u32, i32)> = Vec::new(); // x,y,golnum,dcolour,tmp
-
-    for y in inner_min..h - inner_min {
-        for x in inner_min..w - inner_min {
-            let idx = sim.idx(x, y);
-            let r = sim.pmap[idx];
-
-            // Count alive neighbors and tally species (reference iterates yy/xx -1..1).
-            let mut neighbours = 0u32;
-            let mut tallies: [Option<Tally>; 8] = [None; 8];
-            let mut ntally = 0usize;
-            for dy in -1i32..=1 {
-                for dx in -1i32..=1 {
-                    if dx == 0 && dy == 0 {
+        let golnum0 = sim.parts[i].ctype as u32;
+        let mut ruleset = golnum0;
+        let mut golnum = golnum0;
+        if golnum < NGOL {
+            ruleset = GOL_RULES[golnum as usize].ruleset;
+            golnum += 1; // +1 bias for builtins in neighbour list
+        }
+        let alive_threshold = (((ruleset >> 17) & 0xF) as i32) + 1;
+        if sim.parts[i].tmp2 as i32 == alive_threshold {
+            for yy in -1i32..=1 {
+                for xx in -1i32..=1 {
+                    if xx == 0 && yy == 0 {
                         continue;
                     }
-                    let ax = (x + dx + w - 3 * CELL as i32).rem_euclid(inner_w) + CELL as i32;
-                    let ay = (y + dy + h - 3 * CELL as i32).rem_euclid(inner_h) + CELL as i32;
-                    let nidx = sim.idx(ax, ay);
-                    let nr = sim.pmap[nidx];
-                    if nr != 0 && pmap_type(nr) != pt::LIFE {
+                    // Toroidal wrap inside 2*CELL border (C++ % on non-negative value).
+                    let ax = ((x + xx + width - 3 * inner_min) % inner_w) + inner_min;
+                    let ay = ((y + yy + height - 3 * inner_min) % inner_h) + inner_min;
+                    let aidx = sim.idx(ax, ay);
+                    let r = sim.pmap[aidx];
+                    if r != 0 && pmap_type(r) != pt::LIFE {
                         continue;
                     }
-                    let c = cells[nidx];
-                    if !c.alive {
-                        continue;
-                    }
-                    neighbours += 1;
-                    let mut found = false;
-                    for t in tallies[..ntally].iter_mut().flatten() {
-                        if t.golnum == c.golnum {
-                            t.count += 1;
-                            found = true;
+                    gol[aidx][0] = gol[aidx][0].wrapping_add(1 << 28);
+                    for l in 0..5 {
+                        let nr = gol[aidx][l] & 0x001F_FFFF;
+                        if nr == golnum {
+                            gol[aidx][l] = gol[aidx][l].wrapping_add(1 << 21);
+                            break;
+                        }
+                        if nr == 0 {
+                            gol[aidx][l] =
+                                ((yy as u32 & 3) << 26) | ((xx as u32 & 3) << 24) | golnum;
                             break;
                         }
                     }
-                    if !found && ntally < tallies.len() {
-                        // Store sample offset as the contributing neighbor delta
-                        // (reference createFromEntry packs yy/xx of the adding
-                        // neighbor; birth samples at x - xx, y - yy).
-                        tallies[ntally] = Some(Tally {
-                            golnum: c.golnum,
-                            ruleset: c.ruleset,
-                            count: 1,
-                            sample_dx: dx,
-                            sample_dy: dy,
-                        });
-                        ntally += 1;
+                }
+            }
+        } else {
+            // Dying/non-alive-countdown state: decrement unless stasis-frozen.
+            if !is_stasis_frozen(sim, x, y) && i < sim.parts.len() && sim.parts[i].t == pt::LIFE {
+                sim.parts[i].tmp2 -= 1;
+            }
+        }
+    }
+
+    // PASS 2 — all cells (reference Simulation.cpp:3499-3593).
+    for y in inner_min..inner_max_y {
+        for x in inner_min..inner_max_x {
+            let idx = sim.idx(x, y);
+            let r = sim.pmap[idx];
+            if r != 0 && pmap_type(r) != pt::LIFE {
+                continue;
+            }
+            let nl0 = gol[idx][0];
+            if r == 0 && nl0 == 0 {
+                continue;
+            }
+
+            let neighbours = if nl0 != 0 { ((nl0 >> 28) & 7) + 1 } else { 0 };
+            if !is_stasis_frozen(sim, x, y) {
+                if r != 0 {
+                    // Existing LIFE: survival check.
+                    let id = pmap_id(r) as usize;
+                    if id < sim.parts.len() && sim.parts[id].t == pt::LIFE {
+                        let mut ruleset = sim.parts[id].ctype as u32;
+                        if ruleset < NGOL {
+                            ruleset = GOL_RULES[ruleset as usize].ruleset;
+                        }
+                        let alive_threshold = (((ruleset >> 17) & 0xF) as i32) + 1;
+                        if ((ruleset >> neighbours) & 1) == 0
+                            && sim.parts[id].tmp2 as i32 == alive_threshold
+                        {
+                            sim.parts[id].tmp2 -= 1;
+                        }
+                    }
+                } else {
+                    // Birth: exact contest (reference Simulation.cpp:3519-3582).
+                    let mut golnum_to_create: u32 = u32::MAX;
+                    let mut create_from_entry: u32 = 0;
+                    let majority = neighbours / 2 + neighbours % 2;
+                    for l in 0..5 {
+                        let entry = gol[idx][l];
+                        let mut golnum_l = entry & 0x001F_FFFF;
+                        if golnum_l == 0 {
+                            break;
+                        }
+                        let mut ruleset_l = golnum_l;
+                        if golnum_l.wrapping_sub(1) < NGOL {
+                            ruleset_l = GOL_RULES[(golnum_l - 1) as usize].ruleset;
+                            golnum_l -= 1;
+                        }
+                        let pop = ((entry >> 21) & 7) + 1;
+                        if ((ruleset_l >> (neighbours + 8)) & 1) != 0
+                            && pop >= majority
+                            && golnum_l < golnum_to_create
+                        {
+                            golnum_to_create = golnum_l;
+                            create_from_entry = entry;
+                        }
+                    }
+                    if golnum_to_create != u32::MAX {
+                        if let Some(new_id) = sim.create_part(x, y, pt::LIFE) {
+                            // Decode contributing neighbour offset from createFromEntry.
+                            let mut xx = ((create_from_entry >> 24) & 3) as i32;
+                            let mut yy = ((create_from_entry >> 26) & 3) as i32;
+                            if xx == 3 { xx = -1; }
+                            if yy == 3 { yy = -1; }
+                            let ax = ((x - xx + width - 3 * inner_min) % inner_w) + inner_min;
+                            let ay = ((y - yy + height - 3 * inner_min) % inner_h) + inner_min;
+                            // Sample dcolour/tmp from parts[ID(pmap[ay][ax])] like reference.
+                            let aidx = sim.idx(ax, ay);
+                            let sr = sim.pmap[aidx];
+                            let mut sdcolour = 0u32;
+                            let mut stmp = 0i32;
+                            if sr != 0 && pmap_type(sr) == pt::LIFE {
+                                let sid = pmap_id(sr) as usize;
+                                if sid < sim.parts.len() && sim.parts[sid].t == pt::LIFE {
+                                    sdcolour = sim.parts[sid].dcolour;
+                                    stmp = sim.parts[sid].tmp;
+                                }
+                            }
+                            // Reference create_part(-1,x,y,LIFE, golnumToCreate|0x200000):
+                            // LIFE create sets ctype = v & 0x1FFFFF, tmp2 = ((ruleset>>17)&0xF)+1
+                            // and skips colour lookup because of 0x200000. create_part here
+                            // uses create_fn with v=0, so set fields explicitly.
+                            let birth_ruleset = if golnum_to_create < NGOL {
+                                GOL_RULES[golnum_to_create as usize].ruleset
+                            } else {
+                                golnum_to_create
+                            };
+                            if new_id < sim.parts.len() {
+                                sim.parts[new_id].ctype = golnum_to_create as i32;
+                                sim.parts[new_id].tmp2 = (((birth_ruleset >> 17) & 0xF) + 1) as i32;
+                                sim.parts[new_id].dcolour = sdcolour;
+                                sim.parts[new_id].tmp = stmp;
+                            }
+                        }
                     }
                 }
             }
+            // Clear consumed entries (reference Simulation.cpp:3586-3592).
+            for l in 0..5 {
+                if gol[idx][l] == 0 {
+                    break;
+                }
+                gol[idx][l] = 0;
+            }
+        }
+    }
 
-            let n = neighbours.min(8);
+    // PASS 3 — kill LIFE with tmp2 <= 0 (reference Simulation.cpp:3595-3616).
+    for y in inner_min..inner_max_y {
+        for x in inner_min..inner_max_x {
+            let idx = sim.idx(x, y);
+            let r = sim.pmap[idx];
             if r != 0 && pmap_type(r) == pt::LIFE {
                 let id = pmap_id(r) as usize;
-                if id >= sim.parts.len() {
-                    continue;
-                }
-                let ruleset = cells[idx].ruleset;
-                let stay = ruleset & 0x1FF;
-                if (stay >> n) & 1 == 0 {
-                    to_kill.push(id);
-                }
-            } else if r == 0 && neighbours > 0 {
-                // True majority contest (reference): winner needs count >=
-                // ceil(neighbours/2) and birth bit set; lowest golnum wins ties.
-                let majority = neighbours / 2 + neighbours % 2;
-                let mut best: Option<Tally> = None;
-                for t in tallies[..ntally].iter().flatten() {
-                    let begin = (t.ruleset >> 9) & 0x1FF;
-                    if (begin >> n) & 1 == 0 || t.count < majority {
-                        continue;
-                    }
-                    if best.map_or(true, |b| t.golnum < b.golnum) {
-                        best = Some(*t);
-                    }
-                }
-                if let Some(b) = best {
-                    let ax = (x - b.sample_dx + w - 3 * CELL as i32).rem_euclid(inner_w) + CELL as i32;
-                    let ay = (y - b.sample_dy + h - 3 * CELL as i32).rem_euclid(inner_h) + CELL as i32;
-                    let sidx = sim.idx(ax, ay);
-                    let sample = cells[sidx];
-                    to_birth.push((x, y, b.golnum, sample.dcolour, sample.tmp));
+                if id < sim.parts.len() && sim.parts[id].t == pt::LIFE && sim.parts[id].tmp2 <= 0 {
+                    sim.kill_part(id);
                 }
             }
         }
     }
 
-    for id in to_kill {
-        if id >= sim.parts.len() || sim.parts[id].t != pt::LIFE {
-            continue;
-        }
-        sim.parts[id].tmp2 -= 1;
-        if sim.parts[id].tmp2 < 0 {
-            sim.kill_part(id);
-        }
-    }
-    for (x, y, golnum, dcolour, tmp) in to_birth {
-        if sim.pmap[sim.idx(x, y)] != 0 {
-            continue;
-        }
-        if let Some(i) = sim.create_part(x, y, pt::LIFE) {
-            let ruleset = if golnum < NGOL {
-                GOL_RULES[golnum as usize].ruleset
-            } else {
-                golnum
-            };
-            let states = ((ruleset >> 17) & 0xF) + 2;
-            sim.parts[i].tmp2 = states as i32 - 1;
-            // Store builtin identity index or raw custom ruleset, matching
-            // reference `LIFE::create` / birth (`golnumToCreate`).
-            sim.parts[i].ctype = golnum as i32;
-            sim.parts[i].dcolour = dcolour;
-            sim.parts[i].tmp = tmp;
-        }
-    }
     sim.gol_counter = 0;
 }
