@@ -830,12 +830,6 @@ impl Sim {
         (gx, gy)
     }
 
-    /// Recompute Newtonian gravity from the mass grid.
-    ///
-    /// The reference uses an FFT convolution with a fixed kernel; this
-    /// implementation runs a bounded Jacobi relaxation of the discrete Poisson
-    /// equation on the same grid, which is a documented approximation (see
-    /// `docs/tpt-parity/architecture.md`).
     /// Recompute the gravity mask from `WL_GRAV` walls (ref: Simulation.cpp:3684-3728).
     ///
     /// Mask convention: `u32::MAX` = gravity reachable from the border, `0` = enclosed
@@ -906,6 +900,12 @@ impl Sim {
         }
     }
 
+    /// Recompute Newtonian gravity from the mass grid.
+    ///
+    /// The reference uses an FFT convolution with a fixed kernel; this
+    /// implementation runs a bounded Jacobi relaxation of the discrete Poisson
+    /// equation on the same grid, which is a documented approximation (see
+    /// `docs/tpt-parity/architecture.md`).
     pub fn update_newtonian_gravity(&mut self) {
         if !self.settings.newtonian_gravity {
             self.grav_force.iter_mut().for_each(|f| *f = (0.0, 0.0));
@@ -1005,8 +1005,8 @@ impl Sim {
                 }
             }
         }
-        // Bulk bmap edge writes can create/remove WL_GRAV cells; invalidate mask.
-        // ref Simulation.cpp:334 / 3971
+        // Bulk bmap edge writes can overwrite a user-placed WL_GRAV border cell; invalidate mask.
+        // Deliberate conservative superset: reference Simulation::SetEdgeMode (Simulation.cpp:765-800) does not set gravWallChanged.
         self.grav_wall_changed = true;
         // In Loop mode particles that ended up in the outer CELL margin must be
         // wrapped to their counterpart (reference `remainder_p`), mirroring
