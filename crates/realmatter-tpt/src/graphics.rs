@@ -968,6 +968,30 @@ fn element_graphics(t: u16, p: &Particle, out: &mut GfxPixel) {
             out.g = clamp_u8(out.g as i32 + stage);
             out.b = clamp_u8(out.b as i32 + stage);
         }
+        // ref: EMP.cpp:216-224
+        pt::EMP => {
+            if p.life != 0 {
+                let l = p.life as i32;
+                out.r = clamp_u8((l as f32 * 1.5) as i32);
+                out.g = clamp_u8((l as f32 * 1.5) as i32);
+                out.b = clamp_u8(200 - l);
+            }
+        }
+        // ref: GEL.cpp:172-180
+        pt::GEL => {
+            let q = p.tmp;
+            out.r = clamp_u8(q * (32 - 255) / 120 + 255);
+            out.g = clamp_u8(q * (48 - 186) / 120 + 186);
+            out.b = clamp_u8(q * 208 / 120);
+            out.mode |= pmode::BLUR;
+        }
+        // ref: GPMP.cpp:90-95
+        pt::GPMP => {
+            let lifemod = if p.life > 10 { 10i32 } else { p.life };
+            let lifemod = lifemod * 19;
+            out.g = clamp_u8(out.g as i32 + lifemod);
+            out.b = clamp_u8(out.b as i32 + lifemod);
+        }
         _ => {}
     }
 }
