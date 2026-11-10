@@ -57,7 +57,7 @@ thread_local! {
 
 impl Sim {
     /// `eval_move`: 0 = blocked, 1 = swap/move, 2 = occupy same space.
-    pub fn eval_move(&self, t: u16, nx: i32, ny: i32) -> u8 {
+    pub(crate) fn eval_move(&self, t: u16, nx: i32, ny: i32) -> u8 {
         if nx < 0 || ny < 0 || nx as usize >= self.width || ny as usize >= self.height {
             return 0;
         }
