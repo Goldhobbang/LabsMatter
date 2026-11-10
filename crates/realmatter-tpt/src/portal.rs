@@ -310,24 +310,27 @@ impl PortalStore {
 ///
 /// Splits two 32-bit blocks (`block1` = `parts[i].life`, `block2` =
 /// `parts[i].ctype`) into four per-orbital values each: low byte in `[0]` up to
-/// high byte in `[3]`. Bit packing (same shifts/masks as reference):
-/// `resN[0] = blockN & 0xFF`, `resN[1] = (blockN & 0xFF00) >> 8`,
-/// `resN[2] = (blockN & 0xFF0000) >> 16`, `resN[3] = (blockN >> 24) & 0xFF`.
+/// high byte in `[3]`. Slots `[0]..[2]` are unsigned byte extracts
+/// (`block & 0xFF`, `(block & 0xFF00) >> 8`, `(block & 0xFF0000) >> 16`),
+/// giving ranges `[0]..[2] = 0..=255`. Slot `[3]` is sign-extended because the
+/// reference uses `int >> 24` (C arithmetic right shift on signed `int`), so we
+/// compute `(block >> 24)` on `i32`, giving `[3] = -128..=127`
+/// (`resN[3] = (blockN & 0xFF000000) >> 24` in the reference).
 /// Returns `(resblock1, resblock2)`.
 pub fn orbital_get(life: i32, ctype: i32) -> ([i32; 4], [i32; 4]) {
-    let b1 = life as u32;
-    let b2 = ctype as u32;
+    let b1 = life;
+    let b2 = ctype;
     let res1 = [
-        (b1 & 0x0000_00FF) as i32,
-        ((b1 & 0x0000_FF00) >> 8) as i32,
-        ((b1 & 0x00FF_0000) >> 16) as i32,
-        ((b1 & 0xFF00_0000) >> 24) as i32,
+        b1 & 0x0000_00FF,
+        (b1 & 0x0000_FF00) >> 8,
+        (b1 & 0x00FF_0000) >> 16,
+        b1 >> 24,
     ];
     let res2 = [
-        (b2 & 0x0000_00FF) as i32,
-        ((b2 & 0x0000_FF00) >> 8) as i32,
-        ((b2 & 0x00FF_0000) >> 16) as i32,
-        ((b2 & 0xFF00_0000) >> 24) as i32,
+        b2 & 0x0000_00FF,
+        (b2 & 0x0000_FF00) >> 8,
+        (b2 & 0x00FF_0000) >> 16,
+        b2 >> 24,
     ];
     (res1, res2)
 }
@@ -340,6 +343,8 @@ pub fn orbital_get(life: i32, ctype: i32) -> ([i32; 4], [i32; 4]) {
 /// reference): for each block, `(res[0] & 0xFF) | ((res[1] & 0xFF) << 8) |
 /// ((res[2] & 0xFF) << 16) | ((res[3] & 0xFF) << 24)`. Returns `(life, ctype)`.
 pub fn orbital_set(orbd: &[i32; 4], orbl: &[i32; 4]) -> (i32, i32) {
+    // `& 0xFF` on each (possibly negative, e.g. slot [3] = -128..=127 from
+    // orbital_get) reproduces C's byte extraction/truncation before packing.
     let b1: u32 = ((orbd[0] as u32) & 0xFF)
         | (((orbd[1] as u32) & 0xFF) << 8)
         | (((orbd[2] as u32) & 0xFF) << 16)
