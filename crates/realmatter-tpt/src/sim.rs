@@ -6,12 +6,12 @@
 
 use crate::air::{
     AirMode, ConvectionMode, WALL_ALLOWAIR, WALL_ALLOWALLELEC, WALL_ALLOWENERGY, WALL_ALLOWGAS,
-    WALL_ALLOWLIQUID, WALL_ALLOWPOWDER, WALL_BLOCKAIR, WALL_DESTROYALL, WALL_DETECT, WALL_ERASE,
-    WALL_ERASEALL, WALL_EWALL, WALL_FAN, WALL_GRAV, WALL_STASIS, WALL_STREAM, WALL_WALL,
-    WALL_WALLELEC,
+    WALL_ALLOWLIQUID, WALL_ALLOWPOWDER, WALL_BLOCKAIR, WALL_DESTROYALL, WALL_DETECT, WALL_EHOLE,
+    WALL_ERASE, WALL_ERASEALL, WALL_EWALL, WALL_FAN, WALL_GRAV, WALL_STASIS, WALL_STREAM,
+    WALL_WALL, WALL_WALLELEC,
 };
 use crate::element::element;
-use crate::elements_generated::{props, PT_NUM};
+use crate::elements_generated::{props, pt, PT_NUM};
 use crate::entity::PlayerState;
 use crate::particle::Particle;
 use crate::portal::PortalStore;
@@ -134,6 +134,8 @@ pub struct Sim {
 
     pub pmap: Vec<u32>,
     pub photons: Vec<u32>,
+    /// Per-cell particle count used by `CheckStacking` (ref: RecalcFreeParticles 3347-3400).
+    pub pmap_count: Vec<u32>,
     pub parts: Vec<Particle>,
     /// Free slots (indices of dead particles) available for reuse.
     pub free: Vec<u32>,
@@ -206,6 +208,7 @@ impl Sim {
             cells_y: cy,
             pmap: vec![0; width * height],
             photons: vec![0; width * height],
+            pmap_count: vec![0; width * height],
             parts: Vec::with_capacity(width * height / 4),
             free: Vec::new(),
             bmap: vec![0; n],
@@ -614,13 +617,16 @@ impl Sim {
         true
     }
 
-    /// Rebuild `pmap`/`photons` from the particle array and compact dead slots,
-    /// mirroring `RecalcFreeParticles`.
+    /// Rebuild `pmap`/`photons`/`pmap_count` from the particle array and compact dead slots,
+    /// mirroring `RecalcFreeParticles` (Simulation.cpp:3347-3400).
     pub fn recalc(&mut self) {
         for v in self.pmap.iter_mut() {
             *v = 0;
         }
         for v in self.photons.iter_mut() {
+            *v = 0;
+        }
+        for v in self.pmap_count.iter_mut() {
             *v = 0;
         }
         let mut write = 0usize;
@@ -640,10 +646,21 @@ impl Sim {
                 let packed = pmap_pack(write as u32, p.t);
                 if (def.properties & props::TYPE_ENERGY) != 0 {
                     self.photons[cell] = packed;
-                } else if self.pmap[cell] == 0
-                    || pmap_type(self.pmap[cell]) != crate::elements_generated::pt::INVIS
-                {
-                    self.pmap[cell] = packed;
+                    // ref 3390-3400: energy particles do not increment pmap_count.
+                } else {
+                    if self.pmap[cell] == 0
+                        || pmap_type(self.pmap[cell]) != pt::INVIS
+                    {
+                        self.pmap[cell] = packed;
+                    }
+                    // ref 3395-3400: non-energy increments pmap_count except THDR/EMBR/FIGH/PLSM.
+                    if p.t != pt::THDR
+                        && p.t != pt::EMBR
+                        && p.t != pt::FIGH
+                        && p.t != pt::PLSM
+                    {
+                        self.pmap_count[cell] += 1;
+                    }
                 }
             }
             write += 1;
@@ -655,6 +672,98 @@ impl Sim {
             if (p.t as usize) < PT_NUM {
                 self.element_count[p.t as usize] += 1;
             }
+        }
+    }
+
+    /// `CheckStacking` (Simulation.cpp:3620-3682).
+    ///
+    /// Scans `pmap_count` for excessive stacking, clears overfull cells by
+    /// converting/reusing a slot to NBHL or killing particles, and signals the
+    /// caller whether excessive stacking was found.
+    ///
+    /// Deviation note: `bmap` is wall-type-per-air-cell (`WL_*`), so the
+    /// reference `WL_EHOLE` branch (3628-3632) is representable and implemented.
+    /// `force_stacking_check` is not present in this crate and is not added.
+    pub fn check_stacking(&mut self) {
+        let w = self.width as i32;
+        let h = self.height as i32;
+        let npart: u32 = (self.width * self.height) as u32;
+        let mut excessive = false;
+        for y in 0..h {
+            for x in 0..w {
+                let idx = self.idx(x, y);
+                let count = self.pmap_count[idx];
+                if count > 5 {
+                    let cx = (x as usize / CELL) as i32;
+                    let cy = (y as usize / CELL) as i32;
+                    let cell_idx = self.cell_idx(cx, cy);
+                    if self.bmap[cell_idx] == WALL_EHOLE {
+                        // ref 3628-3632
+                        if count > 1500 {
+                            self.pmap_count[idx] = self.pmap_count[idx].saturating_add(npart);
+                            excessive = true;
+                        }
+                    } else if count > 1500 {
+                        // ref 3634-3637: >1500 => flag, no RNG
+                        self.pmap_count[idx] = self.pmap_count[idx].saturating_add(npart);
+                        excessive = true;
+                    } else {
+                        // ref 3638-3643: RNG only when <=1500 (|| short-circuit)
+                        if self.rng.between(0, 1599) <= (count as i32 + 100) {
+                            self.pmap_count[idx] = self.pmap_count[idx].saturating_add(npart);
+                            excessive = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !excessive {
+            return;
+        }
+        // ref 3653-3680
+        let mut i = 0usize;
+        while i < self.parts.len() {
+            if self.parts[i].t == 0 {
+                i += 1;
+                continue;
+            }
+            let x = (self.parts[i].x + 0.5) as i32;
+            let y = (self.parts[i].y + 0.5) as i32;
+            if !self.in_bounds(x, y) {
+                i += 1;
+                continue;
+            }
+            if (element(self.parts[i].t).properties & props::TYPE_ENERGY) != 0 {
+                i += 1;
+                continue;
+            }
+            let idx = self.idx(x, y);
+            if self.pmap_count[idx] >= npart {
+                if self.pmap_count[idx] > npart {
+                    // ref 3663-3670: reuse slot as NBHL (create_part resets defaults), then override
+                    let delta = self.pmap_count[idx] - npart;
+                    let _ = self.part_change_type(i, x, y, pt::NBHL as i16);
+                    // Mirror fresh-particle reset (DefaultProperties for NBHL are engine defaults).
+                    self.parts[i].life = 0;
+                    self.parts[i].ctype = 0;
+                    self.parts[i].tmp = 0;
+                    self.parts[i].tmp2 = 0;
+                    self.parts[i].tmp3 = 0;
+                    self.parts[i].tmp4 = 0;
+                    self.parts[i].vx = 0.0;
+                    self.parts[i].vy = 0.0;
+                    self.parts[i].dcolour = 0;
+                    self.parts[i].flags = 0;
+                    self.parts[i].temp = MAX_TEMP;
+                    self.parts[i].tmp = std::cmp::min(delta, 51200) as i32;
+                    self.pmap_count[idx] = npart;
+                    // pmap[idx] already updated by part_change_type to refer to NBHL particle i.
+                } else {
+                    // ref 3671-3674
+                    self.kill_part(i);
+                }
+            }
+            i += 1;
         }
     }
 

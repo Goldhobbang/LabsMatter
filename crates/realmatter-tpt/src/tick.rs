@@ -72,24 +72,26 @@ impl Sim {
         }
         // 6. Rebuild pmap and apply life decay.
         self.recalc_and_life();
-        // 7. Wall / ambient block maps.
+        // 7. emap decrement / wall-ambient block maps (ref 3777-3785).
         for e in self.emap.iter_mut() {
             if *e != 0 {
                 *e -= 1;
             }
         }
         self.refresh_air_block_maps();
-        // 8. GoL.
-        if self.element_count[crate::elements_generated::pt::LIFE as usize] > 0 {
-            self.gol_counter += 1;
-            if self.gol_counter >= self.settings.gol_speed {
-                self.gol_counter = 0;
-                self.simulate_gol();
-            }
+        // 8. CheckStacking (ref 3786-3790).
+        if self.rng.chance(1, 10) {
+            self.check_stacking();
         }
-        // 9. Global WIRE previous-state snapshot (ref: Simulation.cpp:3835-3853).
-        //    Before particle updates, snapshot each WIRE's ctype into tmp so all
-        //    WIRE updates in this tick read a consistent previous state.
+        // 9. LOVE/LOLZ BeforeSim stamp (ref 3792-3860).
+        if self.element_count[crate::elements_generated::pt::LOVE as usize] > 0
+            || self.element_count[crate::elements_generated::pt::LOLZ as usize] > 0
+        {
+            crate::updates::before_sim_love_lolz(self);
+        }
+        // 10. Global WIRE previous-state snapshot (ref 3862-3876).
+        //     Before particle updates, snapshot each WIRE's ctype into tmp so all
+        //     WIRE updates in this tick read a consistent previous state.
         if self.element_count[crate::elements_generated::pt::WIRE as usize] > 0 {
             let wire = crate::elements_generated::pt::WIRE;
             for cell in 0..self.pmap.len() {
@@ -105,18 +107,25 @@ impl Sim {
                 }
             }
         }
-        // 10. Reference Simulation.cpp:3900-3908: while `ISWIRE > 0`, promote
-        //     wireless next->current and decrement `ISWIRE`. This runs in BeforeSim
-        //     before particle updates; WIFI sets `ISWIRE = 2` during update via
-        //     `WirelessStore::note_spark`, so a spark becomes observable on the
-        //     following tick's BeforeSim promotion pass.
+        // 11. PPIP staged promotion (ref 3878-3890) — implemented by a later task
+        // 12. GoL (ref 3892-3898).
+        if self.element_count[crate::elements_generated::pt::LIFE as usize] > 0 {
+            self.gol_counter += 1;
+            if self.gol_counter >= self.settings.gol_speed {
+                self.gol_counter = 0;
+                self.simulate_gol();
+            }
+        }
+        // 13. ISWIRE wireless advance (ref 3900-3908).
+        //     Reference: while `ISWIRE > 0`, promote wireless next->current and
+        //     decrement `ISWIRE`. This runs in BeforeSim before particle updates;
+        //     WIFI sets `ISWIRE = 2` during update via `WirelessStore::note_spark`,
+        //     so a spark becomes observable on the following tick's BeforeSim promotion pass.
         self.wireless.advance();
-        // 11. Reference Simulation.cpp:3911-3914 (BeforeSim, after ISWIRE block
-        //     3900-3908): `if (!player.spwn && player.spawnID >= 0)
-        //     create_part(-1, (int)parts[player.spawnID].x, (int)parts[player.spawnID].y, PT_STKM);`
-        //     (same for player2/STKM2). Respawn keeps `spawn_id` so the SPWN
-        //     respawns after death (unlike interactive `spawn_entity`, which clears it).
-        //     If creation fails (blocked/full), leave `spwn == 0` and retry next tick.
+        // 14. STKM spawn respawn (ref 3911-3914).
+        //     `if (!player.spwn && player.spawnID >= 0) create_part(-1, ...)` (and player2).
+        //     Respawn keeps `spawn_id` so the SPWN respawns after death. If creation
+        //     fails (blocked/full), leave `spwn == 0` and retry next tick.
         self.respawn_from_spawn_points();
     }
 
@@ -154,13 +163,9 @@ impl Sim {
         // AfterSim must NOT mutate `emp_decor`. SPRK's per-spark EMP branch in
         // updates.rs (SPRK.cpp:281-283) already adds +3 and caps at 40 for each
         // trigger; reference `Element_EMP_Trigger` (EMP.cpp) does not add decor.
-        // Mutating it here would double-apply decor.
-        //
-        // Remaining gap (unported): the full `Element_EMP_Trigger(sim, triggerCount)`
-        // body (EMP.cpp:74-225) — it changes SPRK/SWCH/WIRE at center and 5x5
-        // neighbours with probabilistic type changes and DeltaTempGenerator heating.
-        // This hook remains the canonical dispatch location for that future port.
+        // Full EMP trigger is dispatched from updates.rs.
         if self.emp_trigger_count > 0 {
+            crate::updates::emp_trigger(self, self.emp_trigger_count);
             self.emp_trigger_count = 0;
         }
         // Wireless promotion is handled in `BeforeSim` under the `ISWIRE` countdown
