@@ -3464,8 +3464,10 @@ fn wire_update(sim: &mut Sim, i: usize, x: i32, y: i32, _s: i32, _nt: i32) -> i3
                 sim.parts[i].ctype = 1;
                 return 0;
             } else if rt == pt::NSCN && sim.parts[i].tmp == 1 {
-                if cell_free(sim, nx, ny) {
-                    sim.create_part(nx, ny, pt::SPRK);
+                // Reference: Simulation::create_part(-1, x+rx, y+ry, PT_SPRK) sparks the conductor in place.
+                if sim.parts[id].life == 0 && sim.part_change_type(id, nx, ny, pt::SPRK as i16) {
+                    sim.parts[id].life = 4;
+                    sim.parts[id].ctype = pt::NSCN as i32;
                 }
             } else if rt == pt::WIRE && sim.parts[id].tmp == 1 && sim.parts[i].tmp == 0 {
                 count += 1;
