@@ -215,7 +215,11 @@ export class WasmDirectAdapter {
         let arr = bytes;
         if (bytes instanceof ArrayBuffer) arr = new Uint8Array(bytes);
         if (Array.isArray(bytes)) arr = new Uint8Array(bytes);
-        return !!this.mod.load_blob(arr);
+        const ok = !!this.mod.load_blob(arr);
+        this.lastLoadReport =
+          typeof this.mod.last_load_report === "function" ? this.mod.last_load_report() : "";
+        if (this.lastLoadReport) console.info("[realmatter] " + this.lastLoadReport);
+        return ok;
       } catch (e) { console.warn(e); }
     }
     return false;
