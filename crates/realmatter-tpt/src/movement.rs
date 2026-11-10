@@ -921,45 +921,107 @@ impl Sim {
             return;
         }
         if element(t).falldown == 0 {
-            // Gases / solids: bounce off obstacles, no lateral scanning.
+            // Gases / solids (but not powders): bounce off obstacles.
+            // ref: Simulation.cpp:3102-3127
             if self.do_move(i, x, y, plan.fin_xf, plan.fin_yf) == 0 {
-                let vx = self.parts[i].vx;
-                let vy = self.parts[i].vy;
-                let bounce_x = if plan.fin_x != x { -0.5 } else { 0.0 };
-                let bounce_y = if plan.fin_y != y { -0.5 } else { 0.0 };
-                self.parts[i].vx = vx * (1.0 + bounce_x) * 0.5;
-                self.parts[i].vy = vy * (1.0 + bounce_y) * 0.5;
-                self.parts[i].flags |= flags::STAGNANT;
+                // ref: Simulation.cpp:3107-3108
+                if self.parts[i].t == 0 {
+                    return;
+                }
+                // Clamp the bounce so it never attempts more than one pixel per axis.
+                // ref: Simulation.cpp:3110-3113 (ISTP is `CELL/2`, an int).
+                let istp = ISTP as i32;
+                let mut fin_x = plan.fin_x;
+                let mut fin_y = plan.fin_y;
+                if fin_x > x + istp {
+                    fin_x = x + istp;
+                }
+                if fin_x < x - istp {
+                    fin_x = x - istp;
+                }
+                if fin_y > y + istp {
+                    fin_y = y + istp;
+                }
+                if fin_y < y - istp {
+                    fin_y = y - istp;
+                }
+                let collision = element(t).collision;
+                // ref: Simulation.cpp:3114-3124 — try the mirrored destinations and
+                // damp only the velocity component that was moving into the wall.
+                if self.do_move(i, x, y, (2 * x - fin_x) as f32, fin_y as f32) != 0 {
+                    self.parts[i].vx *= collision;
+                } else if self.do_move(i, x, y, fin_x as f32, (2 * y - fin_y) as f32) != 0 {
+                    self.parts[i].vy *= collision;
+                } else {
+                    // ref: Simulation.cpp:3122-3126
+                    self.parts[i].vx *= collision;
+                    self.parts[i].vy *= collision;
+                    self.parts[i].flags |= flags::STAGNANT;
+                }
             }
             return;
         }
 
         // Powder / liquid.
+        // ref: Simulation.cpp:3129-3141 — water equalization first, then movement.
+        if self.settings.water_equal_test
+            && element(t).falldown == 2
+            && self.rng.chance(1, 200)
+        {
+            if self.flood_water(i, x, y) {
+                return;
+            }
+        }
         if self.do_move(i, x, y, plan.fin_xf, plan.fin_yf) == 0 {
+            // ref: Simulation.cpp:3140-3141
+            if self.parts[i].t == 0 {
+                return;
+            }
+            let collision = element(t).collision;
             let moved = if plan.fin_x != x && self.do_move(i, x, y, plan.fin_xf, plan.clear_yf) != 0
             {
+                // ref: Simulation.cpp:3144-3145
+                self.parts[i].vx *= collision;
+                self.parts[i].vy *= collision;
                 true
             } else if plan.fin_y != y && self.do_move(i, x, y, plan.clear_xf, plan.fin_yf) != 0 {
+                // ref: Simulation.cpp:3149-3150
+                self.parts[i].vx *= collision;
+                self.parts[i].vy *= collision;
                 true
             } else {
                 false
             };
             if !moved {
+                // ref: Simulation.cpp:3154-3156 — the gravity field and the local
+                // neighbour state come from GetNeighbourhood. The reference reuses
+                // the neighbourhood computed in UpdateParticles (ref:2360); here it
+                // is recomputed from current state (identical unless an update
+                // function changed nearby particles this frame).
+                let neighbourhood = self.neighbourhood(i);
                 let r = self.rng.between(0, 1) * 2 - 1;
                 let vx = self.parts[i].vx;
                 let vy = self.parts[i].vy;
-                if (plan.clear_x != x || plan.clear_y != y) && (vx.abs() > 0.01 || vy.abs() > 0.01) {
+                if (plan.clear_x != x
+                    || plan.clear_y != y
+                    || neighbourhood.nt != 0
+                    || neighbourhood.surround_space != 0)
+                    && (vx.abs() > 0.01 || vy.abs() > 0.01)
+                {
+                    // Allow diagonal movement if target position is blocked, but no
+                    // point trying this if the particle is stuck in a block of
+                    // identical particles.
+                    // ref: Simulation.cpp:3162-3167
                     let mut dx = vx - vy * r as f32;
                     let mut dy = vy + vx * r as f32;
                     let mv = dx.abs().max(dy.abs());
-                    if mv != 0.0 {
-                        dx /= mv;
-                        dy /= mv;
-                    }
+                    dx /= mv;
+                    dy /= mv;
                     if self.do_move(i, x, y, plan.clear_xf + dx, plan.clear_yf + dy) != 0 {
                         self.collide(i);
                         return;
                     }
+                    // ref: Simulation.cpp:3174-3178
                     let sw = dx;
                     dx = dy * r as f32;
                     dy = -sw * r as f32;
@@ -969,6 +1031,8 @@ impl Sim {
                     }
                 }
                 // Liquid lateral spreading.
+                // ref: Simulation.cpp:3186-3235 (vertical) / 3236-3332 (gravity
+                // field) — see `liquid_spread` for the deviations.
                 if element(t).falldown > 1 {
                     if self.liquid_spread(i, x, y, &plan, stagnant) {
                         self.collide(i);
