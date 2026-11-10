@@ -29,6 +29,9 @@ fn is_stasis_frozen(sim: &Sim, x: i32, y: i32) -> bool {
 
 /// `Simulation::SimulateGoL` (reference `Simulation.cpp:3443-3618`).
 pub fn simulate_gol(sim: &mut Sim) {
+    // ref: Simulation.cpp:3446
+    // (reference resets CGOL at function entry; tick.rs gates by gol_counter/gol_speed
+    // and resets before call, so behavior is equivalent)
     let width = sim.width as i32;
     let height = sim.height as i32;
     let inner_min = CELL as i32;
@@ -41,7 +44,8 @@ pub fn simulate_gol(sim: &mut Sim) {
     // zeroed as consumed. Local zeroed per call starts each call zeroed.
     let mut gol: Vec<[u32; 5]> = vec![[0u32; 5]; sim.width * sim.height];
 
-    // PASS 1 — per LIFE particle (reference Simulation.cpp:3463-3497).
+    // PASS 1 — per LIFE particle (reference Simulation.cpp:3447-3510).
+    // ref: iterates parts.active in order; records neighbours for alive-countdown cells.
     let part_count = sim.parts.len();
     for i in 0..part_count {
         if sim.parts[i].t != pt::LIFE {
@@ -97,7 +101,8 @@ pub fn simulate_gol(sim: &mut Sim) {
         }
     }
 
-    // PASS 2 — all cells (reference Simulation.cpp:3499-3593).
+    // PASS 2 — all cells (reference Simulation.cpp:3511-3593).
+    // ref: y outer, x inner; survival/birth when not stasis-frozen, then clear consumed entries.
     for y in inner_min..inner_max_y {
         for x in inner_min..inner_max_x {
             let idx = sim.idx(x, y);
@@ -203,6 +208,7 @@ pub fn simulate_gol(sim: &mut Sim) {
     }
 
     // PASS 3 — kill LIFE with tmp2 <= 0 (reference Simulation.cpp:3595-3616).
+    // ref: separate pass so deaths created this step are removed after decisions.
     for y in inner_min..inner_max_y {
         for x in inner_min..inner_max_x {
             let idx = sim.idx(x, y);
