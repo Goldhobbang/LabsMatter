@@ -979,8 +979,8 @@ impl Sim {
             return;
         }
         let t = self.parts[i].t;
-        // PLNT colour shift bits for SEED photon reflection mask (Simulation.cpp:3074-3082).
-        const PLNT_COLOUR: i32 = 8;
+        // ref: PLNT.h:13 (PLNT_COLOUR = 6); Simulation.cpp:3074-3082
+        const PLNT_COLOUR: i32 = 6;
 
         // PHOT pre-step: glass refraction / total internal reflection (Simulation.cpp:2955-3013).
         if t == pt::PHOT {
