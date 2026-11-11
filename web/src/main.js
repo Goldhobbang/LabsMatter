@@ -3,7 +3,7 @@ import * as TptMat from "./tpt-materials.js";
 import { getState, setState, subscribe, resetState } from "./state/store.js";
 import { WasmDirectAdapter } from "./adapters/wasm-direct.js";
 import { TptAdapter } from "./adapters/tpt.js";
-import { createRenderer } from "./renderers/renderer-factory.js";
+import { createRenderer } from "./renderers/renderer-factory.js?viewport=2";
 import { loadConfig, saveConfig, applyPreset, matchBinding, formatBinding, ACTION_LABELS } from "./shortcuts.js";
 
 // Runtime selection: production stays the default. `?engine=tpt` launches the
@@ -131,15 +131,35 @@ async function boot() {
     setAppState("error", (ENGINE === "tpt" ? "TPT runtime failed: " : "WASM failed: ") + (e?.message || e));
     return;
   }
+  let lastViewportSize = null;
   const resizeViewport = () => {
     const box = canvas.parentElement;
     if (!box || box.clientWidth < 2 || box.clientHeight < 2) return;
-    try { renderer.resize(box.clientWidth, box.clientHeight); } catch (e) { console.warn(e); }
-    overlay.width = Math.max(1, Math.floor(box.clientWidth));
-    overlay.height = Math.max(1, Math.floor(box.clientHeight));
-    if (cameraAutoFit) fitCameraToViewport();
+    const w = box.clientWidth;
+    const h = box.clientHeight;
+    try { renderer.resize(w, h); } catch (e) { console.warn(e); }
+    overlay.width = Math.max(1, Math.floor(w));
+    overlay.height = Math.max(1, Math.floor(h));
+    if (cameraAutoFit) {
+      fitCameraToViewport();
+    } else if (lastViewportSize && (w !== lastViewportSize.w || h !== lastViewportSize.h)) {
+      // Resize the manually zoomed/panned view proportionally without resetting
+      // the world, throwing away drawings, or undoing the user's camera choice.
+      const cx = w / lastViewportSize.w;
+      const cy = h / lastViewportSize.h;
+      const old = getState().camera;
+      setState({ camera: {
+        ...old,
+        x: old.x * cx,
+        y: old.y * cy,
+        scaleX: (old.scaleX || 1) * cx,
+        scaleY: (old.scaleY || 1) * cy,
+      } });
+    }
+    lastViewportSize = { w, h };
   };
   new ResizeObserver(resizeViewport).observe(canvas.parentElement);
+  window.addEventListener("resize", resizeViewport);
   requestAnimationFrame(resizeViewport);
   buildRail();
   buildPalette();
