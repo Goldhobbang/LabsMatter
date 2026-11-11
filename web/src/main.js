@@ -296,6 +296,15 @@ function wireChrome() {
   document.querySelectorAll("[data-tool]").forEach((b) => b.addEventListener("click", () => setState({ tool: b.dataset.tool })));
   document.querySelectorAll("[data-shape]").forEach((b) => b.addEventListener("click", () => setState({ shape: b.dataset.shape })));
   document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => setView(Number(b.dataset.view))));
+  // Only the TPT runtime has a gravity display mode. The production core
+  // clamps set_view_mode at 4 (velocity), so the GRAV button used to paint the
+  // velocity field while the HUD (VIEWS[s.view]) still said "Gravity".
+  // Disable it there instead of showing physics that is not the request.
+  const gravView = document.querySelector('[data-view="5"]');
+  if (gravView && !(sim && sim.engine === "tpt")) {
+    gravView.disabled = true;
+    gravView.title = "Gravity view requires the TPT runtime (?engine=tpt)";
+  }
   $("btn-grid").onclick = () => setState({ grid: !getState().grid });
   $("btn-hud").onclick = () => setState({ showHud: !getState().showHud });
   for (const id of ["help-dialog", "keys-dialog", "stamp-dialog"]) {

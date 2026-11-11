@@ -43,6 +43,7 @@ button { cursor: pointer; }
 .rail-group { display: flex; flex-direction: column; gap: 2px; }
 .rail-btn { background: #101010; border: 1px solid #333; color: #bbb; font-family: var(--mono); font-size: 9px; letter-spacing: 0.04em; padding: 4px 0; }
 .rail-btn.is-on { background: #2a2416; }
+.rail-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .palette { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 4px 6px; border-top: 1px solid var(--line); }
 #material-search { width: 100%; background: #0c0c0c; border: 1px solid #333; padding: 4px 6px; }
