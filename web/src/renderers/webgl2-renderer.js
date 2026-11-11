@@ -216,19 +216,22 @@ void main(){
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
       this._blit = { pr, vb };
     }
-    const zoom = camera.zoom || 1, cellPx = 4 * zoom;
-    const dprVis = Math.min(window.devicePixelRatio || 1, 2);
-    const cssW = w / dprVis, cssH = h / dprVis;
+    const zoom = camera.zoom || 1;
+    const cellPxX = 4 * zoom * (camera.scaleX || 1);
+    const cellPxY = 4 * zoom * (camera.scaleY || 1);
+    // Use the actual CSS dimensions to match pointer events on fractional DPR.
+    const cssW = this.canvas.clientWidth;
+    const cssH = this.canvas.clientHeight;
     gl.useProgram(this._blit.pr);
     gl.bindBuffer(gl.ARRAY_BUFFER, this._blit.vb);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uOff"), (camera.x || 0) / cssW, (camera.y || 0) / cssH);
-    gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uScale"), (gw * cellPx) / cssW, (gh * cellPx) / cssH);
+    gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uScale"), (gw * cellPxX) / cssW, (gh * cellPxY) / cssH);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uWorld"), gw, gh);
     const gridSize = this.overlay.gridSize || 8;
-    const gridSpacing = this.overlay.grid && cellPx * gridSize >= 4 ? gridSize : 0;
+    const gridSpacing = this.overlay.grid && Math.min(cellPxX, cellPxY) * gridSize >= 4 ? gridSize : 0;
     gl.uniform1f(gl.getUniformLocation(this._blit.pr, "uGrid"), gridSpacing);
     gl.uniform2f(gl.getUniformLocation(this._blit.pr, "uTexel"), 1 / Math.max(1, gw), 1 / Math.max(1, gh));
     const glowStrength = glowOk && opts && opts.glowStrength != null ? opts.glowStrength : (glowOk ? 1.0 : 0.0);
