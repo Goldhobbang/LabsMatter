@@ -439,16 +439,12 @@ pub fn step(_dt: f64) {
             state.air_field.update(air_mode);
             // Air off: no gas transport. Pressure-only: keep the field, skip motion.
             if air == 0 {
-                // `gas::diffuse` hard-codes an upward step (`(0, -1)` first in
-                // its neighbour order), i.e. it carries vertical gravity of its
-                // own. Under a zero vertical field (`GRAV_OFF` / `GRAV_RADIAL`)
-                // that march is wrong and made smoke rise at one cell per tick
-                // with gravity switched off. The pass is skipped until the
-                // diffusion step itself becomes gravity-aware; buoyancy below
-                // still receives the mode-correct field.
-                if gravity == 0 {
-                    gas::diffuse(cells, w, h, materials, dt, active);
-                }
+                // Gravity-aware gas transport: the diffuse pass receives the
+                // same vertical field as buoyancy below, so gases rise only
+                // while gravity is present (`GRAV_VERTICAL`) and merely spread
+                // sideways under a zero field (`GRAV_OFF` / `GRAV_RADIAL`).
+                // Nothing is skipped; the mode is resolved inside the pass.
+                gas::diffuse_with_gravity(cells, w, h, materials, dt, vertical_gravity, active);
                 gas::apply_buoyancy(
                     cells,
                     w,
