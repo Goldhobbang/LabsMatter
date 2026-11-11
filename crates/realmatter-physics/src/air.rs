@@ -81,6 +81,45 @@ fn mix(a: f32, b: f32, f: f32) -> f32 {
     a + (b - a) * f
 }
 
+// Vertical sign conventions
+// -------------------------
+// This engine carries two vertical velocities whose signs are opposite:
+//
+// * `Cell.vy` is **negative-down**. `PhysicsEngine::apply_forces` integrates
+//   gravity as `cells[i].vy += -self.gravity * dtf * 0.8`
+//   (`realmatter-physics/src/lib.rs:141`), and `fluid::apply_buoyancy` pushes
+//   a dense cell down with a negative `vy`
+//   (`cells[i].vy += buoy * gravity * dt * 0.3` with `buoy < 0`,
+//   `fluid.rs:92`).
+// * `AirField.vy` is **positive-down**, as documented by the `get_cell_vy`
+//   export: "Air velocity y ... Positive is downward"
+//   (`realmatter-wasm/src/lib.rs:1040`).
+//
+// Every crossing between the two must go through these helpers. Before they
+// existed the coupling copied `cell.vy` straight into `field.vy` (and back),
+// which inverted the airflow: a sinking pile pulled air *up* and the (wrong)
+// sign then fed the runaway measured in `apply_air_to_particles`. Keeping the
+// conversion in one named place makes the inversion impossible to reintroduce
+// accidentally. The map is an involution, so both directions are `-v`.
+//
+// Only the vertical axis differs: both `Cell.vx` and `AirField.vx` grow to the
+// right (`integrate_velocity` does `x + round(vx)`, and the air pressure step
+// uses the same orientation), so horizontal velocities are copied across
+// unchanged.
+/// Convert an air-field vertical velocity (positive-down) to the cell
+/// convention (negative-down).
+#[inline]
+pub fn air_vy_to_cell(vy: f32) -> f32 {
+    -vy
+}
+
+/// Convert a cell vertical velocity (negative-down) to the air-field
+/// convention (positive-down).
+#[inline]
+pub fn cell_vy_to_air(vy: f32) -> f32 {
+    -vy
+}
+
 /// 3×3 normalised kernel `exp(-2(i² + j²))` (`Air::make_kernel`).
 pub fn make_kernel() -> [f32; 9] {
     let mut k = [0.0f32; 9];
@@ -565,10 +604,30 @@ pub fn apply_air_to_particles(
             if ci >= field.vx.len() {
                 continue;
             }
-            // 7. Momentum injection into the field.
+            // 7. Momentum injection into the field. This is a *relative*
+            // velocity drag, not the reference's absolute `AirDrag*part.v`.
+            // TPT consumes a particle's velocity in its sub-pixel position
+            // integration; this engine's CA never consumes `vy` (powder and
+            // liquid movement ignores it, and `integrate_velocity` only
+            // displaces by `vx`), so an absolute term turns a resting cell
+            // into a permanent source: with SAND's `air_loss 0.94` /
+            // `air_drag 0.04` and `cell.vy` pinned at the ±8 clamp, the
+            // field's fixed point is `0.04*8/(1-0.94) ≈ 5.3` (measured 4.5).
+            // Even with the sign corrected, keeping the absolute form leaves
+            // the two-way loop with a per-tick spectral radius of ≈1.08.
+            // Dragging the field toward the particle's velocity instead makes
+            // the loop strictly contractive (radius ≈0.94) and leaves the
+            // field at rest when particle and air already move together.
+            // Materials with `air_drag == 0` (all gases, solids) keep the
+            // exact reference formula `field *= air_loss`.
+            // `cell.vy` is negative-down and `field.vy` positive-down, so the
+            // vertical target is converted (see the sign-convention note).
             if update_velocity {
-                field.vx[ci] = field.vx[ci] * def.air_loss + def.air_drag * cell.vx;
-                field.vy[ci] = field.vy[ci] * def.air_loss + def.air_drag * cell.vy;
+                field.vx[ci] =
+                    field.vx[ci] * def.air_loss + def.air_drag * (cell.vx - field.vx[ci]);
+                let target_vy = cell_vy_to_air(cell.vy);
+                field.vy[ci] =
+                    field.vy[ci] * def.air_loss + def.air_drag * (target_vy - field.vy[ci]);
             }
             // 8. Hot air (pressure source).
             if mode != AirMode::PressureOff && def.hot_air != 0.0 {
@@ -601,8 +660,15 @@ pub fn apply_air_to_particles(
             }
             cell.vx *= loss;
             cell.vy *= loss;
-            cell.vx += advection * fvx[ci];
-            cell.vy += advection * fvy[ci];
+            // Dragged toward the local air velocity, i.e. a drag force
+            // proportional to the *relative* velocity. Adding the absolute
+            // field velocity instead (the literal reference formula) is the
+            // other half of the gain>1 loop explained at the injection site
+            // above: the CA never consumes the accumulated velocity, so a
+            // resting cell would keep accelerating. `fvy` is positive-down,
+            // `cell.vy` negative-down: convert before the difference.
+            cell.vx += advection * (fvx[ci] - cell.vx);
+            cell.vy += advection * (air_vy_to_cell(fvy[ci]) - cell.vy);
             if diffusion != 0.0 {
                 cell.vx += diffusion * (2.0 * diffusion_rng() - 1.0);
                 cell.vy += diffusion * (2.0 * diffusion_rng() - 1.0);

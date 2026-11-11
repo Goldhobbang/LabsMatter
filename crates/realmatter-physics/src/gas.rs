@@ -71,12 +71,58 @@ pub fn diffuse_temperature(cells: &mut [Cell], width: u32, height: u32, material
 /// inactive chunks are allowed (a gas cell may diffuse into an empty chunk —
 /// the next mask rebuild picks it up). Skipping an empty source cell in an
 /// inactive chunk is a no-op, so results are bit-identical to unmasked.
+///
+/// This entry point keeps the historical signature and assumes **standard
+/// gravity**, delegating to [`diffuse_with_gravity`]. The tick pipeline should
+/// call the gravity-aware variant so that a world with gravity switched off
+/// stops buoyant gas transport (see the reference note on that function).
 pub fn diffuse(
     cells: &mut [Cell],
     width: u32,
     height: u32,
     materials: &[MaterialProps],
     dt: f32,
+    active: Option<&crate::core::chunk_mask::ActiveMask>,
+) {
+    diffuse_with_gravity(
+        cells,
+        width,
+        height,
+        materials,
+        dt,
+        core::units::constants::GRAVITY,
+        active,
+    );
+}
+
+/// Fraction of standard gravity below which a gas is treated as weightless.
+///
+/// The reference has no partial-gravity gas lift either: `GetGravityField`
+/// returns a zero force for `GRAV_OFF` (`Simulation.cpp:2101-2105`), and a gas
+/// only rises through `Gravity * particleGrav`
+/// (`Simulation.cpp:2290` feeding `parts[i].vy += ... + neighbourhood.pGravY`
+/// at `Simulation.cpp:2370`). One tenth of standard gravity leaves head-room
+/// for a future partial-gravity mode while keeping the on/off contract exact.
+pub const GAS_RISE_MIN_GRAVITY: f32 = core::units::constants::GRAVITY * 0.1;
+
+/// Gravity-aware gas expansion and buoyant movement.
+///
+/// `gravity` is the vertical acceleration magnitude the caller integrates
+/// (0.0 = gravity off). It gates the buoyant rise: a gas only moves upward
+/// when gravity is present, matching the reference, where smoke rises because
+/// its element `Gravity` is negative and `GetGravityField` multiplies it by
+/// the gravity mode — with `GRAV_OFF` the product is zero, so smoke does not
+/// rise. With no gravity the gases still diffuse sideways but never move
+/// vertically.
+///
+/// Same `active` contract as [`diffuse`].
+pub fn diffuse_with_gravity(
+    cells: &mut [Cell],
+    width: u32,
+    height: u32,
+    materials: &[MaterialProps],
+    dt: f32,
+    gravity: f32,
     active: Option<&crate::core::chunk_mask::ActiveMask>,
 ) {
     diffuse_temperature(cells, width, height, materials, dt);
@@ -88,8 +134,10 @@ pub fn diffuse(
     // Rise, then spread. The previous pass moved every gas cell into the
     // first empty neighbor in left, right, up, down order, so smoke and steam
     // marched to the left edge and oscillated there. Buoyancy is upward
-    // (decreasing y, which is up on screen). Sideways order alternates with
-    // position so a plume spreads without an RNG.
+    // (decreasing y, which is up on screen) and only exists while gravity
+    // does. Sideways order alternates with position so a plume spreads
+    // without an RNG.
+    let buoyant = gravity.abs() >= GAS_RISE_MIN_GRAVITY;
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
@@ -108,12 +156,20 @@ pub fn diffuse(
             if m.state != core::material::MaterialState::Gas {
                 continue;
             }
-            let order: [(i32, i32); 5] = if (x + y) & 1 == 0 {
-                [(0, -1), (-1, -1), (1, -1), (-1, 0), (1, 0)]
+            let order: &[(i32, i32)] = if buoyant {
+                if (x + y) & 1 == 0 {
+                    &[(0, -1), (-1, -1), (1, -1), (-1, 0), (1, 0)]
+                } else {
+                    &[(0, -1), (1, -1), (-1, -1), (1, 0), (-1, 0)]
+                }
+            } else if (x + y) & 1 == 0 {
+                // Gravity off: no buoyant lift, so vertical neighbours are
+                // excluded outright; gases only spread sideways.
+                &[(-1, 0), (1, 0)]
             } else {
-                [(0, -1), (1, -1), (-1, -1), (1, 0), (-1, 0)]
+                &[(1, 0), (-1, 0)]
             };
-            for (dx, dy) in order {
+            for &(dx, dy) in order {
                 let nx = x as i32 + dx;
                 let ny = y as i32 + dy;
                 if nx < 0 || ny < 0 || (nx as usize) >= w || (ny as usize) >= h {
