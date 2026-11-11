@@ -618,8 +618,10 @@ pub fn apply_air_to_particles(
 ///
 /// The reference integrates sub-pixel steps; this engine's CA moves whole
 /// cells, so a particle moves `round(v)` cells per tick when |v| >= 0.5,
-/// capped at 3 cells. Powders and liquids only; gases are advected by the
-/// field directly.
+/// capped at 3 cells. Horizontal airflow displacement only: powders and
+/// liquids are never translated by `vy` (regression vs main 7dcff5d — main
+/// never displaced cells by `vy`, and the TPT port gives powders/liquids no
+/// buoyant `vy`), and gases are advected by the field directly.
 pub fn integrate_velocity(
     cells: &mut [Cell],
     width: usize,
@@ -637,7 +639,20 @@ pub fn integrate_velocity(
                 }
             }
             let cell = cells[i];
-            if cell.material == 0 || cell.has_flag(realmatter_core::cell::cell_flags::FIXED) {
+            // Read-side `UPDATED` guard: a cell that already carries `UPDATED`
+            // was processed once this tick and must not be re-read as a
+            // source. This is the contract documented in
+            // `realmatter-world/src/movement.rs`:
+            // "Row-major iteration, bottom-up for falling matter (so a cell
+            // moves at most once per tick; `UPDATED` flag enforces this)."
+            // Without it, a cell displaced upward (dy < 0) or rightward
+            // (dx > 0) lands in a not-yet-scanned row/column, is read again,
+            // and ratchets across the grid in a single tick (regression vs
+            // main 7dcff5d).
+            if cell.material == 0
+                || cell.has_flag(realmatter_core::cell::cell_flags::FIXED)
+                || cell.has_flag(realmatter_core::cell::cell_flags::UPDATED)
+            {
                 continue;
             }
             let state = match materials.get(cell.material as usize) {
@@ -647,30 +662,26 @@ pub fn integrate_velocity(
             if !matches!(state, MaterialState::Powder | MaterialState::Liquid) {
                 continue;
             }
-            let vx = cell.vx;
-            let vy = cell.vy;
-            let dx = vx.round().clamp(-3.0, 3.0) as i32;
-            let dy = vy.round().clamp(-3.0, 3.0) as i32;
-            if dx == 0 && dy == 0 {
+            // Regression vs main 7dcff5d: main never displaced cells by `vy`,
+            // and the TPT reference gives powders/liquids no buoyant `vy` of
+            // their own. `fluid.rs::apply_buoyancy` line 92
+            // (`cells[i].vy += buoy * gravity * dt * 0.3;`) writes exactly
+            // such a term, so the vertical step must not translate powder and
+            // liquid cells by it. Only the horizontal airflow step is kept.
+            // Gases never reach this function (state filter above) and are
+            // advected by the air field in `advect_gases`, which is untouched.
+            let dx = cell.vx.round().clamp(-3.0, 3.0) as i32;
+            if dx == 0 {
                 continue;
             }
-            // Step along the dominant axis first, then the other.
-            let steps = [(dy, 0i32), (0, dx)];
-            for (sy, sx) in steps {
-                if sy == 0 && sx == 0 {
-                    continue;
-                }
-                let nx = x as i32 + sx;
-                let ny = y as i32 + sy;
-                if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
-                    continue;
-                }
-                let j = ny as usize * w + nx as usize;
-                if cells[j].is_empty() {
-                    cells.swap(i, j);
-                    cells[j].set_flag(realmatter_core::cell::cell_flags::UPDATED, true);
-                    break;
-                }
+            let nx = x as i32 + dx;
+            if nx < 0 || nx >= w as i32 {
+                continue;
+            }
+            let j = y as usize * w + nx as usize;
+            if cells[j].is_empty() {
+                cells.swap(i, j);
+                cells[j].set_flag(realmatter_core::cell::cell_flags::UPDATED, true);
             }
         }
     }
