@@ -15,9 +15,10 @@ button { cursor: pointer; }
 .skip-link { position: absolute; left: -999px; }
 .skip-link:focus { left: 8px; top: 8px; background: #fff; color: #000; z-index: 9; padding: 4px 8px; }
 
-.app { display: grid; grid-template-rows: 26px minmax(0, 1fr) 58px; height: 100vh; height: 100dvh; overflow: hidden; background: #000; }
+.app { display: grid; grid-template-rows: 34px minmax(0, 1fr) auto; height: 100vh; height: 100dvh; min-width: 0; overflow: hidden; background: #000; }
 .topbar, .palette, .rail { background: var(--panel); }
-.topbar { display: flex; align-items: center; gap: 4px; padding: 0 6px; border-bottom: 1px solid var(--line); overflow: hidden; }
+.topbar { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 6px; border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; white-space: nowrap; scrollbar-width: thin; overscroll-behavior-x: contain; }
+.topbar > * { flex-shrink: 0; }
 .brand { font-weight: 650; letter-spacing: 0.04em; margin-right: 6px; color: #fff; }
 .spacer { flex: 1; }
 .tb { background: #1c1c1c; border: 1px solid var(--line); color: var(--text); padding: 2px 7px; line-height: 16px; }
@@ -26,7 +27,7 @@ button { cursor: pointer; }
 .speed { display: flex; align-items: center; gap: 4px; color: var(--muted); }
 .speed input { width: 72px; }
 
-.stage { display: grid; grid-template-columns: minmax(0, 1fr) 46px; min-height: 0; }
+.stage { display: grid; grid-template-columns: minmax(0, 1fr) 46px; min-width: 0; min-height: 0; }
 .viewport-wrap { position: relative; min-width: 0; min-height: 0; background: #000; }
 #viewport, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 #viewport { cursor: crosshair; touch-action: none; background: #000; }
@@ -45,19 +46,19 @@ button { cursor: pointer; }
 .rail-btn.is-on { background: #2a2416; }
 .rail-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.palette { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 4px 6px; border-top: 1px solid var(--line); }
+.palette { display: grid; grid-template-columns: clamp(105px, 16vw, 160px) minmax(0, 1fr) auto; gap: 6px; align-items: center; min-width: 0; min-height: 58px; padding: 4px 6px; border-top: 1px solid var(--line); }
 #material-search { width: 100%; background: #0c0c0c; border: 1px solid #333; padding: 4px 6px; }
-.elements { display: flex; gap: 3px; overflow-x: auto; min-width: 0; }
+.elements { display: flex; gap: 3px; min-width: 0; overflow-x: auto; overflow-y: hidden; padding: 2px 1px; scrollbar-width: thin; overscroll-behavior-x: contain; }
 .el { width: 42px; height: 36px; flex: 0 0 auto; border: 1px solid #333; background: #0e0e0e; padding: 0; display: flex; flex-direction: column; align-items: stretch; }
 .el i { display: block; height: 14px; }
 .el b { font-family: var(--mono); font-size: 9px; font-weight: 600; line-height: 20px; }
 .el.is-pri { outline: 1px solid #fff; }
 .el.is-sec { outline: 1px dashed #9cf; }
-.swatches { display: flex; align-items: center; gap: 6px; }
+.swatches { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
 .chip { width: 18px; height: 18px; border: 1px solid #fff; display: inline-block; }
 .readout { font-family: var(--mono); color: var(--muted); min-width: 42px; }
 
-.dialog { background: #121212; color: var(--text); border: 1px solid #444; max-width: 520px; width: calc(100% - 24px); }
+.dialog { background: #121212; color: var(--text); border: 1px solid #444; max-width: 520px; width: calc(100% - 24px); max-height: calc(100dvh - 24px); overflow-y: auto; }
 .dialog::backdrop { background: rgba(0,0,0,.6); }
 .dialog h2 { margin: 0 0 8px; font-size: 14px; }
 .hint { color: var(--muted); margin: 0 0 8px; }
@@ -66,15 +67,35 @@ button { cursor: pointer; }
 .keys button { background: transparent; border: 0; color: var(--hot); padding: 0; }
 .stamp-row { display: flex; justify-content: space-between; gap: 8px; border-top: 1px solid #2a2a2a; padding: 4px 0; }
 
+/* Mobile: reserve one row for the palette search/selection and a second
+   horizontally scrollable row for elements. Keep the canvas in the flexible row. */
 @media (max-width: 720px) {
-  .app { grid-template-rows: 26px minmax(0, 1fr) auto 64px; }
-  .stage { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
-  .rail { flex-direction: row; border-left: 0; border-top: 1px solid var(--line); overflow-x: auto; width: 100%; }
-  .rail-group { flex-direction: row; }
-  .rail-btn { min-width: 36px; }
-  .palette { grid-template-columns: 1fr; height: 64px; }
+  .app { grid-template-rows: 38px minmax(0, 1fr) auto; }
+  .stage { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 44px; }
+  .rail { flex-direction: row; align-items: center; gap: 8px; min-width: 0; min-height: 0; padding: 3px 6px; border-left: 0; border-top: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; width: 100%; scrollbar-width: thin; overscroll-behavior-x: contain; }
+  .rail-group { flex-direction: row; flex: 0 0 auto; gap: 3px; }
+  .rail-btn { min-width: 36px; height: 32px; padding: 4px 5px; }
+  .palette { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 30px 42px; gap: 4px 8px; min-height: 0; height: auto; }
+  #material-search { grid-column: 1; grid-row: 1; min-width: 0; height: 30px; }
+  .swatches { grid-column: 2; grid-row: 1; }
+  .elements { grid-column: 1 / -1; grid-row: 2; height: 42px; }
   .speed input { width: 48px; }
   .brand { display: none; }
+}
+@media (max-width: 380px) {
+  .palette { gap: 4px; padding-inline: 4px; }
+  .swatches { gap: 4px; }
+  .readout { min-width: 0; font-size: 10px; }
+  .hud { gap: 5px; font-size: 10px; }
+}
+@media (max-width: 720px) and (max-height: 440px) {
+  .app { grid-template-rows: 34px minmax(0, 1fr) auto; }
+  .stage { grid-template-rows: minmax(0, 1fr) 38px; }
+  .rail-btn { height: 28px; }
+  .palette { grid-template-rows: 28px 38px; }
+  #material-search { height: 28px; }
+  .elements { height: 38px; }
+  .el { height: 34px; }
 }
 
 /* Experimental TPT entity controls (hidden until the TPT runtime loads). */
