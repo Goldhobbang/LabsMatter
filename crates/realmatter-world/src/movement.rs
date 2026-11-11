@@ -233,7 +233,8 @@ pub fn move_liquid_step(
     stats
 }
 
-/// Liquids spread sideways and do not fall. Used when gravity is off.
+/// Liquids under `GRAV_OFF` stay put: the reference gravity field is
+/// genuinely zero in that mode, so there is no lateral force to spread along.
 pub fn move_liquid_flat(
     cells: &mut [Cell],
     width: u32,
@@ -241,46 +242,20 @@ pub fn move_liquid_flat(
     state_of: &StateOf,
     active: Option<&realmatter_core::chunk_mask::ActiveMask>,
 ) -> MovementStats {
-    let mut stats = MovementStats::default();
-    let (w, h) = (width as usize, height as usize);
-    if cells.len() != w * h || w == 0 || h == 0 {
-        return stats;
-    }
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            if let Some(m) = active {
-                if !m.cell_active(x, y) {
-                    continue;
-                }
-            }
-            if !is_mobile(&cells[i]) {
-                continue;
-            }
-            if !matches!(state_of(cells[i].material), Some(MaterialState::Liquid)) {
-                continue;
-            }
-            let mut moved = false;
-            for dx in [-1isize, 1] {
-                let nx = x as isize + dx;
-                if nx >= 0 && (nx as usize) < w {
-                    let j = y * w + nx as usize;
-                    if can_enter(&cells[j]) {
-                        try_move(cells, i, j, &mut stats);
-                        moved = true;
-                        break;
-                    }
-                }
-            }
-            if !moved {
-                stats.blocked += 1;
-            }
-        }
-    }
-    stats
+    // Reference `Simulation::GetGravityField` (`Simulation.cpp:2088-2125`)
+    // returns `pGravX = pGravY = 0` for `GRAV_OFF`; a liquid is left where it
+    // is. The previous implementation tried `dx = -1` before `+1` for every
+    // liquid, so any liquid with an empty left neighbour stepped left on
+    // every tick and whole pools marched into the left wall (measured: a
+    // 10x10 water block at x=58..67 collapsed to x=1..19). Doing nothing is
+    // the unbiased, reference-faithful rule. The signature is kept so the
+    // gravity-mode dispatch in the wasm tick is unchanged.
+    let _ = (cells, width, height, state_of, active);
+    MovementStats::default()
 }
 
-/// Powders and liquids step one cell toward the world center.
+/// Powders and liquids step toward the world center, but stop inside a small
+/// dead zone so the motion is bounded and symmetric around the center.
 pub fn move_toward_center(
     cells: &mut [Cell],
     width: u32,
@@ -293,6 +268,15 @@ pub fn move_toward_center(
     if cells.len() != w * h || w == 0 || h == 0 {
         return stats;
     }
+    // Radial gravity is an inward *force* (`GetGravityField`:
+    // `pGravX = particleGrav * dx / (0.01 - hypot(dx, dy))`), not a fixed
+    // one-cell-per-tick march. This CA has no velocity to damp, so a cell
+    // that keeps stepping every tick crosses the center and the row-major
+    // processing order then ratchets the whole cluster away from it (measured:
+    // a 4x4 block wandered to x=0..13). Stopping once the offset on an axis is
+    // within one lattice step of the center makes the equilibrium bounded and
+    // symmetric instead of churning across the center on every tick.
+    const RADIAL_DEAD_ZONE: i32 = 1;
     let cx = (w as i32) / 2;
     let cy = (h as i32) / 2;
     for y in 0..h {
@@ -313,9 +297,23 @@ pub fn move_toward_center(
             if !mobile {
                 continue;
             }
-            let dx = (cx - x as i32).signum();
-            let dy = (cy - y as i32).signum();
-            let order = if (cy - y as i32).abs() >= (cx - x as i32).abs() {
+            let adx = cx - x as i32;
+            let ady = cy - y as i32;
+            if adx.abs() <= RADIAL_DEAD_ZONE && ady.abs() <= RADIAL_DEAD_ZONE {
+                stats.blocked += 1;
+                continue;
+            }
+            let dx = if adx.abs() > RADIAL_DEAD_ZONE {
+                adx.signum()
+            } else {
+                0
+            };
+            let dy = if ady.abs() > RADIAL_DEAD_ZONE {
+                ady.signum()
+            } else {
+                0
+            };
+            let order = if ady.abs() >= adx.abs() {
                 [(0, dy), (dx, 0)]
             } else {
                 [(dx, 0), (0, dy)]

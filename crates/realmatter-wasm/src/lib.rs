@@ -402,6 +402,19 @@ pub fn step(_dt: f64) {
             let edge = state.edge;
             let newton = state.newton;
             let ambient = state.ambient;
+            // Vertical component of the gravity field used by buoyancy.
+            // Reference `GetGravityField` (Simulation.cpp:2088-2125):
+            // `GRAV_VERTICAL` sets `pGravY = particleGrav`, `GRAV_OFF` sets
+            // `pGravX = pGravY = 0` (a genuinely zero field) and
+            // `GRAV_RADIAL` has no net vertical component (its field is
+            // integrated in the movement phase below). Buoyancy must use the
+            // same field, otherwise "gravity off" still lifts gases and the
+            // radial field doubles up with vertical buoyancy.
+            let vertical_gravity = if gravity == 0 {
+                realmatter_core::units::constants::GRAVITY
+            } else {
+                0.0
+            };
             let active = Some(&mask);
             let cells = state.world.cells_mut();
 
@@ -426,14 +439,23 @@ pub fn step(_dt: f64) {
             state.air_field.update(air_mode);
             // Air off: no gas transport. Pressure-only: keep the field, skip motion.
             if air == 0 {
-                gas::diffuse(cells, w, h, materials, dt, active);
+                // `gas::diffuse` hard-codes an upward step (`(0, -1)` first in
+                // its neighbour order), i.e. it carries vertical gravity of its
+                // own. Under a zero vertical field (`GRAV_OFF` / `GRAV_RADIAL`)
+                // that march is wrong and made smoke rise at one cell per tick
+                // with gravity switched off. The pass is skipped until the
+                // diffusion step itself becomes gravity-aware; buoyancy below
+                // still receives the mode-correct field.
+                if gravity == 0 {
+                    gas::diffuse(cells, w, h, materials, dt, active);
+                }
                 gas::apply_buoyancy(
                     cells,
                     w,
                     h,
                     materials,
                     dt,
-                    realmatter_core::units::constants::GRAVITY,
+                    vertical_gravity,
                     active,
                 );
             }
@@ -445,7 +467,7 @@ pub fn step(_dt: f64) {
                 h,
                 materials,
                 dt,
-                realmatter_core::units::constants::GRAVITY,
+                vertical_gravity,
                 active,
             );
             heat::conduct(cells, w, h, materials, dt, active);
