@@ -41,6 +41,30 @@ export function deco_visible() {
 }
 
 /**
+ * Inspect a cell as JSON. Out of bounds -> empty string.
+ * Keys: type (material), temperature, vx, vy, life (lifetime), flags.
+ * @param {number} x
+ * @param {number} y
+ * @returns {string}
+ */
+export function get_cell_info(x, y) {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        wasm.get_cell_info(retptr, x, y);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred1_0 = r0;
+        deferred1_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
  * Get a cell's material id (0 if out of bounds / uninitialized).
  * @param {number} x
  * @param {number} y
@@ -125,12 +149,33 @@ export function init(width, height) {
 }
 
 /**
+ * Human-readable report for the most recent load attempt.
+ * @returns {string}
+ */
+export function last_load_report() {
+    let deferred1_0;
+    let deferred1_1;
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16) >>> 0;
+        wasm.last_load_report(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        deferred1_0 = r0;
+        deferred1_1 = r1;
+        return getStringFromWasm0(r0, r1);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
+    }
+}
+
+/**
  * Load a persist-format blob into the world. Returns false on failure.
  * @param {Uint8Array | number[]} bytes
  * @returns {boolean}
  */
 export function load_blob(bytes) {
-    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export3);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.load_blob(ptr0, len0);
     return ret !== 0;
@@ -174,7 +219,7 @@ export function save_blob() {
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var v1 = getArrayU8FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_export3(r0, r1 * 1, 1);
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
         return v1;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
@@ -212,6 +257,31 @@ export function set_ambient_heat(on) {
 export function set_cell(x, y, material) {
     const ret = wasm.set_cell(x, y, material);
     return ret !== 0;
+}
+
+/**
+ * Write cell fields directly (for copy/paste/undo). Returns false out of bounds.
+ * Updates the render pixel like `set_cell`.
+ * @param {number} x
+ * @param {number} y
+ * @param {number} material
+ * @param {number} temperature
+ * @param {number} vx
+ * @param {number} vy
+ * @param {number} life
+ * @param {number} flags
+ * @returns {boolean}
+ */
+export function set_cell_ex(x, y, material, temperature, vx, vy, life, flags) {
+    const ret = wasm.set_cell_ex(x, y, material, temperature, vx, vy, life, flags);
+    return ret !== 0;
+}
+
+/**
+ * @param {number} mode
+ */
+export function set_convection_mode(mode) {
+    wasm.set_convection_mode(mode);
 }
 
 /**
@@ -283,7 +353,7 @@ export function sim_status() {
         return getStringFromWasm0(r0, r1);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export3(deferred1_0, deferred1_1, 1);
+        wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
     }
 }
 
@@ -398,7 +468,7 @@ function passArray8ToWasm0(arg, malloc) {
 
 function takeFromExternrefTable0(idx) {
     const value = wasm.__wbindgen_externrefs.get(idx);
-    wasm.__wbindgen_export(idx);
+    wasm.__wbindgen_export2(idx);
     return value;
 }
 
