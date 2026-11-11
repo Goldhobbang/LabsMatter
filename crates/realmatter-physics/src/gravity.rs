@@ -124,6 +124,29 @@ pub fn gravity_vector(
 
 /// Apply the field to mobile particles: velocity += force, then move one cell
 /// along the strongest component. Powders and liquids only.
+///
+/// Sign conventions. `solve_field` works in grid coordinates, where `+y`
+/// points *down*: for a mass below a cell, `phi` grows downward, so
+/// `gy = +dfi/dy > 0` and the returned `forceY > 0` points down, i.e. toward
+/// the mass (the reference kernel points the same way: `scaleFactor` is
+/// negative, `.reference/.../gravity/Fft.cpp:174-175`). `Cell::vy` in this
+/// engine is stored with the opposite vertical sign: a *negative* `vy`
+/// points down (`lib.rs::apply_forces` adds `-gravity`, and
+/// `fluid::apply_buoyancy` gives a denser-than-water liquid a sinking
+/// `vy < 0`). The vertical component is therefore negated on the way into
+/// `Cell::vy` (`vy -= f.1`) and negated again when the displacement is read
+/// back (`dy = -round(vy)`): `vy = -1` moves a cell down one row, `vy = +1`
+/// moves it up one row. The old code added `f.1` directly and read
+/// `dy = +round(vy)`, so a sinking `vy` produced by the physics was executed
+/// as upward motion, and the field's own vertical acceleration was stored
+/// with the wrong sign.
+///
+/// Displacement is capped at one cell per axis, like the CA fall step and
+/// `air::integrate_velocity`, and a moved cell is never read as a source
+/// again in the same tick (read-side `UPDATED` guard, same contract as
+/// `air::integrate_velocity`). Without both, a cell displaced upward lands
+/// in a row that has not been scanned yet and ratchets across the grid in a
+/// single tick — the Newtonian block repro moved 79 rows in one tick.
 pub fn apply_field(
     cells: &mut [Cell],
     width: usize,
@@ -131,12 +154,14 @@ pub fn apply_field(
     materials: &[MaterialProps],
     force: &[(f32, f32)],
 ) {
+    use realmatter_core::cell::cell_flags::{FIXED, UPDATED};
+
     let cx = (width / CELL).max(1);
     for y in (0..height).rev() {
         for x in 0..width {
             let i = y * width + x;
-            let cell = &mut cells[i];
-            if cell.material == 0 || cell.has_flag(realmatter_core::cell::cell_flags::FIXED) {
+            let cell = cells[i];
+            if cell.material == 0 || cell.has_flag(FIXED) || cell.has_flag(UPDATED) {
                 continue;
             }
             let state = match materials.get(cell.material as usize) {
@@ -151,10 +176,12 @@ pub fn apply_field(
                 continue;
             }
             let f = force[(y / CELL) * cx + (x / CELL)];
-            cell.vx = (cell.vx + f.0).clamp(-4.0, 4.0);
-            cell.vy = (cell.vy + f.1).clamp(-4.0, 4.0);
-            let dx = cell.vx.round().clamp(-2.0, 2.0) as i32;
-            let dy = cell.vy.round().clamp(-2.0, 2.0) as i32;
+            let vx = (cell.vx + f.0).clamp(-4.0, 4.0);
+            let vy = (cell.vy - f.1).clamp(-4.0, 4.0);
+            cells[i].vx = vx;
+            cells[i].vy = vy;
+            let dx = vx.round().clamp(-1.0, 1.0) as i32;
+            let dy = (-vy.round()).clamp(-1.0, 1.0) as i32;
             if dx == 0 && dy == 0 {
                 continue;
             }
@@ -166,7 +193,7 @@ pub fn apply_field(
             let j = ny as usize * width + nx as usize;
             if cells[j].is_empty() {
                 cells.swap(i, j);
-                cells[j].set_flag(realmatter_core::cell::cell_flags::UPDATED, true);
+                cells[j].set_flag(UPDATED, true);
             }
         }
     }

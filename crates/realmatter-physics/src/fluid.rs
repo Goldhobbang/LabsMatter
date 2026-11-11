@@ -85,7 +85,22 @@ pub fn apply_buoyancy(
                 continue;
             }
             let m = material_or_default(materials, cells[i].material);
-            if m.state == core::material::MaterialState::Gas {
+            // Liquids only. `Cell::vy` is not what moves a powder or a solid:
+            // powders fall through `move_powder_step` (CA), liquids swap by
+            // density in `move_liquid_step`. The reference has no per-cell
+            // buoyancy velocity at all — `Simulation.cpp:2369-2370` only adds
+            // `GetGravityField`'s acceleration to `vx/vy`, and the per-element
+            // `Gravity` constant (SAND 0.3, WATR 0.1, OIL 0.1 in
+            // `elements/SAND.cpp`, `elements/WATR.cpp`, `elements/OIL.cpp`)
+            // is consumed by the CA. Writing this term for powders gave every
+            // settled sand cell a `Cell::vy` of about -0.6 that nothing
+            // damps; `air::apply_air_to_particles` then injected it into the
+            // air field (`field.vy += air_drag * cell.vy`), whose advection
+            // fed it back into `Cell::vy`, and the air field over the settled
+            // pile grew to |v| ~ 4.5 (measured).
+            // Gases keep `gas::apply_buoyancy`; liquids keep this term
+            // (OIL floats, LAVA sinks).
+            if m.state != core::material::MaterialState::Liquid {
                 continue;
             }
             let buoy = (rho_ref - m.density) / rho_ref.max(1e-6);
