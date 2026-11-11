@@ -1,12 +1,12 @@
 // Renderer factory: prefers WebGPU, falls back to WebGL2, then Canvas2D.
 
-import { Canvas2DRenderer } from "../adapters/renderer.js";
+import { Canvas2DRenderer } from "../adapters/renderer.js?viewport=2";
 
 export async function createRenderer(canvas) {
   // Try WebGPU
   if (typeof navigator !== "undefined" && "gpu" in navigator) {
     try {
-      const { WebGPURenderer } = await import("./webgpu-renderer.js");
+      const { WebGPURenderer } = await import("./webgpu-renderer.js?viewport=2");
       const r = new WebGPURenderer();
       await r.init(canvas);
       r.backend = "webgpu";
@@ -19,7 +19,7 @@ export async function createRenderer(canvas) {
   // different attributes returns null in Firefox and the real renderer never
   // attaches. WebGL2Renderer.attach is the only caller.
   try {
-    const { WebGL2Renderer } = await import("./webgl2-renderer.js");
+    const { WebGL2Renderer } = await import("./webgl2-renderer.js?viewport=2");
     const r = new WebGL2Renderer();
     r.attach(canvas);
     if (!r.gl) throw new Error("no webgl2");

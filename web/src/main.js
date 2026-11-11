@@ -3,7 +3,7 @@ import * as TptMat from "./tpt-materials.js";
 import { getState, setState, subscribe, resetState } from "./state/store.js";
 import { WasmDirectAdapter } from "./adapters/wasm-direct.js";
 import { TptAdapter } from "./adapters/tpt.js";
-import { createRenderer } from "./renderers/renderer-factory.js";
+import { createRenderer } from "./renderers/renderer-factory.js?viewport=2";
 import { loadConfig, saveConfig, applyPreset, matchBinding, formatBinding, ACTION_LABELS } from "./shortcuts.js";
 
 // Runtime selection: production stays the default. `?engine=tpt` launches the
@@ -41,28 +41,49 @@ const VIEWS = ["Normal", "Fancy", "Heat", "Pressure", "Velocity", "Gravity", "Ai
 // viewport. Renderers and pointer/overlay mapping all use 4 CSS pixels per
 // world cell at zoom=1. Allow fractional zoom below 0.25 on small screens.
 let cameraAutoFit = true;
+
+// Match the initial world dimensions to the canvas aspect ratio without
+// increasing the ~65K-cell simulation budget. Later window resizes do not
+// recreate the world or discard particles.
+function initialWorldDimensions() {
+  const box = canvas?.parentElement;
+  const width = Math.max(1, box?.clientWidth || window.innerWidth);
+  const height = Math.max(1, box?.clientHeight || window.innerHeight);
+  const aspect = Math.min(4, Math.max(0.25, width / height));
+  const area = 256 * 256;
+  const round4 = (n) => Math.max(64, Math.round(n / 4) * 4);
+  return { width: round4(Math.sqrt(area * aspect)), height: round4(Math.sqrt(area / aspect)) };
+}
+
+// Rendering, input hit-testing, and overlays must share the same CSS-pixel
+// world-cell geometry, including non-square scaling of older save formats.
+function cameraCellSize(camera = getState().camera) {
+  const zoom = camera.zoom || 1;
+  return {
+    x: 4 * zoom * (camera.scaleX || 1),
+    y: 4 * zoom * (camera.scaleY || 1),
+  };
+}
 function fitCameraToViewport() {
   if (!sim || !canvas) return false;
   const box = canvas.parentElement;
   if (!box || box.clientWidth < 2 || box.clientHeight < 2) return false;
   const { w, h } = sim.getWorldSize();
   if (!(w > 0 && h > 0)) return false;
-  const margin = 4;
-  const zoom = Math.min(
-    Math.max(1, box.clientWidth - 2 * margin) / (4 * w),
-    Math.max(1, box.clientHeight - 2 * margin) / (4 * h),
-  );
-  if (!Number.isFinite(zoom) || zoom <= 0) return false;
-  const camera = {
-    x: (box.clientWidth - w * 4 * zoom) / 2,
-    y: (box.clientHeight - h * 4 * zoom) / 2,
-    zoom,
-  };
+  // Fill both dimensions. A loaded save can have a different aspect ratio;
+  // preserve all cells rather than cropping or erasing data to resize it.
+  const margin = 2;
+  const scaleX = Math.max(1, box.clientWidth - 2 * margin) / (4 * w);
+  const scaleY = Math.max(1, box.clientHeight - 2 * margin) / (4 * h);
+  if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX <= 0 || scaleY <= 0) return false;
+  const camera = { x: margin, y: margin, zoom: 1, scaleX, scaleY };
   cameraAutoFit = true;
   const old = getState().camera;
   if (Math.abs(old.x - camera.x) > 0.001 ||
       Math.abs(old.y - camera.y) > 0.001 ||
-      Math.abs(old.zoom - camera.zoom) > 0.000001) {
+      Math.abs(old.zoom - camera.zoom) > 0.000001 ||
+      Math.abs((old.scaleX || 1) - camera.scaleX) > 0.000001 ||
+      Math.abs((old.scaleY || 1) - camera.scaleY) > 0.000001) {
     setState({ camera });
   }
   return true;
@@ -85,10 +106,11 @@ async function boot() {
     return;
   }
   try {
+    const initialSize = initialWorldDimensions();
     if (ENGINE === "tpt") {
       matApi = TptMat;
       const wd = new TptAdapter();
-      await wd.init();
+      await wd.init(initialSize);
       sim = wd;
       // Switch palette state into the TPT id space before the rail/palette
       // render (PT element ids differ from the legacy palette ids).
@@ -101,7 +123,7 @@ async function boot() {
       if (!isAirView(getState().view || 0)) { try { sim.setViewMode(getState().view || 0); } catch (e) { console.warn(e); } }
     } else {
       const wd = new WasmDirectAdapter();
-      await wd.init();
+      await wd.init(initialSize);
       sim = wd;
       if (!isAirView(getState().view || 0)) { try { sim.setViewMode(getState().view || 0); } catch (e) { console.warn(e); } }
     }
@@ -109,15 +131,35 @@ async function boot() {
     setAppState("error", (ENGINE === "tpt" ? "TPT runtime failed: " : "WASM failed: ") + (e?.message || e));
     return;
   }
+  let lastViewportSize = null;
   const resizeViewport = () => {
     const box = canvas.parentElement;
     if (!box || box.clientWidth < 2 || box.clientHeight < 2) return;
-    try { renderer.resize(box.clientWidth, box.clientHeight); } catch (e) { console.warn(e); }
-    overlay.width = Math.max(1, Math.floor(box.clientWidth));
-    overlay.height = Math.max(1, Math.floor(box.clientHeight));
-    if (cameraAutoFit) fitCameraToViewport();
+    const w = box.clientWidth;
+    const h = box.clientHeight;
+    try { renderer.resize(w, h); } catch (e) { console.warn(e); }
+    overlay.width = Math.max(1, Math.floor(w));
+    overlay.height = Math.max(1, Math.floor(h));
+    if (cameraAutoFit) {
+      fitCameraToViewport();
+    } else if (lastViewportSize && (w !== lastViewportSize.w || h !== lastViewportSize.h)) {
+      // Resize the manually zoomed/panned view proportionally without resetting
+      // the world, throwing away drawings, or undoing the user's camera choice.
+      const cx = w / lastViewportSize.w;
+      const cy = h / lastViewportSize.h;
+      const old = getState().camera;
+      setState({ camera: {
+        ...old,
+        x: old.x * cx,
+        y: old.y * cy,
+        scaleX: (old.scaleX || 1) * cx,
+        scaleY: (old.scaleY || 1) * cy,
+      } });
+    }
+    lastViewportSize = { w, h };
   };
   new ResizeObserver(resizeViewport).observe(canvas.parentElement);
+  window.addEventListener("resize", resizeViewport);
   requestAnimationFrame(resizeViewport);
   buildRail();
   buildPalette();
@@ -361,11 +403,11 @@ function modFn(name) {
 
 function worldCenterPixel() {
   const s = getState();
-  const cell = 4 * (s.camera.zoom || 1);
+  const cell = cameraCellSize(s.camera);
   const box = canvas.getBoundingClientRect();
   return {
-    x: Math.floor((box.width / 2 - (s.camera.x || 0)) / cell),
-    y: Math.floor((box.height / 2 - (s.camera.y || 0)) / cell),
+    x: Math.floor((box.width / 2 - (s.camera.x || 0)) / cell.x),
+    y: Math.floor((box.height / 2 - (s.camera.y || 0)) / cell.y),
   };
 }
 
@@ -1240,10 +1282,10 @@ window.addEventListener("keydown", (e) => {
 function cellFromEvent(e) {
   const rect = canvas.getBoundingClientRect();
   const s = getState();
-  const cell = 4 * (s.camera.zoom || 1);
+  const cell = cameraCellSize(s.camera);
   return {
-    x: Math.floor((e.clientX - rect.left - s.camera.x) / cell),
-    y: Math.floor((e.clientY - rect.top - s.camera.y) / cell),
+    x: Math.floor((e.clientX - rect.left - s.camera.x) / cell.x),
+    y: Math.floor((e.clientY - rect.top - s.camera.y) / cell.y),
   };
 }
 
@@ -1252,11 +1294,11 @@ function drawOverlay() {
   const w = overlay.width, h = overlay.height;
   octx.clearRect(0, 0, w, h);
   const s = getState();
-  const cell = 4 * (s.camera.zoom || 1);
+  const cell = cameraCellSize(s.camera);
   octx.strokeStyle = "rgba(255,255,255,.85)";
   octx.lineWidth = 1;
   const drawCell = (x, y) => {
-    octx.strokeRect(s.camera.x + x * cell + 0.5, s.camera.y + y * cell + 0.5, cell - 1, cell - 1);
+    octx.strokeRect(s.camera.x + x * cell.x + 0.5, s.camera.y + y * cell.y + 0.5, Math.max(0, cell.x - 1), Math.max(0, cell.y - 1));
   };
   if (selection) {
     octx.strokeStyle = "rgba(120,200,255,.9)";
@@ -1274,7 +1316,7 @@ function drawOverlay() {
   if (paste && hover) {
     octx.fillStyle = "rgba(255,255,255,.25)";
     for (const c of paste.cells) {
-      octx.fillRect(s.camera.x + (hover.x + c.dx) * cell, s.camera.y + (hover.y + c.dy) * cell, cell, cell);
+      octx.fillRect(s.camera.x + (hover.x + c.dx) * cell.x, s.camera.y + (hover.y + c.dy) * cell.y, cell.x, cell.y);
     }
   }
 }

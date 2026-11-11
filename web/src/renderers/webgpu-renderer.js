@@ -283,11 +283,12 @@ export class WebGPURenderer {
         this._rebuildBindGroup();
       }
       const zoom = camera.zoom || 1;
-      const cellPx = 4 * zoom;
+      const cellPxX = 4 * zoom * (camera.scaleX || 1);
+      const cellPxY = 4 * zoom * (camera.scaleY || 1);
       const offX = (camera.x || 0) * this.dpr;
       const offY = (camera.y || 0) * this.dpr;
-      const worldPxW = gw * cellPx * this.dpr;
-      const worldPxH = gh * cellPx * this.dpr;
+      const worldPxW = gw * cellPxX * this.dpr;
+      const worldPxH = gh * cellPxY * this.dpr;
       const params = new Float32Array([
         offX, offY, worldPxW, worldPxH,
         this.canvas.width, this.canvas.height, gw, gh,
@@ -298,7 +299,7 @@ export class WebGPURenderer {
       padded.set(params.subarray(0, 12));
       const gridSize = this.overlay.gridSize || 8;
       padded[12] = glowStrength;
-      padded[13] = this.overlay.grid && cellPx * gridSize >= 4 ? gridSize : 0;
+      padded[13] = this.overlay.grid && Math.min(cellPxX, cellPxY) * gridSize >= 4 ? gridSize : 0;
       padded[14] = 1 / Math.max(1, gw);
       padded[15] = 1 / Math.max(1, gh);
       this.device.queue.writeBuffer(this.uniformBuf, 0, padded);
