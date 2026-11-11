@@ -37,6 +37,42 @@ let measuredTps = 0;
 const SHAPES = ["circle", "square", "triangle"];
 const VIEWS = ["Normal", "Fancy", "Heat", "Pressure", "Velocity", "Gravity", "Air velocity (AIRC)", "Air pressure (AIRW)"];
 
+// Fit the *simulation world*, not just the canvas element, to the available
+// viewport. Renderers and pointer/overlay mapping all use 4 CSS pixels per
+// world cell at zoom=1. Allow fractional zoom below 0.25 on small screens.
+let cameraAutoFit = true;
+function fitCameraToViewport() {
+  if (!sim || !canvas) return false;
+  const box = canvas.parentElement;
+  if (!box || box.clientWidth < 2 || box.clientHeight < 2) return false;
+  const { w, h } = sim.getWorldSize();
+  if (!(w > 0 && h > 0)) return false;
+  const margin = 4;
+  const zoom = Math.min(
+    Math.max(1, box.clientWidth - 2 * margin) / (4 * w),
+    Math.max(1, box.clientHeight - 2 * margin) / (4 * h),
+  );
+  if (!Number.isFinite(zoom) || zoom <= 0) return false;
+  const camera = {
+    x: (box.clientWidth - w * 4 * zoom) / 2,
+    y: (box.clientHeight - h * 4 * zoom) / 2,
+    zoom,
+  };
+  cameraAutoFit = true;
+  const old = getState().camera;
+  if (Math.abs(old.x - camera.x) > 0.001 ||
+      Math.abs(old.y - camera.y) > 0.001 ||
+      Math.abs(old.zoom - camera.zoom) > 0.000001) {
+    setState({ camera });
+  }
+  return true;
+}
+
+function setManualCamera(camera) {
+  cameraAutoFit = false;
+  setState({ camera });
+}
+
 async function boot() {
   setAppState("loading", "Starting simulation…");
   canvas = $("viewport");
@@ -79,6 +115,7 @@ async function boot() {
     try { renderer.resize(box.clientWidth, box.clientHeight); } catch (e) { console.warn(e); }
     overlay.width = Math.max(1, Math.floor(box.clientWidth));
     overlay.height = Math.max(1, Math.floor(box.clientHeight));
+    if (cameraAutoFit) fitCameraToViewport();
   };
   new ResizeObserver(resizeViewport).observe(canvas.parentElement);
   requestAnimationFrame(resizeViewport);
@@ -263,6 +300,7 @@ function buildPalette() {
 function wireChrome() {
   $("btn-play").onclick = () => setState({ playing: !getState().playing });
   $("btn-step").onclick = () => { sim.step(1 / 60); };
+  $("btn-fit").onclick = () => fitCameraToViewport();
   $("speed").oninput = (e) => setState({ speed: parseFloat(e.target.value) });
   $("btn-undo").onclick = () => undo();
   $("btn-redo").onclick = () => redo();
@@ -277,6 +315,7 @@ function wireChrome() {
     if (ok) {
       undoStack = [];
       redoStack = [];
+      fitCameraToViewport();
       notify(sim.lastLoadReport || "World loaded.");
     } else {
       notify(
@@ -713,7 +752,7 @@ function onMove(e) {
   if (panning) {
     const dx = e.clientX - panning.x;
     const dy = e.clientY - panning.y;
-    setState({ camera: { ...panning.cam, x: panning.cam.x + dx, y: panning.cam.y + dy } });
+    setManualCamera({ ...panning.cam, x: panning.cam.x + dx, y: panning.cam.y + dy });
     return;
   }
   if (!stroke) return;
@@ -754,7 +793,7 @@ function onWheel(e) {
   const s = getState();
   if (keys.wheel === "zoom") {
     const zoom = Math.min(6, Math.max(0.25, s.camera.zoom * (dir > 0 ? 1.15 : 1 / 1.15)));
-    setState({ camera: { ...s.camera, zoom } });
+    setManualCamera({ ...s.camera, zoom });
     return;
   }
   let rx = s.brushRx;
@@ -1085,7 +1124,7 @@ function panKey(e) {
   if (e.code === "ArrowRight") cam.x -= 24;
   if (e.code === "ArrowUp") cam.y += 24;
   if (e.code === "ArrowDown") cam.y -= 24;
-  setState({ camera: cam });
+  setManualCamera(cam);
   e.preventDefault();
 }
 
@@ -1126,10 +1165,10 @@ function runAction(hit) {
     case "stamp-rot": rotatePaste(); break;
     case "stamp-flip-x": flipPaste("x"); break;
     case "stamp-flip-y": flipPaste("y"); break;
-    case "zoom": setState({ camera: { ...s.camera, zoom: s.camera.zoom > 1.2 ? 1 : 3 } }); break;
-    case "zoom-in": setState({ camera: { ...s.camera, zoom: Math.min(6, s.camera.zoom * 1.15) } }); break;
-    case "zoom-out": setState({ camera: { ...s.camera, zoom: Math.max(0.25, s.camera.zoom / 1.15) } }); break;
-    case "zoom-reset": setState({ camera: { x: 0, y: 0, zoom: 1 } }); break;
+    case "zoom": setManualCamera({ ...s.camera, zoom: s.camera.zoom > 1.2 ? 1 : 3 }); break;
+    case "zoom-in": setManualCamera({ ...s.camera, zoom: Math.min(6, s.camera.zoom * 1.15) }); break;
+    case "zoom-out": setManualCamera({ ...s.camera, zoom: Math.max(0.01, s.camera.zoom / 1.15) }); break;
+    case "zoom-reset": fitCameraToViewport(); break;
     case "view": setView(hit.arg | 0); break;
     case "heat-toggle": setView(s.view === 2 ? 0 : 2); break;
     case "shot": shot(); break;
