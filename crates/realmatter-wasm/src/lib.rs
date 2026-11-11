@@ -871,13 +871,14 @@ pub fn apply_tool(kind: u32, x: i32, y: i32, radius: u32, dx: f32, dy: f32) {
                         8 => state
                             .air_field
                             .add_velocity(px, py, dx * 0.02, dy * 0.02),
+                        // 9/10 = UI data-simtool Amb+/Amb- (same as the TPT crate).
                         9 => {
                             state.air_field.ambient_air_temp =
-                                (state.air_field.ambient_air_temp - 5.0).max(0.0);
+                                (state.air_field.ambient_air_temp + 5.0).min(9999.0);
                         }
                         10 => {
                             state.air_field.ambient_air_temp =
-                                (state.air_field.ambient_air_temp + 5.0).min(9999.0);
+                                (state.air_field.ambient_air_temp - 5.0).max(0.0);
                         }
                         _ => {}
                     }
