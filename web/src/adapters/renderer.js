@@ -52,7 +52,8 @@ export class Canvas2DRenderer extends RendererAdapter {
     ctx.fillStyle = "#05060a";
     ctx.fillRect(0, 0, w, h);
     const zoom = camera.zoom || 1;
-    const cell = this.cellPx * zoom;
+    const cellX = this.cellPx * zoom * (camera.scaleX || 1);
+    const cellY = this.cellPx * zoom * (camera.scaleY || 1);
     const offX = camera.x;
     const offY = camera.y;
     // Draw via offscreen ImageData at cell resolution, then scale up.
@@ -69,8 +70,8 @@ export class Canvas2DRenderer extends RendererAdapter {
     dst.set(buf.subarray(0, n));
     const octx = this._rgbaCanvas.getContext("2d");
     octx.putImageData(img, 0, 0);
-    ctx.drawImage(this._rgbaCanvas, offX, offY, gw * cell, gh * cell);
-    drawGrid(ctx, this.overlay.grid, this.overlay.gridSize, cell, offX, offY, gw, gh, w, h);
+    ctx.drawImage(this._rgbaCanvas, offX, offY, gw * cellX, gh * cellY);
+    drawGrid(ctx, this.overlay.grid, this.overlay.gridSize, cellX, cellY, offX, offY, gw, gh, w, h);
     this.lastRenderMs = performance.now() - t0;
     const now = performance.now();
     this._fpsAcc += 1;
@@ -92,15 +93,16 @@ export class Canvas2DRenderer extends RendererAdapter {
     const { width: gw, height: gh, grid, temp } = snapshot;
     this.gridW = gw; this.gridH = gh;
     const zoom = camera.zoom;
-    const cell = this.cellPx * zoom;
+    const cellX = this.cellPx * zoom * (camera.scaleX || 1);
+    const cellY = this.cellPx * zoom * (camera.scaleY || 1);
     const offX = camera.x;
     const offY = camera.y;
 
     // visible range
-    const startX = Math.max(0, Math.floor(-offX / cell));
-    const startY = Math.max(0, Math.floor(-offY / cell));
-    const endX = Math.min(gw, Math.ceil((w - offX) / cell));
-    const endY = Math.min(gh, Math.ceil((h - offY) / cell));
+    const startX = Math.max(0, Math.floor(-offX / cellX));
+    const startY = Math.max(0, Math.floor(-offY / cellY));
+    const endX = Math.min(gw, Math.ceil((w - offX) / cellX));
+    const endY = Math.min(gh, Math.ceil((h - offY) / cellY));
 
     for (let y = startY; y < endY; y++) {
       for (let x = startX; x < endX; x++) {
@@ -115,11 +117,11 @@ export class Canvas2DRenderer extends RendererAdapter {
           color = heatColor(k);
         }
         ctx.fillStyle = color;
-        ctx.fillRect(offX + x * cell, offY + y * cell, cell + 0.5, cell + 0.5);
+        ctx.fillRect(offX + x * cellX, offY + y * cellY, cellX + 0.5, cellY + 0.5);
       }
     }
 
-    drawGrid(ctx, this.overlay.grid, this.overlay.gridSize, cell, offX, offY, gw, gh, w, h);
+    drawGrid(ctx, this.overlay.grid, this.overlay.gridSize, cellX, cellY, offX, offY, gw, gh, w, h);
 
     // HUD crosshair center
     ctx.strokeStyle = "rgba(79,195,247,0.25)";
@@ -143,14 +145,15 @@ export class Canvas2DRenderer extends RendererAdapter {
   dispose() { this.canvas = null; this.ctx = null; }
 }
 
-function drawGrid(ctx, enabled, gridCells, cell, offX, offY, gw, gh, viewW, viewH) {
+function drawGrid(ctx, enabled, gridCells, cellX, cellY, offX, offY, gw, gh, viewW, viewH) {
   const step = Math.max(1, Math.floor(gridCells || 8));
-  if (!enabled || cell * step < 4) return;
-  const spacing = step * cell;
-  const startX = Math.max(0, Math.ceil(-offX / spacing));
-  const startY = Math.max(0, Math.ceil(-offY / spacing));
-  const endX = Math.min(Math.floor(gw / step), Math.floor((viewW - offX) / spacing));
-  const endY = Math.min(Math.floor(gh / step), Math.floor((viewH - offY) / spacing));
+  if (!enabled || Math.min(cellX, cellY) * step < 4) return;
+  const spacingX = step * cellX;
+  const spacingY = step * cellY;
+  const startX = Math.max(0, Math.ceil(-offX / spacingX));
+  const startY = Math.max(0, Math.ceil(-offY / spacingY));
+  const endX = Math.min(Math.floor(gw / step), Math.floor((viewW - offX) / spacingX));
+  const endY = Math.min(Math.floor(gh / step), Math.floor((viewH - offY) / spacingY));
   if (startX > endX && startY > endY) return;
 
   ctx.strokeStyle = "rgba(255,255,255,0.12)";
@@ -158,16 +161,16 @@ function drawGrid(ctx, enabled, gridCells, cell, offX, offY, gw, gh, viewW, view
   ctx.beginPath();
   if (startX <= endX) {
     for (let x = startX; x <= endX; x++) {
-      const px = Math.round(offX + x * spacing) + 0.5;
+      const px = Math.round(offX + x * spacingX) + 0.5;
       ctx.moveTo(px, Math.max(0, offY));
-      ctx.lineTo(px, Math.min(viewH, offY + gh * cell));
+      ctx.lineTo(px, Math.min(viewH, offY + gh * cellY));
     }
   }
   if (startY <= endY) {
     for (let y = startY; y <= endY; y++) {
-      const py = Math.round(offY + y * spacing) + 0.5;
+      const py = Math.round(offY + y * spacingY) + 0.5;
       ctx.moveTo(Math.max(0, offX), py);
-      ctx.lineTo(Math.min(viewW, offX + gw * cell), py);
+      ctx.lineTo(Math.min(viewW, offX + gw * cellX), py);
     }
   }
   ctx.stroke();
